@@ -102,12 +102,13 @@ $SCP "$REPO_DIR/docker-compose.yml" "$SERVER:$APP_DIR/"
 $SCP "$REPO_DIR/nginx/nginx.conf" "$SERVER:$APP_DIR/nginx/nginx.conf"
 
 # Sync skill-registry and configs (no images, just YAML)
-rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-  --exclude '__pycache__' --exclude '*.pyc' \
-  "$REPO_DIR/skill-registry/" "$SERVER:$APP_DIR/skill-registry/"
+[ -d "$REPO_DIR/skill-registry" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  --exclude '__pycache__' --exclude '*.pyc' --exclude '.gitkeep' \
+  "$REPO_DIR/skill-registry/" "$SERVER:$APP_DIR/skill-registry/" || true
 
-rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-  "$REPO_DIR/configs/" "$SERVER:$APP_DIR/configs/"
+[ -d "$REPO_DIR/configs" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  --exclude '.gitkeep' \
+  "$REPO_DIR/configs/" "$SERVER:$APP_DIR/configs/" || true
 
 # Upload .env.prod (must exist locally — not committed to git)
 if [ -f "$REPO_DIR/.env.prod" ]; then
