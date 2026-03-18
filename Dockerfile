@@ -53,8 +53,9 @@ CMD ["uvicorn", "forge.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--
 FROM base AS builder
 
 COPY pyproject.toml ./
-RUN pip install build && \
-    pip wheel --no-deps --wheel-dir /wheels -e .
+COPY forge/ ./forge/
+RUN pip install setuptools wheel && \
+    pip wheel --no-deps --wheel-dir /wheels .
 
 # ── Stage 4: Production ──────────────────────────────────────────────────────
 FROM python:3.12-slim AS production
@@ -71,13 +72,13 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PIP_NO_CACHE_DIR=1
 
-# Copy compiled wheels from builder stage
-COPY --from=builder /wheels /wheels
+# Install all dependencies — no-build-isolation uses system setuptools (>=68)
 COPY pyproject.toml ./
-RUN pip install --no-index --find-links=/wheels -e . && \
-    rm -rf /wheels
+RUN pip install "setuptools>=68" wheel && \
+    pip install --no-build-isolation .
 
 USER forge
 COPY --chown=forge:forge . .
