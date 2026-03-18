@@ -168,11 +168,11 @@ class ApprovalGate:
 
     async def _notify_slack(self, approval: Approval, context: dict | None) -> None:
         """
-        Post a notification to the run's originating Slack channel.
-        M3 MVP: posts text-only. Interactive buttons are M4+.
+        Post an interactive approval request to the run's originating Slack channel.
+        Posts Block Kit message with Approve / Reject buttons.
         """
         try:
-            from slack_sdk.async_slack_client import AsyncSlackClient  # noqa: PLC0415
+            from slack_sdk.web.async_client import AsyncWebClient  # noqa: PLC0415
 
             from forge.config.settings import get_settings  # noqa: PLC0415
             from forge.db.models import Run, WorkOrder, Channel  # noqa: PLC0415
@@ -193,17 +193,73 @@ class ApprovalGate:
             if not slack_channel_id:
                 return
 
-            client = AsyncSlackClient(token=settings.slack_bot_token)
             summary = context.get("plan_summary", "") if context else ""
+            summary_block = (
+                [{"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:* {summary}"}}]
+                if summary
+                else []
+            )
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"🔔 Approval Required: {approval.gate_type.upper()} gate",
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*Run:*\n`{self.run_id}`"},
+                        {"type": "mrkdwn", "text": f"*Phase:*\n`{approval.gate_phase}`"},
+                        {"type": "mrkdwn", "text": f"*Gate:*\n`{approval.gate_type}`"},
+                        {"type": "mrkdwn", "text": f"*Approval ID:*\n`{approval.id}`"},
+                    ],
+                },
+                *summary_block,
+                {"type": "divider"},
+                {
+                    "type": "actions",
+                    "block_id": f"approval_{approval.id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "✅ Approve"},
+                            "style": "primary",
+                            "action_id": "forge_approve",
+                            "value": approval.id,
+                            "confirm": {
+                                "title": {"type": "plain_text", "text": "Approve this gate?"},
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"Approving the *{approval.gate_type}* gate for run `{self.run_id[:8]}…`. This will unblock the pipeline.",
+                                },
+                                "confirm": {"type": "plain_text", "text": "Approve"},
+                                "deny": {"type": "plain_text", "text": "Cancel"},
+                            },
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "❌ Reject"},
+                            "style": "danger",
+                            "action_id": "forge_reject",
+                            "value": approval.id,
+                        },
+                    ],
+                },
+            ]
+
+            client = AsyncWebClient(token=settings.slack_bot_token)
             await client.chat_postMessage(
                 channel=slack_channel_id,
-                text=(
-                    f"🔔 *Approval required: `{approval.gate_type}` gate*\n"
-                    f"Run: `{self.run_id}`\n"
-                    f"{('Summary: ' + summary) if summary else ''}\n\n"
-                    f"Approval ID: `{approval.id}`\n"
-                    f"To approve: update `approvals.status = 'APPROVED'` for this ID."
-                ),
+                text=f"🔔 Approval required: `{approval.gate_type}` gate for run `{self.run_id[:8]}…`",
+                blocks=blocks,
+            )
+            self._log.info(
+                "approval_gate.slack_notified",
+                approval_id=approval.id,
+                channel=slack_channel_id,
             )
         except Exception as exc:
             self._log.warning("approval_gate.slack_notify_failed", error=str(exc))

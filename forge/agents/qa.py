@@ -512,3 +512,107 @@ class QAAgent:
             self._log.info("qa_agent.run_status_updated", new_status=new_status)
         except Exception as exc:
             self._log.warning("qa_agent.status_update_failed", error=str(exc))
+
+
+# ── Celery task entry point ───────────────────────────────────────────────────
+
+
+from forge.queue.celery_app import celery_app as _celery  # noqa: E402
+
+
+@_celery.task(
+    name="forge.agents.qa.execute_task",
+    bind=True,
+    queue="qa",
+    max_retries=2,
+    acks_late=True,
+)
+def execute_task(
+    self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
+) -> dict:
+    """
+    Celery entry point: run the QA pipeline for a single task.
+
+    Resolves the workspace path from Run.active_branch / project config,
+    delegates to QAAgent.evaluate(), and updates Task.status.
+    """
+    import asyncio  # noqa: PLC0415
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy import select, update  # noqa: PLC0415
+
+    from forge.config.settings import get_settings  # noqa: PLC0415
+    from forge.db.models import Run, Task  # noqa: PLC0415
+    from forge.db.session import get_db  # noqa: PLC0415
+
+    _settings = get_settings()
+
+    async def _run():
+        # Load task and run
+        async with get_db() as session:
+            task_result = await session.execute(select(Task).where(Task.id == task_id))
+            task = task_result.scalar_one_or_none()
+            if task is None:
+                return {"success": False, "error": f"Task {task_id} not found"}
+
+            run_result = await session.execute(select(Run).where(Run.id == run_id))
+            run = run_result.scalar_one()
+
+        workspace = (
+            Path(_settings.git_workspace) / run.project_id / run_id
+        )
+
+        agent = QAAgent(
+            run_id=run.id,
+            task_id=task.id,
+            repo_path=workspace,
+        )
+
+        try:
+            report = await agent.evaluate()
+            outcome = report.outcome
+
+            # Update Task status based on QA outcome
+            task_status = "COMPLETED" if outcome == QAOutcome.PASSED else "FAILED"
+            async with get_db() as session:
+                await session.execute(
+                    update(Task)
+                    .where(Task.id == task_id)
+                    .values(
+                        status=task_status,
+                        output=report.as_dict(),
+                        error=(
+                            report.blocking_reason
+                            if outcome != QAOutcome.PASSED
+                            else None
+                        ),
+                        completed_at=datetime.now(UTC),
+                    )
+                )
+                await session.commit()
+
+            return {
+                "success": outcome == QAOutcome.PASSED,
+                "task_id": task_id,
+                "run_id": run_id,
+                "outcome": str(outcome),
+            }
+
+        except Exception as exc:
+            log.exception("qa.celery_task_failed", task_id=task_id, error=str(exc))
+            async with get_db() as session:
+                await session.execute(
+                    update(Task)
+                    .where(Task.id == task_id)
+                    .values(
+                        status="FAILED",
+                        error=str(exc),
+                        failure_count=Task.failure_count + 1,
+                        completed_at=datetime.now(UTC),
+                    )
+                )
+                await session.commit()
+            raise
+
+    result = asyncio.get_event_loop().run_until_complete(_run())
+    return result

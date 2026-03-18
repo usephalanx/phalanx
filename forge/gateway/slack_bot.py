@@ -86,6 +86,20 @@ def _build_app(token: str) -> AsyncApp:
         """Respond to @forge mentions with guidance."""
         await say("Use `/forge help` to see available commands.")
 
+    # ── Approval button handlers ───────────────────────────────────────────────
+
+    @_app.action("forge_approve")
+    async def handle_approve(ack, body, client):
+        """Handle the Approve button click on an approval gate message."""
+        await ack()
+        await _handle_approval_action(body, client, decision="APPROVED")
+
+    @_app.action("forge_reject")
+    async def handle_reject(ack, body, client):
+        """Handle the Reject button click on an approval gate message."""
+        await ack()
+        await _handle_approval_action(body, client, decision="REJECTED")
+
     return _app
 
 
@@ -249,6 +263,102 @@ async def _handle_cancel(parsed, user_id: str, respond) -> None:
     except Exception as exc:
         log.exception("slack_gateway.cancel_failed", error=str(exc))
         await respond(f"❌ Error cancelling run: `{exc}`")
+
+
+async def _handle_approval_action(body: dict, client, decision: str) -> None:
+    """
+    Common handler for forge_approve / forge_reject button actions.
+
+    Updates the Approval row in Postgres and replaces the interactive
+    Slack message with a decision receipt so the buttons can't be clicked twice.
+    """
+    try:
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from forge.db.models import Approval  # noqa: PLC0415
+        from forge.db.session import get_db  # noqa: PLC0415
+        from sqlalchemy import select, update  # noqa: PLC0415
+
+        action = body["actions"][0]
+        approval_id: str = action["value"]
+        user_id: str = body["user"]["id"]
+        channel_id: str = body["container"]["channel_id"]
+        message_ts: str = body["container"]["message_ts"]
+
+        async with get_db() as session:
+            result = await session.execute(
+                select(Approval).where(Approval.id == approval_id)
+            )
+            approval = result.scalar_one_or_none()
+
+            if approval is None:
+                log.warning("approval_action.not_found", approval_id=approval_id)
+                return
+
+            if approval.status != "PENDING":
+                # Already decided — update the message to show current state
+                emoji = "✅" if approval.status == "APPROVED" else "❌"
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=message_ts,
+                    text=f"{emoji} Already {approval.status} by <@{approval.decided_by}>",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": (
+                                    f"{emoji} *{approval.gate_type.upper()} gate already "
+                                    f"{approval.status}* by <@{approval.decided_by}>"
+                                ),
+                            },
+                        }
+                    ],
+                )
+                return
+
+            await session.execute(
+                update(Approval)
+                .where(Approval.id == approval_id)
+                .values(
+                    status=decision,
+                    decided_by=user_id,
+                    decided_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+        emoji = "✅" if decision == "APPROVED" else "❌"
+        label = "APPROVED" if decision == "APPROVED" else "REJECTED"
+        log.info(
+            "approval_action.decided",
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=user_id,
+        )
+
+        # Replace the interactive message with a decision receipt
+        await client.chat_update(
+            channel=channel_id,
+            ts=message_ts,
+            text=f"{emoji} {label} by <@{user_id}>",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"{emoji} *{approval.gate_type.upper()} gate {label}* "
+                            f"by <@{user_id}>\n"
+                            f"Run: `{approval.run_id}`"
+                        ),
+                    },
+                }
+            ],
+        )
+
+    except Exception as exc:
+        log.exception("approval_action.failed", error=str(exc))
 
 
 # ── Main entrypoint ───────────────────────────────────────────────────────────
