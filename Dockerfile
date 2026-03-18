@@ -75,10 +75,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PIP_NO_CACHE_DIR=1
 
-# Install all dependencies — no-build-isolation uses system setuptools (>=68)
+# Install all dependencies
 COPY pyproject.toml ./
-RUN pip install "setuptools>=68" wheel && \
-    pip install --no-build-isolation .
+RUN pip install "setuptools>=61" wheel && pip install .
 
 USER forge
 COPY --chown=forge:forge . .
