@@ -179,24 +179,108 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
         )
 
 
+_STATUS_EMOJI: dict[str, str] = {
+    "INTAKE":                    "📥",
+    "RESEARCHING":               "🔍",
+    "PLANNING":                  "📝",
+    "AWAITING_PLAN_APPROVAL":    "⏳",
+    "EXECUTING":                 "⚙️",
+    "VERIFYING":                 "🔬",
+    "AWAITING_SHIP_APPROVAL":    "⏳",
+    "READY_TO_MERGE":            "🔀",
+    "MERGED":                    "✅",
+    "RELEASE_PREP":              "📦",
+    "AWAITING_RELEASE_APPROVAL": "⏳",
+    "SHIPPED":                   "🚀",
+    "FAILED":                    "❌",
+    "BLOCKED":                   "🚫",
+    "PAUSED":                    "⏸️",
+    "CANCELLED":                 "🛑",
+}
+
+
+def _duration_label(created_at) -> str:
+    """Human-readable elapsed time since run started."""
+    from datetime import UTC, datetime  # noqa: PLC0415
+    if created_at is None:
+        return "—"
+    now = datetime.now(UTC)
+    # Handle both tz-aware and tz-naive datetimes from DB
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    secs = int((now - created_at).total_seconds())
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    return f"{secs // 3600}h {(secs % 3600) // 60}m"
+
+
 async def _handle_status(parsed, respond) -> None:
-    """Return status of active runs (or a specific run)."""
+    """Return status of active runs (or a specific run) with rich Block Kit cards."""
     try:
         from forge.db.session import get_db  # noqa: PLC0415
-        from forge.db.models import Run, WorkOrder  # noqa: PLC0415
-        from sqlalchemy import select  # noqa: PLC0415
+        from forge.db.models import Run, WorkOrder, Task  # noqa: PLC0415
+        from sqlalchemy import select, func  # noqa: PLC0415
 
         async with get_db() as session:
             if parsed.run_id:
+                # ── Single run detail ─────────────────────────────────────────
                 stmt = select(Run).where(Run.id == parsed.run_id)
                 result = await session.execute(stmt)
                 run = result.scalar_one_or_none()
                 if run is None:
                     await respond(f"⚠️ Run `{parsed.run_id}` not found.")
                     return
-                await respond(f"Run `{run.id}`: *{run.status}*")
+
+                # Task counts for this run
+                counts_stmt = (
+                    select(Task.status, func.count().label("n"))
+                    .where(Task.run_id == run.id)
+                    .group_by(Task.status)
+                )
+                counts_result = await session.execute(counts_stmt)
+                task_counts = {row.status: row.n for row in counts_result.all()}
+                total_tasks  = sum(task_counts.values())
+                done_tasks   = task_counts.get("COMPLETED", 0)
+                active_task  = task_counts.get("IN_PROGRESS", 0)
+
+                emoji  = _STATUS_EMOJI.get(run.status, "❓")
+                dur    = _duration_label(run.created_at)
+                cost_val = run.estimated_cost_usd
+                cost   = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
+
+                text = f"Run `{run.id}`: *{run.status}*"
+                blocks = [
+                    {"type": "header", "text": {
+                        "type": "plain_text",
+                        "text": f"{emoji} Run {run.id[:8]}… — {run.status}",
+                    }},
+                    {"type": "section", "fields": [
+                        {"type": "mrkdwn", "text": f"*Status*\n{emoji} `{run.status}`"},
+                        {"type": "mrkdwn", "text": f"*Duration*\n⏱ {dur}"},
+                        {"type": "mrkdwn", "text": f"*Tasks*\n{done_tasks}/{total_tasks} done"
+                            + (f", {active_task} running" if active_task else "")},
+                        {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
+                    ]},
+                    {"type": "section", "fields": [
+                        {"type": "mrkdwn", "text": f"*Run ID*\n`{run.id}`"},
+                        {"type": "mrkdwn", "text": f"*Branch*\n`{run.active_branch or '—'}`"},
+                    ]},
+                ]
+                if run.pr_url:
+                    blocks.append({"type": "section", "text": {
+                        "type": "mrkdwn", "text": f"🔗 *PR:* <{run.pr_url}|View Pull Request>",
+                    }})
+                if run.error_message:
+                    blocks.append({"type": "section", "text": {
+                        "type": "mrkdwn",
+                        "text": f"❌ *Error:* {run.error_message[:300]}",
+                    }})
+                await respond(text, blocks=blocks)
+
             else:
-                # List active (non-terminal) runs
+                # ── Active runs list ──────────────────────────────────────────
                 from forge.workflow.state_machine import TERMINAL_STATES  # noqa: PLC0415
                 terminal = [s.value for s in TERMINAL_STATES]
                 stmt = (
@@ -208,13 +292,66 @@ async def _handle_status(parsed, respond) -> None:
                 )
                 result = await session.execute(stmt)
                 rows = result.all()
+
                 if not rows:
                     await respond("No active runs.")
                     return
-                lines = ["*Active runs:*"]
+
+                # Build text fallback (also used by unit tests)
+                lines = [f"*Active runs ({len(rows)}):*"]
                 for run, title in rows:
-                    lines.append(f"• `{run.id[:8]}…` {run.status} — _{title}_")
-                await respond("\n".join(lines))
+                    emoji = _STATUS_EMOJI.get(run.status, "❓")
+                    dur   = _duration_label(run.created_at)
+                    lines.append(f"• {emoji} `{run.id[:8]}…` {run.status} _{title}_ ⏱{dur}")
+                text = "\n".join(lines)
+
+                # Build Block Kit — one section per run
+                blocks: list[dict] = [
+                    {"type": "header", "text": {
+                        "type": "plain_text",
+                        "text": f"🔥 FORGE — {len(rows)} active run{'s' if len(rows) != 1 else ''}",
+                    }},
+                    {"type": "divider"},
+                ]
+                for run, title in rows:
+                    emoji = _STATUS_EMOJI.get(run.status, "❓")
+                    dur   = _duration_label(run.created_at)
+                    cost_val = run.estimated_cost_usd
+                    cost  = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
+
+                    # Per-run task counts (single query per run — at most 10)
+                    counts_stmt = (
+                        select(Task.status, func.count().label("n"))
+                        .where(Task.run_id == run.id)
+                        .group_by(Task.status)
+                    )
+                    counts_result = await session.execute(counts_stmt)
+                    task_counts = {r.status: r.n for r in counts_result.all()}
+                    total = sum(task_counts.values())
+                    done  = task_counts.get("COMPLETED", 0)
+                    progress = f"{done}/{total} tasks" if total else "queued"
+
+                    blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"{emoji} *{title}*"},
+                        "fields": [
+                            {"type": "mrkdwn", "text": f"*Status*\n`{run.status}`"},
+                            {"type": "mrkdwn", "text": f"*Progress*\n{progress}"},
+                            {"type": "mrkdwn", "text": f"*Time*\n⏱ {dur}"},
+                            {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
+                        ],
+                    })
+                    blocks.append({"type": "context", "elements": [
+                        {"type": "mrkdwn", "text": f"Run ID: `{run.id}`"},
+                    ]})
+                    blocks.append({"type": "divider"})
+
+                blocks.append({"type": "context", "elements": [
+                    {"type": "mrkdwn",
+                     "text": "Use `/forge status <run-id>` for details  •  `/forge cancel <run-id>` to stop"},
+                ]})
+
+                await respond(text, blocks=blocks)
 
     except Exception as exc:
         log.exception("slack_gateway.status_failed", error=str(exc))

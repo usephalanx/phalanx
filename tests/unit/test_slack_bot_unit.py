@@ -170,15 +170,54 @@ class TestHandleStatus:
         run = MagicMock()
         run.id = "abc-123"
         run.status = "EXECUTING"
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = run
-        session.execute.return_value = result_mock
+        run.estimated_cost_usd = 0.12
+        run.active_branch = "feat/auth"
+        run.pr_url = None
+        run.error_message = None
+        run.created_at = None
+        run_result = MagicMock()
+        run_result.scalar_one_or_none.return_value = run
+        # Second execute for task counts
+        counts_result = MagicMock()
+        counts_result.all.return_value = []
+        session.execute.side_effect = [run_result, counts_result]
 
         with patch("forge.db.session.get_db", make_db_context(session)):
             await _handle_status(parsed, respond=respond)
 
         respond.assert_awaited_once()
         assert "EXECUTING" in respond.call_args[0][0]
+        # Block Kit blocks should be present as keyword arg
+        assert respond.call_args[1].get("blocks") is not None
+
+    async def test_status_list_returns_block_kit(self):
+        from forge.gateway.slack_bot import _handle_status
+        from forge.gateway.command_parser import parse_command
+        from datetime import UTC, datetime
+
+        parsed = parse_command("status")
+        respond = AsyncMock()
+        session = make_session()
+
+        run = MagicMock()
+        run.id = "run-uuid-1234"
+        run.status = "EXECUTING"
+        run.estimated_cost_usd = 0.05
+        run.created_at = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+        rows_result = MagicMock()
+        rows_result.all.return_value = [(run, "Add OAuth login")]
+        counts_result = MagicMock()
+        counts_result.all.return_value = []
+        session.execute.side_effect = [rows_result, counts_result]
+
+        with patch("forge.db.session.get_db", make_db_context(session)):
+            await _handle_status(parsed, respond=respond)
+
+        respond.assert_awaited_once()
+        text = respond.call_args[0][0]
+        assert "EXECUTING" in text
+        assert respond.call_args[1].get("blocks") is not None
 
 
 # ── _handle_cancel ─────────────────────────────────────────────────────────────
