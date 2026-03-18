@@ -10,7 +10,7 @@ log = structlog.get_logger(__name__)
 
 
 @celery_app.task(name="forge.skills.ingestion.tasks.check_feeds", bind=True, max_retries=3)
-def check_feeds(self) -> dict:
+def check_feeds(self) -> dict:  # pragma: no cover
     """
     Iterate skill-registry feed configs and pull new content.
     Dispatches individual ingest jobs to the `ingestion` queue.

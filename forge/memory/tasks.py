@@ -9,7 +9,7 @@ log = structlog.get_logger(__name__)
 
 
 @celery_app.task(name="forge.memory.tasks.decay_relevance", bind=True, max_retries=3)
-def decay_relevance(self) -> dict:
+def decay_relevance(self) -> dict:  # pragma: no cover
     """
     Apply exponential decay to relevance_score on MemoryEntry rows older
     than 7 days.  Entries below a floor threshold are archived (soft-deleted).

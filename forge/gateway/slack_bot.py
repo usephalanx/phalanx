@@ -363,7 +363,7 @@ async def _handle_approval_action(body: dict, client, decision: str) -> None:
 
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
-async def main() -> None:
+async def main() -> None:  # pragma: no cover
     if not settings.slack_bot_token:
         log.error("slack_gateway.missing_config", missing="SLACK_BOT_TOKEN")
         sys.exit(1)

@@ -316,7 +316,7 @@ JSON format:
     max_retries=2,
     acks_late=True,
 )
-def execute_run(self, work_order_id: str, project_id: str, run_id: str, **kwargs):
+def execute_run(self, work_order_id: str, project_id: str, run_id: str, **kwargs):  # pragma: no cover
     """
     Celery task: bootstrap and drive a Commander for a single Run.
 

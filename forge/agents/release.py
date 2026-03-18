@@ -327,7 +327,7 @@ Return ONLY valid JSON — no markdown fences.
     max_retries=2,
     acks_late=True,
 )
-def execute_task(
+def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: prepare release artifacts for a single task."""

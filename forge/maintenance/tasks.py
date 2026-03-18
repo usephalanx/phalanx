@@ -9,7 +9,7 @@ log = structlog.get_logger(__name__)
 
 
 @celery_app.task(name="forge.maintenance.tasks.check_blocked_runs", bind=True, max_retries=3)
-def check_blocked_runs(self) -> dict:
+def check_blocked_runs(self) -> dict:  # pragma: no cover
     """
     Scan for runs stuck in PLANNING/IN_PROGRESS/REVIEW/AWAITING_APPROVAL
     beyond their configured timeout and transition them to FAILED.

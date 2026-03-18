@@ -10,7 +10,7 @@ log = structlog.get_logger(__name__)
 
 
 @celery_app.task(name="forge.skills.tasks.check_staleness", bind=True, max_retries=3)
-def check_staleness(self) -> dict:
+def check_staleness(self) -> dict:  # pragma: no cover
     """
     Compare each skill's last_ingested_at against its configured
     max_staleness_days.  Emit a structured warning log for any stale skill

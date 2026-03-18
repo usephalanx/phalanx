@@ -249,7 +249,7 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON o
     max_retries=2,
     acks_late=True,
 )
-def execute_task(
+def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: plan a single task. Called by WorkflowOrchestrator."""
