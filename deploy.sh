@@ -33,7 +33,7 @@ else
   exit 1
 fi
 
-SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 SCP="scp -i $SSH_KEY -o StrictHostKeyChecking=no"
 
 # ── Migrate-only mode ────────────────────────────────────────────────────
@@ -98,8 +98,7 @@ echo "▶ [3/6] Uploading images to server..."
 $SCP /tmp/forge-api.tar.gz /tmp/forge-worker.tar.gz "$SERVER:/tmp/"
 
 echo "▶ [3/6] Uploading configs..."
-$SCP "$REPO_DIR/docker-compose.yml" "$SERVER:$APP_DIR/"
-$SCP "$REPO_DIR/nginx/nginx.conf" "$SERVER:$APP_DIR/nginx/nginx.conf"
+$SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
 
 # Sync skill-registry and configs (no images, just YAML)
 [ -d "$REPO_DIR/skill-registry" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
@@ -144,14 +143,14 @@ docker compose up -d --no-build
 
 echo "  Waiting for API health check..."
 for i in $(seq 1 18); do
-  STATUS=$(docker inspect --format='{{.State.Health.Status}}' forge-api-1 2>/dev/null || echo "starting")
+  STATUS=$(docker inspect --format='{{.State.Health.Status}}' forge-prod-forge-api-1 2>/dev/null || echo "starting")
   if [ "$STATUS" = "healthy" ]; then
     echo "  ✓ API healthy after ~$((i * 10))s"
     break
   fi
   if [ "$i" = "18" ]; then
     echo "  WARNING: API not healthy after 180s — check logs"
-    docker logs forge-api-1 --tail 30
+    docker logs forge-prod-forge-api-1 --tail 30
   fi
   sleep 10
 done
@@ -181,7 +180,7 @@ if [ "$HTTP_HEALTH" = "200" ]; then
   echo "  ✓ API health: $HTTP_HEALTH"
 else
   echo "  ✗ API health: $HTTP_HEALTH — deployment may need investigation"
-  echo "    Run: ssh -i \$SSH_KEY ubuntu@44.233.157.41 'docker logs forge-api-1 --tail 50'"
+  echo "    Run: ssh -i \$SSH_KEY ubuntu@44.233.157.41 'docker logs forge-prod-forge-api-1 --tail 50'"
 fi
 
 # ── Step 6: Tag release ──────────────────────────────────────────────────

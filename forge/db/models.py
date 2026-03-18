@@ -20,11 +20,14 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    TIMESTAMP,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TIMESTAMPTZ, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+
+TIMESTAMPTZ = TIMESTAMP(timezone=True)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
