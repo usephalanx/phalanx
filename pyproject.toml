@@ -1,0 +1,122 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "forge"
+version = "0.1.0"
+description = "FORGE — Configurable AI Team Operating System"
+requires-python = ">=3.12"
+dependencies = [
+    # API
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pgvector>=0.3.6",
+
+    # Cache / Queue
+    "redis[hiredis]>=5.2.0",
+    "celery[redis]>=5.4.0",
+    "flower>=2.0.1",
+
+    # AI
+    "anthropic>=0.40.0",
+
+    # Slack
+    "slack-bolt>=1.21.0",
+    "slack-sdk>=3.33.0",
+
+    # Git ops
+    "gitpython>=3.1.43",
+    "pygithub>=2.5.0",
+
+    # Config + validation
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "pyyaml>=6.0.2",
+    "jsonschema>=4.23.0",
+
+    # Storage
+    "boto3>=1.35.0",
+    "aioboto3>=13.2.0",
+
+    # Observability
+    "structlog>=24.4.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.49b0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+
+    # Utilities
+    "httpx>=0.28.0",
+    "tenacity>=9.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "pendulum>=3.0.0",
+    "rich>=13.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "httpx>=0.28.0",         # for TestClient
+    "factory-boy>=3.3.1",    # test fixtures
+    "faker>=33.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+    "watchfiles>=1.0.0",
+    "debugpy>=1.8.0",
+    "ipython>=8.29.0",
+    "types-pyyaml>=6.0.12",
+    "types-redis>=4.6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["forge*"]
+
+# ── Ruff (linting + formatting) ──────────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "TCH"]
+ignore = ["E501", "B008", "N805"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["forge"]
+
+# ── MyPy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=forge --cov-report=term-missing --cov-report=html --tb=short"
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["forge"]
+omit = ["tests/*", "alembic/*", "scripts/*"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
