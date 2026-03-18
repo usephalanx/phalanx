@@ -146,6 +146,8 @@ services:
     depends_on:
       forge-api:
         condition: service_healthy
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
