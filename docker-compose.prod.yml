@@ -1,0 +1,129 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FORGE — Production Docker Compose
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: forge-prod
+
+x-forge-prod: &forge-prod
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: production
+  env_file: .env.prod
+  restart: always
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+  deploy:
+    resources:
+      limits:
+        cpus: "1.0"
+        memory: 1G
+
+services:
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - forge-postgres-data:/var/lib/postgresql/data
+    # No external port in prod — internal network only
+    expose:
+      - "5432"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    expose:
+      - "6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 2G
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - forge-api
+    restart: always
+
+  forge-api:
+    <<: *forge-prod
+    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --workers 4
+    expose:
+      - "8000"
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  forge-worker:
+    <<: *forge-prod
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=warning
+      --queues=default,commander,planner,reviewer,qa,release,security
+      --concurrency=8
+      --max-tasks-per-child=100
+    deploy:
+      replicas: 2
+
+  forge-worker-builder:
+    <<: *forge-prod
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=warning
+      --queues=builder
+      --concurrency=4
+      --max-tasks-per-child=50
+    volumes:
+      - forge-repos:/tmp/forge-repos
+
+  forge-beat:
+    <<: *forge-prod
+    command: celery -A forge.queue.celery_app beat
+      --loglevel=warning
+    deploy:
+      replicas: 1    # Must be exactly 1
+
+  forge-gateway:
+    <<: *forge-prod
+    command: python -m forge.gateway.slack_bot
+    deploy:
+      replicas: 1    # Slack socket mode: single instance
+
+  forge-ingestion:
+    <<: *forge-prod
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=warning
+      --queues=ingestion,skill_drills
+      --concurrency=4
+
+volumes:
+  forge-postgres-data:
+  forge-repos:

@@ -1,0 +1,197 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FORGE — Development Docker Compose
+# Runs all services locally. Hot reload on code changes.
+# Usage: docker compose up
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: forge-dev
+
+x-forge-common: &forge-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: development
+  env_file: .env
+  volumes:
+    - .:/app                          # mount source for hot reload
+    - forge-pip-cache:/root/.cache/pip
+    - ./skill-registry:/app/skill-registry  # mount skill registry live
+    - ./config:/app/config                  # mount config live
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  networks:
+    - forge-net
+
+services:
+
+  # ── Postgres + pgvector ────────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: forge-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-forge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-forge}
+    ports:
+      - "5432:5432"
+    volumes:
+      - forge-postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-forge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - forge-net
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: forge-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - forge-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - forge-net
+
+  # ── FastAPI — Main API ─────────────────────────────────────────────────────
+  forge-api:
+    <<: *forge-common
+    container_name: forge-api
+    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    ports:
+      - "8000:8000"
+      - "5678:5678"    # debugpy port
+    environment:
+      SERVICE_NAME: forge-api
+      DEBUG: "true"
+
+  # ── Celery Worker — General queue ─────────────────────────────────────────
+  forge-worker:
+    <<: *forge-common
+    container_name: forge-worker
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=info
+      --queues=default,commander,planner,reviewer,qa,release,security
+      --concurrency=4
+      --hostname=worker-general@%h
+    environment:
+      SERVICE_NAME: forge-worker
+
+  # ── Celery Worker — Builder queue (isolated, git ops happen here) ──────────
+  forge-worker-builder:
+    <<: *forge-common
+    container_name: forge-worker-builder
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=info
+      --queues=builder
+      --concurrency=2
+      --hostname=worker-builder@%h
+    volumes:
+      - .:/app
+      - forge-pip-cache:/root/.cache/pip
+      - ./skill-registry:/app/skill-registry
+      - ./config:/app/config
+      - forge-repos:/tmp/forge-repos    # git clone workspace
+    environment:
+      SERVICE_NAME: forge-worker-builder
+      GIT_WORKSPACE: /tmp/forge-repos
+
+  # ── Celery Beat — Scheduled tasks (one instance only) ─────────────────────
+  forge-beat:
+    <<: *forge-common
+    container_name: forge-beat
+    command: celery -A forge.queue.celery_app beat
+      --loglevel=info
+      --scheduler=django_celery_beat.schedulers:DatabaseScheduler
+    environment:
+      SERVICE_NAME: forge-beat
+
+  # ── Slack/Discord Gateway ─────────────────────────────────────────────────
+  forge-gateway:
+    <<: *forge-common
+    container_name: forge-gateway
+    command: python -m forge.gateway.slack_bot
+    environment:
+      SERVICE_NAME: forge-gateway
+      SLACK_SOCKET_MODE: "true"
+
+  # ── Skill Ingestion Worker ─────────────────────────────────────────────────
+  forge-ingestion:
+    <<: *forge-common
+    container_name: forge-ingestion
+    command: celery -A forge.queue.celery_app worker
+      --loglevel=info
+      --queues=ingestion,skill_drills
+      --concurrency=2
+      --hostname=worker-ingestion@%h
+    environment:
+      SERVICE_NAME: forge-ingestion
+
+  # ── Flower — Celery monitoring UI ─────────────────────────────────────────
+  flower:
+    <<: *forge-common
+    container_name: forge-flower
+    command: celery -A forge.queue.celery_app flower
+      --port=5555
+      --broker_api=redis://${REDIS_HOST:-redis}:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - forge-worker
+    environment:
+      SERVICE_NAME: forge-flower
+
+  # ── Alembic Migrations (runs once then exits) ──────────────────────────────
+  forge-migrate:
+    <<: *forge-common
+    container_name: forge-migrate
+    command: alembic upgrade head
+    restart: "no"
+    environment:
+      SERVICE_NAME: forge-migrate
+
+  # ── PgAdmin (dev only, inspect DB) ────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: forge-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: dev@forge.local
+      PGADMIN_DEFAULT_PASSWORD: forge_admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - forge-pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    networks:
+      - forge-net
+
+volumes:
+  forge-postgres-data:
+  forge-redis-data:
+  forge-pgadmin-data:
+  forge-pip-cache:
+  forge-repos:
+
+networks:
+  forge-net:
+    driver: bridge
