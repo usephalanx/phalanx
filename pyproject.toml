@@ -22,7 +22,7 @@ dependencies = [
     # Cache / Queue
     "redis[hiredis]>=5.2.0",
     "celery[redis]>=5.4.0",
-    "redbeat>=2.2.0",
+    "celery-redbeat>=2.3.0",
     "flower>=2.0.1",
 
     # AI
