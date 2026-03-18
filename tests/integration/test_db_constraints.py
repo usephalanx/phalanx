@@ -83,7 +83,6 @@ async def sample_project(db_session):
         slug=f"test-project-{uuid.uuid4().hex[:8]}",
         name="Test Project",
         config={},
-        guardrails_config={},
     )
     db_session.add(project)
     await db_session.flush()
@@ -99,7 +98,7 @@ async def sample_channel(db_session, sample_project):
         project_id=sample_project.id,
         platform="slack",
         channel_id=f"C{uuid.uuid4().hex[:8].upper()}",
-        channel_name="forge-test",
+        display_name="forge-test",
     )
     db_session.add(channel)
     await db_session.flush()
@@ -116,8 +115,10 @@ async def sample_work_order(db_session, sample_project, sample_channel):
         channel_id=sample_channel.id,
         title="Test work order",
         description="Integration test work order",
-        priority="P2",
-        status="PENDING",
+        raw_command="/forge build Test work order",
+        requested_by="test-user",
+        priority=50,
+        status="OPEN",
     )
     db_session.add(wo)
     await db_session.flush()
@@ -132,9 +133,8 @@ async def sample_run(db_session, sample_work_order):
     run = Run(
         work_order_id=sample_work_order.id,
         project_id=sample_work_order.project_id,
+        run_number=1,
         status="INTAKE",
-        assigned_agent_id="morgan",
-        ic_level=6,
     )
     db_session.add(run)
     await db_session.flush()
@@ -161,9 +161,8 @@ class TestRunStatusConstraint:
         run = Run(
             work_order_id=sample_work_order.id,
             project_id=sample_work_order.project_id,
+            run_number=1,
             status=status,
-            assigned_agent_id="morgan",
-            ic_level=6,
         )
         db_session.add(run)
         await db_session.flush()  # should not raise
@@ -174,9 +173,8 @@ class TestRunStatusConstraint:
         run = Run(
             work_order_id=sample_work_order.id,
             project_id=sample_work_order.project_id,
+            run_number=1,
             status="HACKING",  # invalid
-            assigned_agent_id="morgan",
-            ic_level=6,
         )
         db_session.add(run)
         with pytest.raises(IntegrityError):
@@ -201,12 +199,11 @@ class TestTaskStatusConstraint:
 
         task = Task(
             run_id=sample_run.id,
-            project_id=sample_run.project_id,
             title=f"Task with status {status}",
-            agent_id="sam",
-            ic_level=3,
+            description="Integration test task",
+            agent_role="builder",
             status=status,
-            sequence_order=1,
+            sequence_num=1,
         )
         db_session.add(task)
         await db_session.flush()
@@ -216,12 +213,11 @@ class TestTaskStatusConstraint:
 
         task = Task(
             run_id=sample_run.id,
-            project_id=sample_run.project_id,
             title="Bad task",
-            agent_id="sam",
-            ic_level=3,
+            description="Integration test task",
+            agent_role="builder",
             status="WORKING_ON_IT",  # invalid
-            sequence_order=1,
+            sequence_num=1,
         )
         db_session.add(task)
         with pytest.raises(IntegrityError):
@@ -239,10 +235,9 @@ class TestApprovalStatusConstraint:
 
         approval = Approval(
             run_id=sample_run.id,
-            project_id=sample_run.project_id,
-            approval_type="plan",
+            gate_type="plan",
+            gate_phase="planning",
             status="PENDING",
-            requested_by="system",
         )
         db_session.add(approval)
         await db_session.flush()
@@ -252,11 +247,10 @@ class TestApprovalStatusConstraint:
 
         approval = Approval(
             run_id=sample_run.id,
-            project_id=sample_run.project_id,
-            approval_type="ship",
+            gate_type="ship",
+            gate_phase="execution",
             status="APPROVED",
-            requested_by="system",
-            reviewed_by="morgan",
+            decided_by="morgan",
         )
         db_session.add(approval)
         await db_session.flush()
@@ -266,10 +260,9 @@ class TestApprovalStatusConstraint:
 
         approval = Approval(
             run_id=sample_run.id,
-            project_id=sample_run.project_id,
-            approval_type="plan",
+            gate_type="plan",
+            gate_phase="planning",
             status="MAYBE",  # invalid
-            requested_by="system",
         )
         db_session.add(approval)
         with pytest.raises(IntegrityError):
@@ -358,7 +351,6 @@ class TestUniqueConstraints:
             slug=sample_project.slug,  # same slug
             name="Duplicate Project",
             config={},
-            guardrails_config={},
         )
         db_session.add(duplicate)
         with pytest.raises(IntegrityError):
@@ -367,8 +359,8 @@ class TestUniqueConstraints:
     async def test_different_slugs_accepted(self, db_session):
         from forge.db.models import Project
 
-        p1 = Project(slug=f"proj-a-{uuid.uuid4().hex[:6]}", name="A", config={}, guardrails_config={})
-        p2 = Project(slug=f"proj-b-{uuid.uuid4().hex[:6]}", name="B", config={}, guardrails_config={})
+        p1 = Project(slug=f"proj-a-{uuid.uuid4().hex[:6]}", name="A", config={})
+        p2 = Project(slug=f"proj-b-{uuid.uuid4().hex[:6]}", name="B", config={})
         db_session.add_all([p1, p2])
         await db_session.flush()
 
@@ -414,8 +406,8 @@ class TestAuditLogAppendOnly:
         entry = AuditLog(
             project_id=sample_run.project_id,
             run_id=sample_run.id,
-            actor="system",
-            action="run.created",
+            agent_id="system",
+            event_type="run.created",
             payload={"status": "INTAKE"},
         )
         db_session.add(entry)
@@ -426,9 +418,9 @@ class TestAuditLogAppendOnly:
         from forge.db.models import AuditLog
 
         e1 = AuditLog(project_id=sample_run.project_id, run_id=sample_run.id,
-                      actor="system", action="a", payload={})
+                      agent_id="system", event_type="a", payload={})
         e2 = AuditLog(project_id=sample_run.project_id, run_id=sample_run.id,
-                      actor="system", action="b", payload={})
+                      agent_id="system", event_type="b", payload={})
         db_session.add_all([e1, e2])
         await db_session.flush()
         assert e2.id > e1.id

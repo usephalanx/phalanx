@@ -1,0 +1,33 @@
+guardrails:
+  # Builder must not touch more than this many files in one task
+  max_file_changes_per_task: 20
+
+  # QA gate will fail if new code has no tests
+  require_tests_for_new_code: true
+
+  # Builder is blocked from writing code matching these patterns
+  forbidden_patterns:
+    - "eval("
+    - "exec("
+    - "os.system("
+    - "subprocess.call("
+    - "subprocess.Popen(shell=True"
+    - "__import__("
+
+  # These gate types always require human approval
+  require_approval_for:
+    - plan
+    - ship
+    - release
+
+  # Run auto-cancelled after this many minutes
+  max_run_duration_minutes: 240
+
+  # Hard budget per run — prevents runaway cost
+  max_token_budget_per_run: 500000
+
+  # Max concurrent active runs per team member
+  wip_limit_per_member: 2
+
+  # IC3 agents must have their work reviewed by at least this level
+  ic3_requires_review_from: "ic5"

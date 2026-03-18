@@ -1,0 +1,43 @@
+id: security-review
+name: "Security Review"
+version: "1.0.0"
+domain: "security"
+category: "quality"
+stability: "stable"
+applicable_roles:
+  - security
+  - reviewer
+min_level: "ic4"
+
+prerequisites:
+  - code-review
+
+quality_criteria:
+  - "No secrets or credentials in code or config files"
+  - "All user input is validated at the API boundary"
+  - "SQL queries use parameterized statements (never string concatenation)"
+  - "Authentication and authorization checked on every protected route"
+  - "Dependencies have no known HIGH or CRITICAL CVEs (pip-audit clean)"
+  - "bandit scan reports no HIGH severity findings"
+
+principles:
+  - "Security is not a checklist — it is a mindset applied at every layer."
+  - "Validate at the boundary; trust nothing from outside the system."
+  - "Least privilege: every component gets only the permissions it needs."
+
+procedures:
+  proficient:
+    - "Run `bandit -r forge/ -ll` and fix HIGH+ findings before marking complete."
+    - "Run `pip-audit` and assess any CVEs — patch or document accepted risk."
+    - "Check all API endpoints: authentication header required? Authorization scoped correctly?"
+    - "Scan for hardcoded secrets using `detect-secrets scan`."
+    - "Review any subprocess calls — ensure no shell=True with user-controlled input."
+    - "Verify all DB queries use SQLAlchemy ORM or parameterized text() — no f-string SQL."
+    - "Document any accepted risk in a comment with a ticket reference."
+
+anti_patterns:
+  - "Bypassing security gates with `skip_tools` in production pipelines."
+  - "Using `shell=True` with any user-controlled input."
+  - "Storing secrets in environment variables committed to git."
+  - "Disabling SSL certificate verification."
+  - "CORS allow_origins=['*'] in production."

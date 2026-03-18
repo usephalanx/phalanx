@@ -1,0 +1,82 @@
+id: write-clean-code
+name: "Write Clean, Maintainable Code"
+version: "1.0.0"
+domain: "engineering"
+category: "implementation"
+stability: "stable"
+applicable_roles:
+  - builder
+  - reviewer
+  - qa
+  - planner
+min_level: "ic3"
+
+prerequisites: []
+
+quality_criteria:
+  - "All new functions have a single clear responsibility"
+  - "No magic numbers — constants are named and documented"
+  - "No functions longer than 50 lines (split into helpers)"
+  - "Error paths are handled explicitly, never silently swallowed"
+  - "Exceptions re-raised with context using `raise ... from exc`"
+  - "No mutable default arguments in function signatures"
+  - "Type annotations on all public functions"
+  - "Imports are organized: stdlib → third-party → internal"
+
+principles:
+  - "Favour readability over cleverness — code is read 10x more than written."
+  - "Write for the next engineer, not the interpreter."
+  - "Every function should do one thing and do it well."
+  - "Prefer explicit over implicit."
+  - "Fail loudly and early — never suppress exceptions silently."
+
+procedures:
+  learning:
+    - "Read the existing code in the file before adding anything."
+    - "Identify the single responsibility your function will have."
+    - "Write a docstring FIRST explaining what the function does and what it returns."
+    - "Write the happy path, then handle each error case explicitly."
+    - "Add a type annotation to every parameter and the return value."
+    - "Run `ruff check .` and fix every warning before committing."
+    - "Verify the function is covered by at least one test."
+  developing:
+    - "Understand the module's existing patterns before introducing new ones."
+    - "Decompose any function over 30 lines into named helpers."
+    - "Ensure error messages include enough context to diagnose from logs alone."
+    - "Use dataclasses or Pydantic models for structured data — never raw dicts."
+    - "Run tests after every meaningful change, not just at the end."
+  proficient:
+    - "Design the interface (signature + contract) before writing the body."
+    - "Isolate I/O at the edges — pure logic in the middle."
+    - "Prefer composition over inheritance for new abstractions."
+    - "Validate at system boundaries (API input, external calls); trust internal contracts."
+  expert:
+    - "Evaluate whether the abstraction should exist at all before creating it."
+    - "Identify and eliminate unnecessary indirection."
+
+examples:
+  - title: "Good — explicit error handling"
+    code: |
+      async def fetch_run(session: AsyncSession, run_id: str) -> Run:
+          result = await session.execute(select(Run).where(Run.id == run_id))
+          run = result.scalar_one_or_none()
+          if run is None:
+              raise RunNotFoundError(f"Run {run_id!r} not found")
+          return run
+
+  - title: "Bad — silent failure"
+    code: |
+      async def fetch_run(session, run_id):
+          try:
+              result = await session.execute(select(Run).where(Run.id == run_id))
+              return result.scalar_one_or_none()
+          except Exception:
+              return None  # NEVER do this — callers can't distinguish not-found from error
+
+anti_patterns:
+  - "Returning None to indicate an error — raise a typed exception instead."
+  - "Using bare `except Exception: pass` or `except Exception: log.warning(...)` and continuing."
+  - "God functions that do 5 different things."
+  - "Mutable default arguments: `def fn(items=[]):` — use `items: list | None = None`."
+  - "Hardcoded credentials, file paths, or magic numbers."
+  - "Importing inside functions except for deferred/circular import avoidance."

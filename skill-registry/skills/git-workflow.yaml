@@ -1,0 +1,44 @@
+id: git-workflow
+name: "Git Branching and PR Workflow"
+version: "1.0.0"
+domain: "engineering"
+category: "vcs"
+stability: "stable"
+applicable_roles:
+  - builder
+  - release
+min_level: "ic3"
+
+prerequisites:
+  - write-clean-code
+
+quality_criteria:
+  - "Branch name follows pattern: {type}/{ticket-id}-{short-description}"
+  - "Each commit is atomic — one logical change per commit"
+  - "Commit messages follow Conventional Commits format"
+  - "PR description explains WHY, not just WHAT"
+  - "No merge commits in feature branches — rebase only"
+  - "All CI checks pass before requesting review"
+  - "PR is <= 400 lines changed (split if larger)"
+
+principles:
+  - "A PR should tell a story — reviewers shouldn't need to ask why."
+  - "Small PRs get faster reviews and catch more bugs."
+  - "Commits are documentation — write them for the git log reader."
+
+procedures:
+  proficient:
+    - "Create feature branch from main: `git checkout -b feat/{id}-{description} main`."
+    - "Make atomic commits with clear Conventional Commit messages (feat/fix/refactor/test/chore)."
+    - "Rebase on main before opening PR: `git fetch origin && git rebase origin/main`."
+    - "Open PR with title matching the primary commit message."
+    - "Fill PR description: motivation, approach, test plan, rollback procedure."
+    - "Ensure all CI gates pass (lint, tests, security) before requesting review."
+    - "Address review comments with fixup commits, then squash before merge."
+
+anti_patterns:
+  - "Committing directly to main."
+  - "PRs with 1000+ line diffs — split into logical layers."
+  - "Commit messages like 'fix stuff' or 'wip'."
+  - "Force-pushing to shared branches."
+  - "Merging with failing CI."

@@ -454,16 +454,31 @@ class QAAgent:
 
     async def _persist_artifact(self, report: QAReport) -> None:
         try:
-            from forge.db.models import Artifact  # noqa: PLC0415
+            import hashlib  # noqa: PLC0415
+
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from forge.db.models import Artifact, Run  # noqa: PLC0415
             from forge.db.session import get_db  # noqa: PLC0415
 
+            json_bytes = json.dumps(report.as_dict()).encode()
+            content_hash = hashlib.sha256(json_bytes).hexdigest()
+
             async with get_db() as session:
+                row = await session.execute(
+                    select(Run.project_id).where(Run.id == str(self.run_id))
+                )
+                project_id = row.scalar_one()
+
                 artifact = Artifact(
-                    run_id=self.run_id,
-                    task_id=self.task_id,
+                    run_id=str(self.run_id),
+                    task_id=str(self.task_id) if self.task_id else None,
+                    project_id=project_id,
                     artifact_type="test_report",
-                    name=f"qa_report_{self.run_id}",
-                    content=report.as_dict(),
+                    title=f"qa_report_{self.run_id}",
+                    s3_key=f"local/{self.run_id}/qa_report.json",
+                    content_hash=content_hash,
+                    quality_evidence=report.as_dict(),
                 )
                 session.add(artifact)
                 await session.commit()

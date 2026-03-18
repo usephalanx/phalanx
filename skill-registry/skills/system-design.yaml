@@ -1,0 +1,41 @@
+id: system-design
+name: "System Design and Architecture"
+version: "1.0.0"
+domain: "engineering"
+category: "planning"
+stability: "stable"
+applicable_roles:
+  - planner
+  - commander
+min_level: "ic5"
+
+prerequisites:
+  - task-decomposition
+
+quality_criteria:
+  - "Architecture decisions are documented with rationale and rejected alternatives"
+  - "Data flow is explicit — no implicit state sharing between components"
+  - "Failure modes identified for every external dependency"
+  - "Design follows existing conventions in the codebase"
+  - "No new infrastructure introduced without an approval gate"
+
+principles:
+  - "Simple > complex. The best architecture is the one that solves the problem with least surface area."
+  - "Design for failure — every external call can fail; every queue can back up."
+  - "Postgres is the source of truth. Redis is a cache. Never reverse this."
+  - "One entry point, no duplicate coordination."
+
+procedures:
+  proficient:
+    - "Read existing architecture decisions in memory_decisions before proposing new ones."
+    - "Identify the data model changes required first — schema changes are the riskiest."
+    - "Define the API contract (request/response shapes) before the implementation."
+    - "Map all failure modes: what happens if each dependency is unavailable?"
+    - "Document the decision with rationale, rejected alternatives, and risks."
+    - "Flag any design that requires a guardrail override for human approval."
+
+anti_patterns:
+  - "Introducing a new persistence layer without approval."
+  - "Designing in isolation without reading existing patterns."
+  - "Over-engineering for hypothetical future requirements."
+  - "Multiple entry points or duplicate coordination paths."

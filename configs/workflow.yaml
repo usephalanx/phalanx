@@ -1,0 +1,44 @@
+workflow:
+  # How long a human has to approve before the run is auto-escalated
+  approval_timeout_hours: 24
+
+  phases:
+    - name: "intake"
+      agent_role: "commander"
+      requires_approval: false
+      timeout_minutes: 10
+
+    - name: "research"
+      agent_role: "planner"
+      requires_approval: false
+      timeout_minutes: 30
+
+    - name: "planning"
+      agent_role: "planner"
+      requires_approval: true        # human approves the task plan
+      timeout_minutes: 45
+
+    - name: "execution"
+      agent_role: "builder"
+      requires_approval: false
+      timeout_minutes: 120
+
+    - name: "review"
+      agent_role: "reviewer"
+      requires_approval: false
+      timeout_minutes: 30
+
+    - name: "qa"
+      agent_role: "qa"
+      requires_approval: false
+      timeout_minutes: 30
+
+    - name: "security"
+      agent_role: "security"
+      requires_approval: false
+      timeout_minutes: 20
+
+    - name: "ship"
+      agent_role: "release"
+      requires_approval: true        # human approves before merge
+      timeout_minutes: 15

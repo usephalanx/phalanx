@@ -377,7 +377,7 @@ async def run_trivy_image_scan(image_ref: str) -> ScanResult:
                 )
             )
 
-    passed = _SEVERITY_RANK[max_severity] < _SEVERITY_RANK[ScanSeverity.CRITICAL]
+    passed = _SEVERITY_RANK[max_severity] < _SEVERITY_RANK[ScanSeverity.HIGH]
 
     log.info(
         "security_pipeline.trivy.done",
@@ -496,14 +496,30 @@ class SecurityPipeline:
     async def _persist_artifact(self, result: SecurityScanResult) -> None:
         """Save the security report as an Artifact row for evidence."""
         try:
-            from forge.db.models import Artifact  # noqa: PLC0415
+            import hashlib  # noqa: PLC0415
+            import json as _json  # noqa: PLC0415
+
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from forge.db.models import Artifact, Run  # noqa: PLC0415
+
+            json_bytes = _json.dumps(result.as_dict()).encode()
+            content_hash = hashlib.sha256(json_bytes).hexdigest()
 
             async with get_db() as session:
+                row = await session.execute(
+                    select(Run.project_id).where(Run.id == str(self.run_id))
+                )
+                project_id = row.scalar_one()
+
                 artifact = Artifact(
-                    run_id=self.run_id,
+                    run_id=str(self.run_id),
+                    project_id=project_id,
                     artifact_type="security_report",
-                    name=f"security_report_{self.run_id}",
-                    content=result.as_dict(),
+                    title=f"security_report_{self.run_id}",
+                    s3_key=f"local/{self.run_id}/security_report.json",
+                    content_hash=content_hash,
+                    quality_evidence=result.as_dict(),
                 )
                 session.add(artifact)
                 await session.commit()
