@@ -1,0 +1,12 @@
+project:
+  name: "FORGE"
+  repo: "https://github.com/your-org/teamworks"
+  stack:
+    language: "python"
+    framework: "fastapi"
+    test_command: "pytest --tb=short -q --junit-xml=test-results.xml --cov=forge --cov-report=xml:coverage.xml"
+    lint_command: "ruff check ."
+    build_command: "docker build --platform linux/amd64 --target production -t forge-api:latest ."
+  branches:
+    main: "main"
+    staging: "staging"

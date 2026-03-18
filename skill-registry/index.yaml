@@ -1,0 +1,13 @@
+# FORGE Skill Registry Index
+# Maps skill_id → relative path to skill YAML file
+# Skills are loaded by SkillEngine on demand — not all at startup.
+
+skills:
+  write-clean-code: "skills/write-clean-code.yaml"
+  git-workflow: "skills/git-workflow.yaml"
+  code-review: "skills/code-review.yaml"
+  test-driven-development: "skills/test-driven-development.yaml"
+  security-review: "skills/security-review.yaml"
+  task-decomposition: "skills/task-decomposition.yaml"
+  system-design: "skills/system-design.yaml"
+  orchestration: "skills/orchestration.yaml"

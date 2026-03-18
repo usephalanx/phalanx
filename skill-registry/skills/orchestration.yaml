@@ -1,0 +1,42 @@
+id: orchestration
+name: "Multi-Agent Orchestration"
+version: "1.0.0"
+domain: "engineering"
+category: "coordination"
+stability: "stable"
+applicable_roles:
+  - commander
+min_level: "ic6"
+
+prerequisites:
+  - task-decomposition
+  - system-design
+
+quality_criteria:
+  - "Every run has exactly one commander — no duplicate coordination"
+  - "All state transitions go through the state machine — no direct status updates"
+  - "Human approval gates are never bypassed"
+  - "Escalations are dispatched within 2 minutes of detection"
+  - "Run timeline is fully reconstructible from audit_log"
+
+principles:
+  - "The commander is the single source of truth for a run's state."
+  - "Agents communicate through Postgres, not directly with each other."
+  - "Every decision is logged — nothing implicit."
+  - "Humans approve; agents execute."
+
+procedures:
+  proficient:
+    - "Accept the work order, decompose into a run, write the task plan."
+    - "Submit the plan for human approval before dispatching any tasks."
+    - "Dispatch tasks in dependency order — never in parallel unless explicitly safe."
+    - "Monitor each task: detect BLOCKED or ESCALATING and route to appropriate handler."
+    - "At each gate (plan_approval, ship_approval), write the Approval row and wait."
+    - "On failure: write error_message + error_context to Run row, status=FAILED."
+    - "On success: transition through READY_TO_MERGE → MERGED → SHIPPED."
+
+anti_patterns:
+  - "Dispatching tasks without waiting for plan approval."
+  - "Bypassing the state machine to write status directly."
+  - "Starting a new run while an existing run for the same work order is active."
+  - "Ignoring escalation signals from lower-IC agents."

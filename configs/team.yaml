@@ -1,0 +1,82 @@
+team:
+  name: "FORGE AI Team"
+  domain: "web"
+  timezone: "UTC"
+  working_hours:
+    start: "09:00"
+    end: "17:00"
+
+members:
+  - id: "commander"
+    handle: "@forge-commander"
+    ic_level: 6
+    role: "tech_lead"
+    skills:
+      - orchestration
+      - task-decomposition
+      - risk-assessment
+    max_concurrent_tasks: 1
+    token_budget_per_task: 80000
+
+  - id: "planner"
+    handle: "@forge-planner"
+    ic_level: 5
+    role: "backend"
+    skills:
+      - task-decomposition
+      - system-design
+      - write-clean-code
+    max_concurrent_tasks: 2
+    token_budget_per_task: 60000
+
+  - id: "builder"
+    handle: "@forge-builder"
+    ic_level: 4
+    role: "fullstack"
+    skills:
+      - write-clean-code
+      - git-workflow
+      - test-driven-development
+    max_concurrent_tasks: 1
+    token_budget_per_task: 100000
+
+  - id: "reviewer"
+    handle: "@forge-reviewer"
+    ic_level: 5
+    role: "backend"
+    skills:
+      - code-review
+      - write-clean-code
+      - security-review
+    max_concurrent_tasks: 2
+    token_budget_per_task: 40000
+
+  - id: "qa"
+    handle: "@forge-qa"
+    ic_level: 4
+    role: "qa"
+    skills:
+      - test-driven-development
+      - write-clean-code
+    max_concurrent_tasks: 2
+    token_budget_per_task: 40000
+
+  - id: "security"
+    handle: "@forge-security"
+    ic_level: 5
+    role: "security"
+    skills:
+      - security-review
+      - write-clean-code
+    max_concurrent_tasks: 2
+    token_budget_per_task: 40000
+
+  - id: "release"
+    handle: "@forge-release"
+    ic_level: 5
+    role: "devops"
+    skills:
+      - git-workflow
+      - write-clean-code
+    max_concurrent_tasks: 1
+    token_budget_per_task: 30000

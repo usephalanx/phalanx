@@ -1,0 +1,41 @@
+id: code-review
+name: "Code Review"
+version: "1.0.0"
+domain: "engineering"
+category: "quality"
+stability: "stable"
+applicable_roles:
+  - reviewer
+  - planner
+min_level: "ic4"
+
+prerequisites:
+  - write-clean-code
+
+quality_criteria:
+  - "Review covers correctness, readability, tests, and security"
+  - "Blocking comments clearly explain WHY the change is required"
+  - "Non-blocking suggestions are marked as nit or optional"
+  - "Review completes within 2 hours of assignment"
+  - "No personal/style criticism — only objective technical observations"
+
+principles:
+  - "Review the intent first, then the implementation."
+  - "Ask questions before making assumptions about the author's choices."
+  - "Distinguish between blocking issues and optional improvements."
+
+procedures:
+  proficient:
+    - "Read the PR description and linked ticket before looking at code."
+    - "Review the test changes first — tests document the intended behaviour."
+    - "Check the happy path, then all error paths."
+    - "Look for: missing error handling, race conditions, N+1 queries, hardcoded values."
+    - "Verify security: SQL injection, XSS, secrets in code, OWASP Top 10."
+    - "Leave comments using format: [BLOCK] / [NIT] / [QUESTION] prefix."
+    - "Approve only when all blocking issues are resolved."
+
+anti_patterns:
+  - "Approving without reading tests."
+  - "Nitpicking style when a formatter would handle it."
+  - "Leaving vague comments like 'this looks wrong' without explanation."
+  - "Blocking on opinion differences not backed by a documented convention."
