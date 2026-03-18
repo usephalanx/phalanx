@@ -1,0 +1,42 @@
+id: test-driven-development
+name: "Test-Driven Development"
+version: "1.0.0"
+domain: "engineering"
+category: "quality"
+stability: "stable"
+applicable_roles:
+  - builder
+  - qa
+  - planner
+min_level: "ic3"
+
+prerequisites:
+  - write-clean-code
+
+quality_criteria:
+  - "Coverage >= 70% overall; critical modules (db/models, guardrails) >= 80%"
+  - "Every public function has at least one test"
+  - "Tests are independent — no shared mutable state between test functions"
+  - "Tests use real DB for integration tests, not mocks"
+  - "Test names describe the scenario: test_<subject>_<condition>_<expected>"
+  - "No test sleeps or timing-dependent assertions"
+
+principles:
+  - "Tests are the first consumer of your API — write them to discover design flaws early."
+  - "A failing test is information. A passing test on broken code is a lie."
+  - "Test the contract, not the implementation."
+
+procedures:
+  proficient:
+    - "Write the test first (or immediately after) — never as an afterthought."
+    - "Use pytest fixtures for shared setup; never use module-level globals."
+    - "Use `pytest.mark.parametrize` for behaviour variants, not copy-paste tests."
+    - "Mock only external I/O (HTTP, S3) — use real DB for anything touching ORM."
+    - "Assert the specific outcome, not just that no exception was raised."
+    - "Run tests with `pytest --tb=short` and fix every failure before committing."
+
+anti_patterns:
+  - "Mocking the database to avoid setting up fixtures."
+  - "Tests that pass but don't actually assert anything meaningful."
+  - "Copy-pasting test code instead of using parametrize."
+  - "Testing implementation details instead of public contracts."

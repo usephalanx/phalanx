@@ -54,22 +54,26 @@ celery_app.config_from_object({
         "forge.skills.drills.*":      {"queue": "skill_drills"},
     },
 
+    # Beat scheduler — redbeat stores schedule in Redis (no Django ORM required)
+    "beat_scheduler": "redbeat.RedBeatScheduler",
+    "redbeat_redis_url": settings.redis_url,
+
     # Beat schedule (scheduled tasks)
     "beat_schedule": {
         "check-blocked-runs": {
-            "task": "forge.maintenance.check_blocked_runs",
+            "task": "forge.maintenance.tasks.check_blocked_runs",
             "schedule": 1800,          # every 30 minutes
         },
         "decay-memory-relevance": {
-            "task": "forge.memory.decay_relevance",
+            "task": "forge.memory.tasks.decay_relevance",
             "schedule": 86400 * 7,     # weekly
         },
         "check-skill-feeds": {
-            "task": "forge.skills.ingestion.check_feeds",
+            "task": "forge.skills.ingestion.tasks.check_feeds",
             "schedule": 86400,         # daily
         },
         "check-skill-staleness": {
-            "task": "forge.skills.check_staleness",
+            "task": "forge.skills.tasks.check_staleness",
             "schedule": 86400 * 3,     # every 3 days
         },
     },
@@ -85,6 +89,7 @@ celery_app.autodiscover_tasks([
     "forge.workflow",
     "forge.agents",
     "forge.skills",
+    "forge.skills.ingestion",
     "forge.memory",
     "forge.maintenance",
 ])

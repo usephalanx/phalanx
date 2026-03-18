@@ -83,6 +83,9 @@ services:
     command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
       - "8000:8000"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./skill-registry:/app/skill-registry:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,11 +115,20 @@ services:
       --max-tasks-per-child=100
     volumes:
       - forge-repos:/tmp/forge-repos
+      - ./configs:/app/configs:ro
+      - ./skill-registry:/app/skill-registry:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      # Check the celery master process is alive (no broker round-trip needed)
+      test: ["CMD-SHELL", "celery -A forge.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 2>&1 | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -128,9 +140,14 @@ services:
     image: forge-api:latest
     <<: *forge-base
     command: python -m forge.gateway.slack_bot
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./skill-registry:/app/skill-registry:ro
     depends_on:
       forge-api:
         condition: service_healthy
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:

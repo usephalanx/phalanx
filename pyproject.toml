@@ -22,6 +22,7 @@ dependencies = [
     # Cache / Queue
     "redis[hiredis]>=5.2.0",
     "celery[redis]>=5.4.0",
+    "celery-redbeat>=2.3.0",
     "flower>=2.0.1",
 
     # AI
@@ -106,6 +107,7 @@ plugins = ["pydantic.mypy"]
 # ── Pytest ────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

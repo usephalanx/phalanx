@@ -1,0 +1,42 @@
+id: task-decomposition
+name: "Task Decomposition and Planning"
+version: "1.0.0"
+domain: "engineering"
+category: "planning"
+stability: "stable"
+applicable_roles:
+  - planner
+  - commander
+min_level: "ic4"
+
+prerequisites: []
+
+quality_criteria:
+  - "Each task has a single agent_role owner"
+  - "Tasks are ordered by dependency — no circular dependencies"
+  - "Each task has a clear done condition"
+  - "Total plan fits within max_token_budget_per_run"
+  - "File scope per task is specified (files_likely_touched)"
+  - "Risk flags are identified for tasks touching auth, DB schema, or infra"
+
+principles:
+  - "A task is the smallest unit of work that can be independently reviewed."
+  - "Dependencies between tasks must be explicit, never assumed."
+  - "Scope creep kills plans — each task should do exactly one thing."
+
+procedures:
+  proficient:
+    - "Read the work order and research findings completely before decomposing."
+    - "Identify the goal, constraints, and acceptance criteria."
+    - "List all files that will likely change."
+    - "Decompose into tasks ordered by dependency (DB schema before API before tests)."
+    - "Assign each task to exactly one agent_role based on its nature."
+    - "Estimate complexity (1-5) and token budget for each task."
+    - "Flag high-risk tasks (schema changes, auth, infrastructure)."
+    - "Total token budget across all tasks must be <= guardrails.max_token_budget_per_run."
+
+anti_patterns:
+  - "Tasks with 'and' in the title — split them."
+  - "Assigning a task to multiple agent roles."
+  - "Planning without reading existing code first."
+  - "Forgetting to include a test task after every implementation task."

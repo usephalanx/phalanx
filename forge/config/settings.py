@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # ── API ───────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Service-to-service API key. Empty = auth disabled (dev only).
+    # In production, set FORGE_API_KEY to a strong random value.
+    forge_api_key: str = ""
+    # Comma-separated CORS origins; empty = no browser access (API-only).
+    # Dev override: "*"  Production: leave empty or set explicit domains.
+    forge_cors_origins: str = ""
 
     @property
     def is_production(self) -> bool:
