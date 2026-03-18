@@ -33,49 +33,60 @@ configure_logging()
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
-app = AsyncApp(token=settings.slack_bot_token)
 
+def _build_app(token: str) -> AsyncApp:
+    """Create and configure the Slack AsyncApp with all handlers registered."""
+    _app = AsyncApp(token=token)
 
-# ── /forge slash command handler ──────────────────────────────────────────────
+    # ── /forge slash command handler ──────────────────────────────────────────
 
-@app.command("/forge")
-async def handle_forge_command(ack, command, say, respond):
-    """
-    Handle /forge slash command.
-    Acknowledges immediately (Slack requires < 3s), then processes async.
-    """
-    await ack()  # acknowledge within 3 seconds
+    @_app.command("/forge")
+    async def handle_forge_command(ack, command, say, respond):
+        """
+        Handle /forge slash command.
+        Acknowledges immediately (Slack requires < 3s), then processes async.
+        """
+        await ack()  # acknowledge within 3 seconds
 
-    user_id = command.get("user_id", "unknown")
-    channel_id = command.get("channel_id", "unknown")
-    text = command.get("text", "").strip()
+        user_id = command.get("user_id", "unknown")
+        channel_id = command.get("channel_id", "unknown")
+        text = command.get("text", "").strip()
 
-    _log = log.bind(user_id=user_id, channel_id=channel_id, command_text=text)
-    _log.info("slack_gateway.command_received")
+        _log = log.bind(user_id=user_id, channel_id=channel_id, command_text=text)
+        _log.info("slack_gateway.command_received")
 
-    parsed = parse_command(text)
+        parsed = parse_command(text)
 
-    if not parsed.is_valid:
-        await respond(f"⚠️ {parsed.parse_error}\n\n{HELP_TEXT}")
-        return
+        if not parsed.is_valid:
+            await respond(f"⚠️ {parsed.parse_error}\n\n{HELP_TEXT}")
+            return
 
-    if parsed.command_type == CommandType.HELP:
-        await respond(HELP_TEXT)
-        return
+        if parsed.command_type == CommandType.HELP:
+            await respond(HELP_TEXT)
+            return
 
-    if parsed.command_type == CommandType.BUILD:
-        await _handle_build(parsed, user_id=user_id, channel_id=channel_id, respond=respond)
-        return
+        if parsed.command_type == CommandType.BUILD:
+            await _handle_build(parsed, user_id=user_id, channel_id=channel_id, respond=respond)
+            return
 
-    if parsed.command_type == CommandType.STATUS:
-        await _handle_status(parsed, respond=respond)
-        return
+        if parsed.command_type == CommandType.STATUS:
+            await _handle_status(parsed, respond=respond)
+            return
 
-    if parsed.command_type == CommandType.CANCEL:
-        await _handle_cancel(parsed, user_id=user_id, respond=respond)
-        return
+        if parsed.command_type == CommandType.CANCEL:
+            await _handle_cancel(parsed, user_id=user_id, respond=respond)
+            return
 
-    await respond(f"⚠️ Unknown command. Try `/forge help`.")
+        await respond("⚠️ Unknown command. Try `/forge help`.")
+
+    # ── App mention handler ────────────────────────────────────────────────────
+
+    @_app.event("app_mention")
+    async def handle_mention(event, say):
+        """Respond to @forge mentions with guidance."""
+        await say("Use `/forge help` to see available commands.")
+
+    return _app
 
 
 async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
@@ -240,14 +251,6 @@ async def _handle_cancel(parsed, user_id: str, respond) -> None:
         await respond(f"❌ Error cancelling run: `{exc}`")
 
 
-# ── App mention handler ───────────────────────────────────────────────────────
-
-@app.event("app_mention")
-async def handle_mention(event, say):
-    """Respond to @forge mentions with guidance."""
-    await say("Use `/forge help` to see available commands.")
-
-
 # ── Main entrypoint ───────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -258,6 +261,7 @@ async def main() -> None:
         log.error("slack_gateway.missing_config", missing="SLACK_APP_TOKEN")
         sys.exit(1)
 
+    app = _build_app(settings.slack_bot_token)
     handler = AsyncSocketModeHandler(app, settings.slack_app_token)
     log.info("slack_gateway.starting", socket_mode=True)
 
