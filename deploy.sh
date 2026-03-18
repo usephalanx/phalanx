@@ -133,7 +133,7 @@ docker load < /tmp/forge-worker.tar.gz
 rm -f /tmp/forge-api.tar.gz /tmp/forge-worker.tar.gz
 
 echo "  Running DB migrations..."
-docker compose run --rm forge-migrate
+docker compose run -T --rm forge-migrate
 
 echo "  Stopping old containers..."
 docker compose down --remove-orphans 2>/dev/null || true
