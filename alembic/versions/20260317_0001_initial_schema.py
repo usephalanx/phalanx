@@ -6,8 +6,11 @@ Create Date: 2026-03-17
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TIMESTAMPTZ, UUID
+from sqlalchemy import TIMESTAMP
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from pgvector.sqlalchemy import Vector
+
+TIMESTAMPTZ = TIMESTAMP(timezone=True)
 
 revision = "0001"
 down_revision = None

@@ -1,129 +1,146 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # FORGE — Production Docker Compose
-# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Pre-built images loaded by deploy.sh — no `docker build` on server.
+# Usage (server): docker compose up -d --no-build
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: forge-prod
 
-x-forge-prod: &forge-prod
-  build:
-    context: .
-    dockerfile: Dockerfile
-    target: production
-  env_file: .env.prod
+x-forge-base: &forge-base
+  env_file: .env
   restart: always
   logging:
     driver: "json-file"
     options:
       max-size: "50m"
       max-file: "5"
-  deploy:
-    resources:
-      limits:
-        cpus: "1.0"
-        memory: 1G
+  networks:
+    - forge-net
 
 services:
 
+  # ── Postgres + pgvector ──────────────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg16
+    <<: *forge-base
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - forge-postgres-data:/var/lib/postgresql/data
-    # No external port in prod — internal network only
     expose:
       - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge} -d ${POSTGRES_DB:-forge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 4G
-    restart: always
-
-  redis:
-    image: redis:7-alpine
-    command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 2gb
-      --maxmemory-policy allkeys-lru
-      --requirepass ${REDIS_PASSWORD}
-    expose:
-      - "6379"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 2G
-    restart: always
-
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - forge-api
-    restart: always
-
-  forge-api:
-    <<: *forge-prod
-    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --workers 4
-    expose:
-      - "8000"
-    deploy:
-      replicas: 2
       resources:
         limits:
           cpus: "1.0"
           memory: 1G
 
-  forge-worker:
-    <<: *forge-prod
-    command: celery -A forge.queue.celery_app worker
-      --loglevel=warning
-      --queues=default,commander,planner,reviewer,qa,release,security
-      --concurrency=8
-      --max-tasks-per-child=100
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    <<: *forge-base
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     deploy:
-      replicas: 2
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
 
-  forge-worker-builder:
-    <<: *forge-prod
-    command: celery -A forge.queue.celery_app worker
+  # ── Alembic Migrations (runs once then exits) ────────────────────────────
+  forge-migrate:
+    image: forge-api:latest
+    <<: *forge-base
+    command: alembic -c alembic/alembic.ini upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── FastAPI ───────────────────────────────────────────────────────────────
+  forge-api:
+    image: forge-api:latest
+    <<: *forge-base
+    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ── Celery Worker (all queues consolidated for MVP) ───────────────────────
+  forge-worker:
+    image: forge-worker:latest
+    <<: *forge-base
+    command: >
+      celery -A forge.queue.celery_app worker
       --loglevel=warning
-      --queues=builder
+      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills
       --concurrency=4
-      --max-tasks-per-child=50
+      --max-tasks-per-child=100
     volumes:
       - forge-repos:/tmp/forge-repos
-
-  forge-beat:
-    <<: *forge-prod
-    command: celery -A forge.queue.celery_app beat
-      --loglevel=warning
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     deploy:
-      replicas: 1    # Must be exactly 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
+  # ── Slack Gateway ─────────────────────────────────────────────────────────
   forge-gateway:
-    <<: *forge-prod
+    image: forge-api:latest
+    <<: *forge-base
     command: python -m forge.gateway.slack_bot
+    depends_on:
+      forge-api:
+        condition: service_healthy
     deploy:
-      replicas: 1    # Slack socket mode: single instance
-
-  forge-ingestion:
-    <<: *forge-prod
-    command: celery -A forge.queue.celery_app worker
-      --loglevel=warning
-      --queues=ingestion,skill_drills
-      --concurrency=4
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
 volumes:
   forge-postgres-data:
   forge-repos:
+
+networks:
+  forge-net:
+    driver: bridge
