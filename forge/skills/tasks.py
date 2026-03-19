@@ -3,7 +3,9 @@ Skill staleness scheduled tasks.
 Flags skills whose ingested content hasn't been refreshed within the
 configured staleness window so the team config loader can alert.
 """
+
 import structlog
+
 from forge.queue.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

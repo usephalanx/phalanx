@@ -10,14 +10,18 @@ Load strategies by IC level:
 
 This module is pure Python with no I/O at unit-test time (registry_path injected).
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import contextlib
+from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class ProficiencyLevel(StrEnum):
@@ -45,6 +49,7 @@ _DEFAULT_LOAD_STRATEGY: dict[int, LoadStrategy] = {
 @dataclass
 class LoadedSkill:
     """The subset of a skill loaded for a specific agent at a specific IC level."""
+
     skill_id: str
     name: str
     version: str
@@ -97,9 +102,7 @@ class SkillEngine:
 
         skill_path = self.registry_path / index[skill_id]
         if not skill_path.exists():
-            raise SkillRegistryError(
-                f"Skill file for '{skill_id}' not found at {skill_path}"
-            )
+            raise SkillRegistryError(f"Skill file for '{skill_id}' not found at {skill_path}")
 
         with skill_path.open() as fh:
             return yaml.safe_load(fh) or {}
@@ -133,9 +136,7 @@ class SkillEngine:
         elif strategy == LoadStrategy.SUMMARY:
             # Condense to first sentence of each procedure step
             summarized = [
-                step.split(".")[0].strip() + "."
-                for step in proficiency_procedures
-                if step
+                step.split(".")[0].strip() + "." for step in proficiency_procedures if step
             ]
             return {
                 "procedures_summary": summarized,
@@ -182,10 +183,8 @@ class SkillEngine:
         """Load multiple skills, silently skipping any not in the registry."""
         results = []
         for skill_id in skill_ids:
-            try:
+            with contextlib.suppress(SkillNotFoundError):
                 results.append(self.load(skill_id, ic_level, proficiency))
-            except SkillNotFoundError:
-                pass  # skill_id referenced but not in registry — skip
         return results
 
     def list_skills(self) -> list[str]:

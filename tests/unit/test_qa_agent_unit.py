@@ -4,13 +4,13 @@ Unit tests for forge/agents/qa.py data model and helper functions.
 Tests QAOutcome, TestSuiteResult, CoverageResult, LintResult, QAReport,
 _parse_junit_xml, and _parse_coverage_xml — all without needing a live process.
 """
+
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
-from unittest.mock import patch
 
 import pytest
 
@@ -24,8 +24,8 @@ from forge.agents.qa import (
     _parse_junit_xml,
 )
 
-
 # ── QAOutcome ─────────────────────────────────────────────────────────────────
+
 
 class TestQAOutcome:
     def test_values(self):
@@ -38,6 +38,7 @@ class TestQAOutcome:
 
 
 # ── TestSuiteResult ───────────────────────────────────────────────────────────
+
 
 class TestTestSuiteResult:
     def _make(self, total=10, passed=8, failed=1, errored=1, skipped=0):
@@ -76,13 +77,16 @@ class TestTestSuiteResult:
             errored=0,
             skipped=0,
             duration_seconds=0.5,
-            failures=[{"name": "test_foo", "classname": "Foo", "message": "AssertionError", "detail": ""}],
+            failures=[
+                {"name": "test_foo", "classname": "Foo", "message": "AssertionError", "detail": ""}
+            ],
         )
         assert len(suite.failures) == 1
         assert suite.failures[0]["name"] == "test_foo"
 
 
 # ── CoverageResult ────────────────────────────────────────────────────────────
+
 
 class TestCoverageResult:
     def test_threshold_met(self):
@@ -118,6 +122,7 @@ class TestCoverageResult:
 
 # ── LintResult ────────────────────────────────────────────────────────────────
 
+
 class TestLintResult:
     def test_passed(self):
         r = LintResult(tool="ruff", passed=True, violation_count=0, output="")
@@ -131,6 +136,7 @@ class TestLintResult:
 
 
 # ── QAReport.as_dict ──────────────────────────────────────────────────────────
+
 
 class TestQAReport:
     def _make(self, outcome=QAOutcome.PASSED, blocking=None):
@@ -150,9 +156,18 @@ class TestQAReport:
     def test_as_dict_top_level_keys(self):
         r = self._make()
         d = r.as_dict()
-        for key in ("run_id", "task_id", "repo_path", "evaluated_at", "outcome",
-                    "blocking_reason", "test_suites", "coverage", "lint_results",
-                    "quality_evidence"):
+        for key in (
+            "run_id",
+            "task_id",
+            "repo_path",
+            "evaluated_at",
+            "outcome",
+            "blocking_reason",
+            "test_suites",
+            "coverage",
+            "lint_results",
+            "quality_evidence",
+        ):
             assert key in d
 
     def test_run_id_is_string(self):
@@ -258,6 +273,7 @@ class TestQAReport:
 
 # ── _parse_junit_xml ──────────────────────────────────────────────────────────
 
+
 class TestParseJunitXml:
     def _write_xml(self, tmp_path, content: str) -> Path:
         p = tmp_path / "junit.xml"
@@ -356,6 +372,7 @@ class TestParseJunitXml:
 
 
 # ── _parse_coverage_xml ───────────────────────────────────────────────────────
+
 
 class TestParseCoverageXml:
     def _write_xml(self, tmp_path, content: str) -> Path:

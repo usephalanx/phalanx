@@ -3,7 +3,9 @@ Skill ingestion scheduled tasks.
 Polls configured skill feeds (GitHub releases, RSS, API docs) and upserts
 SkillEntry rows so agents always have fresh reference material.
 """
+
 import structlog
+
 from forge.queue.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

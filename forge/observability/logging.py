@@ -3,8 +3,11 @@ Structured logging setup using structlog.
 JSON format in production, pretty format in development.
 All logs include: service, env, trace_id, run_id if applicable.
 """
+
 import logging
+
 import structlog
+
 from forge.config.settings import get_settings
 
 
@@ -23,7 +26,8 @@ def configure_logging():
         renderer = structlog.dev.ConsoleRenderer(colors=True)
 
     structlog.configure(
-        processors=shared_processors + [
+        processors=shared_processors
+        + [
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             renderer,

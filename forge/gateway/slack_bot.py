@@ -15,6 +15,7 @@ Slack Socket Mode docs:
 Run as: python -m forge.gateway.slack_bot
 Or via Docker: command: python -m forge.gateway.slack_bot
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,11 +23,11 @@ import signal
 import sys
 
 import structlog
-from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
 
 from forge.config.settings import get_settings
-from forge.gateway.command_parser import CommandType, HELP_TEXT, parse_command
+from forge.gateway.command_parser import HELP_TEXT, CommandType, parse_command
 from forge.observability.logging import configure_logging
 
 configure_logging()
@@ -106,11 +107,12 @@ def _build_app(token: str) -> AsyncApp:
 async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
     """Create a WorkOrder in Postgres and dispatch to Commander."""
     try:
+        from sqlalchemy import select  # noqa: PLC0415
+
+        from forge.db.models import Channel, WorkOrder  # noqa: PLC0415
         from forge.db.session import get_db  # noqa: PLC0415
-        from forge.db.models import WorkOrder, Channel  # noqa: PLC0415
         from forge.queue.celery_app import celery_app  # noqa: PLC0415
         from forge.runtime.task_router import TaskRouter  # noqa: PLC0415
-        from sqlalchemy import select  # noqa: PLC0415
 
         async with get_db() as session:
             # Resolve or create Channel row for this Slack channel
@@ -154,7 +156,7 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
 
         # Dispatch to Commander queue
         router = TaskRouter(celery_app)
-        celery_task_id = router.dispatch(
+        router.dispatch(
             agent_role="commander",
             task_id=wo.id,  # work_order_id as task_id for the commander
             run_id=wo.id,
@@ -173,35 +175,33 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
 
     except Exception as exc:
         log.exception("slack_gateway.build_failed", error=str(exc))
-        await respond(
-            "❌ Failed to create work order. The error has been logged.\n"
-            f"Error: `{exc}`"
-        )
+        await respond(f"❌ Failed to create work order. The error has been logged.\nError: `{exc}`")
 
 
 _STATUS_EMOJI: dict[str, str] = {
-    "INTAKE":                    "📥",
-    "RESEARCHING":               "🔍",
-    "PLANNING":                  "📝",
-    "AWAITING_PLAN_APPROVAL":    "⏳",
-    "EXECUTING":                 "⚙️",
-    "VERIFYING":                 "🔬",
-    "AWAITING_SHIP_APPROVAL":    "⏳",
-    "READY_TO_MERGE":            "🔀",
-    "MERGED":                    "✅",
-    "RELEASE_PREP":              "📦",
+    "INTAKE": "📥",
+    "RESEARCHING": "🔍",
+    "PLANNING": "📝",
+    "AWAITING_PLAN_APPROVAL": "⏳",
+    "EXECUTING": "⚙️",
+    "VERIFYING": "🔬",
+    "AWAITING_SHIP_APPROVAL": "⏳",
+    "READY_TO_MERGE": "🔀",
+    "MERGED": "✅",
+    "RELEASE_PREP": "📦",
     "AWAITING_RELEASE_APPROVAL": "⏳",
-    "SHIPPED":                   "🚀",
-    "FAILED":                    "❌",
-    "BLOCKED":                   "🚫",
-    "PAUSED":                    "⏸️",
-    "CANCELLED":                 "🛑",
+    "SHIPPED": "🚀",
+    "FAILED": "❌",
+    "BLOCKED": "🚫",
+    "PAUSED": "⏸️",
+    "CANCELLED": "🛑",
 }
 
 
 def _duration_label(created_at) -> str:
     """Human-readable elapsed time since run started."""
     from datetime import UTC, datetime  # noqa: PLC0415
+
     if created_at is None:
         return "—"
     now = datetime.now(UTC)
@@ -219,9 +219,10 @@ def _duration_label(created_at) -> str:
 async def _handle_status(parsed, respond) -> None:
     """Return status of active runs (or a specific run) with rich Block Kit cards."""
     try:
+        from sqlalchemy import func, select  # noqa: PLC0415
+
+        from forge.db.models import Run, Task, WorkOrder  # noqa: PLC0415
         from forge.db.session import get_db  # noqa: PLC0415
-        from forge.db.models import Run, WorkOrder, Task  # noqa: PLC0415
-        from sqlalchemy import select, func  # noqa: PLC0415
 
         async with get_db() as session:
             if parsed.run_id:
@@ -241,47 +242,71 @@ async def _handle_status(parsed, respond) -> None:
                 )
                 counts_result = await session.execute(counts_stmt)
                 task_counts = {row.status: row.n for row in counts_result.all()}
-                total_tasks  = sum(task_counts.values())
-                done_tasks   = task_counts.get("COMPLETED", 0)
-                active_task  = task_counts.get("IN_PROGRESS", 0)
+                total_tasks = sum(task_counts.values())
+                done_tasks = task_counts.get("COMPLETED", 0)
+                active_task = task_counts.get("IN_PROGRESS", 0)
 
-                emoji  = _STATUS_EMOJI.get(run.status, "❓")
-                dur    = _duration_label(run.created_at)
+                emoji = _STATUS_EMOJI.get(run.status, "❓")
+                dur = _duration_label(run.created_at)
                 cost_val = run.estimated_cost_usd
-                cost   = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
+                cost = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
 
                 text = f"Run `{run.id}`: *{run.status}*"
                 blocks = [
-                    {"type": "header", "text": {
-                        "type": "plain_text",
-                        "text": f"{emoji} Run {run.id[:8]}… — {run.status}",
-                    }},
-                    {"type": "section", "fields": [
-                        {"type": "mrkdwn", "text": f"*Status*\n{emoji} `{run.status}`"},
-                        {"type": "mrkdwn", "text": f"*Duration*\n⏱ {dur}"},
-                        {"type": "mrkdwn", "text": f"*Tasks*\n{done_tasks}/{total_tasks} done"
-                            + (f", {active_task} running" if active_task else "")},
-                        {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
-                    ]},
-                    {"type": "section", "fields": [
-                        {"type": "mrkdwn", "text": f"*Run ID*\n`{run.id}`"},
-                        {"type": "mrkdwn", "text": f"*Branch*\n`{run.active_branch or '—'}`"},
-                    ]},
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"{emoji} Run {run.id[:8]}… — {run.status}",
+                        },
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "mrkdwn", "text": f"*Status*\n{emoji} `{run.status}`"},
+                            {"type": "mrkdwn", "text": f"*Duration*\n⏱ {dur}"},
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Tasks*\n{done_tasks}/{total_tasks} done"
+                                + (f", {active_task} running" if active_task else ""),
+                            },
+                            {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
+                        ],
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {"type": "mrkdwn", "text": f"*Run ID*\n`{run.id}`"},
+                            {"type": "mrkdwn", "text": f"*Branch*\n`{run.active_branch or '—'}`"},
+                        ],
+                    },
                 ]
                 if run.pr_url:
-                    blocks.append({"type": "section", "text": {
-                        "type": "mrkdwn", "text": f"🔗 *PR:* <{run.pr_url}|View Pull Request>",
-                    }})
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"🔗 *PR:* <{run.pr_url}|View Pull Request>",
+                            },
+                        }
+                    )
                 if run.error_message:
-                    blocks.append({"type": "section", "text": {
-                        "type": "mrkdwn",
-                        "text": f"❌ *Error:* {run.error_message[:300]}",
-                    }})
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"❌ *Error:* {run.error_message[:300]}",
+                            },
+                        }
+                    )
                 await respond(text, blocks=blocks)
 
             else:
                 # ── Active runs list ──────────────────────────────────────────
                 from forge.workflow.state_machine import TERMINAL_STATES  # noqa: PLC0415
+
                 terminal = [s.value for s in TERMINAL_STATES]
                 stmt = (
                     select(Run, WorkOrder.title)
@@ -301,23 +326,26 @@ async def _handle_status(parsed, respond) -> None:
                 lines = [f"*Active runs ({len(rows)}):*"]
                 for run, title in rows:
                     emoji = _STATUS_EMOJI.get(run.status, "❓")
-                    dur   = _duration_label(run.created_at)
+                    dur = _duration_label(run.created_at)
                     lines.append(f"• {emoji} `{run.id[:8]}…` {run.status} _{title}_ ⏱{dur}")
                 text = "\n".join(lines)
 
                 # Build Block Kit — one section per run
                 blocks: list[dict] = [
-                    {"type": "header", "text": {
-                        "type": "plain_text",
-                        "text": f"🔥 FORGE — {len(rows)} active run{'s' if len(rows) != 1 else ''}",
-                    }},
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"🔥 FORGE — {len(rows)} active run{'s' if len(rows) != 1 else ''}",
+                        },
+                    },
                     {"type": "divider"},
                 ]
                 for run, title in rows:
                     emoji = _STATUS_EMOJI.get(run.status, "❓")
-                    dur   = _duration_label(run.created_at)
+                    dur = _duration_label(run.created_at)
                     cost_val = run.estimated_cost_usd
-                    cost  = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
+                    cost = f"${float(cost_val):.2f}" if isinstance(cost_val, (int, float)) else "—"
 
                     # Per-run task counts (single query per run — at most 10)
                     counts_stmt = (
@@ -328,28 +356,42 @@ async def _handle_status(parsed, respond) -> None:
                     counts_result = await session.execute(counts_stmt)
                     task_counts = {r.status: r.n for r in counts_result.all()}
                     total = sum(task_counts.values())
-                    done  = task_counts.get("COMPLETED", 0)
+                    done = task_counts.get("COMPLETED", 0)
                     progress = f"{done}/{total} tasks" if total else "queued"
 
-                    blocks.append({
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"{emoji} *{title}*"},
-                        "fields": [
-                            {"type": "mrkdwn", "text": f"*Status*\n`{run.status}`"},
-                            {"type": "mrkdwn", "text": f"*Progress*\n{progress}"},
-                            {"type": "mrkdwn", "text": f"*Time*\n⏱ {dur}"},
-                            {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
-                        ],
-                    })
-                    blocks.append({"type": "context", "elements": [
-                        {"type": "mrkdwn", "text": f"Run ID: `{run.id}`"},
-                    ]})
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": f"{emoji} *{title}*"},
+                            "fields": [
+                                {"type": "mrkdwn", "text": f"*Status*\n`{run.status}`"},
+                                {"type": "mrkdwn", "text": f"*Progress*\n{progress}"},
+                                {"type": "mrkdwn", "text": f"*Time*\n⏱ {dur}"},
+                                {"type": "mrkdwn", "text": f"*Cost*\n💰 {cost}"},
+                            ],
+                        }
+                    )
+                    blocks.append(
+                        {
+                            "type": "context",
+                            "elements": [
+                                {"type": "mrkdwn", "text": f"Run ID: `{run.id}`"},
+                            ],
+                        }
+                    )
                     blocks.append({"type": "divider"})
 
-                blocks.append({"type": "context", "elements": [
-                    {"type": "mrkdwn",
-                     "text": "Use `/forge status <run-id>` for details  •  `/forge cancel <run-id>` to stop"},
-                ]})
+                blocks.append(
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": "Use `/forge status <run-id>` for details  •  `/forge cancel <run-id>` to stop",
+                            },
+                        ],
+                    }
+                )
 
                 await respond(text, blocks=blocks)
 
@@ -361,11 +403,13 @@ async def _handle_status(parsed, respond) -> None:
 async def _handle_cancel(parsed, user_id: str, respond) -> None:
     """Cancel an active run."""
     try:
-        from forge.db.session import get_db  # noqa: PLC0415
-        from forge.db.models import Run  # noqa: PLC0415
-        from forge.workflow.state_machine import RunStatus, validate_transition  # noqa: PLC0415
-        from sqlalchemy import select, update  # noqa: PLC0415
         from datetime import UTC, datetime  # noqa: PLC0415
+
+        from sqlalchemy import select, update  # noqa: PLC0415
+
+        from forge.db.models import Run  # noqa: PLC0415
+        from forge.db.session import get_db  # noqa: PLC0415
+        from forge.workflow.state_machine import RunStatus, validate_transition  # noqa: PLC0415
 
         async with get_db() as session:
             result = await session.execute(select(Run).where(Run.id == parsed.run_id))
@@ -412,9 +456,10 @@ async def _handle_approval_action(body: dict, client, decision: str) -> None:
     try:
         from datetime import UTC, datetime  # noqa: PLC0415
 
+        from sqlalchemy import select, update  # noqa: PLC0415
+
         from forge.db.models import Approval  # noqa: PLC0415
         from forge.db.session import get_db  # noqa: PLC0415
-        from sqlalchemy import select, update  # noqa: PLC0415
 
         action = body["actions"][0]
         approval_id: str = action["value"]
@@ -423,9 +468,7 @@ async def _handle_approval_action(body: dict, client, decision: str) -> None:
         message_ts: str = body["container"]["message_ts"]
 
         async with get_db() as session:
-            result = await session.execute(
-                select(Approval).where(Approval.id == approval_id)
-            )
+            result = await session.execute(select(Approval).where(Approval.id == approval_id))
             approval = result.scalar_one_or_none()
 
             if approval is None:
@@ -499,6 +542,7 @@ async def _handle_approval_action(body: dict, client, decision: str) -> None:
 
 
 # ── Main entrypoint ───────────────────────────────────────────────────────────
+
 
 async def main() -> None:  # pragma: no cover
     if not settings.slack_bot_token:

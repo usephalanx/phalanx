@@ -2,7 +2,9 @@
 Application settings — loaded from environment variables.
 Single source of truth for all configuration.
 """
+
 from functools import lru_cache
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

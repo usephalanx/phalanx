@@ -3,14 +3,14 @@ Unit tests for forge/gateway/command_parser.py.
 
 Pure-logic module — no I/O — so 100% reachable without mocks.
 """
+
 from __future__ import annotations
 
-import pytest
 from forge.gateway.command_parser import (
+    HELP_TEXT,
     CommandType,
     ParsedCommand,
     parse_command,
-    HELP_TEXT,
 )
 
 

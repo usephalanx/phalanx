@@ -19,18 +19,21 @@ Design decisions (evidence in EXECUTION_PLAN.md §B):
   AP-003: Agents ALWAYS re-raise exceptions after logging — never swallow them.
   AP-004: Every agent uses the Run state machine; never writes status directly.
 """
+
 from __future__ import annotations
 
 import abc
 from datetime import UTC, datetime
-from typing import Any
-from uuid import UUID
+from typing import TYPE_CHECKING, Any
 
 import structlog
 import tenacity
-from anthropic import Anthropic, APIError, APITimeoutError, RateLimitError
+from anthropic import Anthropic, APITimeoutError, RateLimitError
 
 from forge.config.settings import get_settings
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 log = structlog.get_logger(__name__)
 
@@ -241,9 +244,7 @@ class BaseAgent(abc.ABC):
             values["error_context"] = error_context
 
         async with get_db() as session:
-            await session.execute(
-                update(Run).where(Run.id == self.run_id).values(**values)
-            )
+            await session.execute(update(Run).where(Run.id == self.run_id).values(**values))
             await session.commit()
 
         await self._audit(

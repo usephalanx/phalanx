@@ -7,14 +7,14 @@ Supports two modes:
 
 All models are immutable (frozen=True) — no runtime mutation of config.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
-
+from pydantic import BaseModel, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -49,6 +49,7 @@ class TeamMember(BaseModel, frozen=True):
     @classmethod
     def id_must_be_slug(cls, v: str) -> str:
         import re
+
         if not re.match(r"^[a-z0-9_-]+$", v):
             raise ValueError(f"Member id '{v}' must be lowercase alphanumeric/dash/underscore")
         return v

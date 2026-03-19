@@ -13,6 +13,7 @@ Blocks the Run's ship approval if severity threshold is breached.
 This gate is NEVER bypassable in code — only a human IC6 override in Postgres
 (`approvals` row with type='security_override') unblocks a failed gate.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,13 +22,15 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
-from typing import Any
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 import structlog
 
 from forge.db.session import get_db
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from uuid import UUID
 
 log = structlog.get_logger(__name__)
 
@@ -163,7 +166,11 @@ async def run_bandit(repo_path: Path) -> ScanResult:
 
     for issue in data.get("results", []):
         severity_str = issue.get("issue_severity", "LOW").upper()
-        severity = ScanSeverity[severity_str] if severity_str in ScanSeverity.__members__ else ScanSeverity.LOW
+        severity = (
+            ScanSeverity[severity_str]
+            if severity_str in ScanSeverity.__members__
+            else ScanSeverity.LOW
+        )
 
         if _SEVERITY_RANK[severity] > _SEVERITY_RANK[max_severity]:
             max_severity = severity

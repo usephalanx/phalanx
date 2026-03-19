@@ -4,9 +4,12 @@ Health check tests.
 Mocks DB and Redis so these pass in any environment — real connectivity
 is verified by the integration test suite against live services.
 """
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
-from httpx import AsyncClient, ASGITransport
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
 from forge.api.main import app
 
 
@@ -35,9 +38,7 @@ async def test_health_check_ok():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200
@@ -61,9 +62,7 @@ async def test_health_check_degraded_when_db_down():
         patch("forge.db.session.engine", mock_engine),
         patch("redis.asyncio.from_url", return_value=mock_redis),
     ):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     # Still 200 — degraded but running
@@ -74,9 +73,7 @@ async def test_health_check_degraded_when_db_down():
 
 @pytest.mark.asyncio
 async def test_root():
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/")
 
     assert response.status_code == 200

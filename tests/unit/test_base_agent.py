@@ -1,14 +1,17 @@
 """
 Unit tests for forge/agents/base.py.
 """
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from forge.agents.base import AgentResult, BaseAgent, get_anthropic_client
 
-
 # ── Concrete subclass for testing ─────────────────────────────────────────────
+
 
 class ConcreteAgent(BaseAgent):
     AGENT_ROLE = "test_agent"
@@ -18,6 +21,7 @@ class ConcreteAgent(BaseAgent):
 
 
 # ── AgentResult ────────────────────────────────────────────────────────────────
+
 
 class TestAgentResult:
     def test_success_result(self):
@@ -46,6 +50,7 @@ class TestAgentResult:
 
 # ── BaseAgent init ─────────────────────────────────────────────────────────────
 
+
 class TestBaseAgentInit:
     def test_basic_construction(self):
         agent = ConcreteAgent(run_id="run-1", agent_id="tester")
@@ -56,6 +61,7 @@ class TestBaseAgentInit:
 
     def test_uuid_run_id_converted_to_str(self):
         import uuid
+
         uid = uuid.uuid4()
         agent = ConcreteAgent(run_id=uid, agent_id="tester")
         assert isinstance(agent.run_id, str)
@@ -81,6 +87,7 @@ class TestBaseAgentInit:
 
 # ── Token budget ───────────────────────────────────────────────────────────────
 
+
 class TestTokenBudget:
     def test_check_budget_passes_within_limit(self):
         agent = ConcreteAgent(run_id="r1", agent_id="tester", token_budget=1000)
@@ -100,6 +107,7 @@ class TestTokenBudget:
 
 
 # ── _call_claude ───────────────────────────────────────────────────────────────
+
 
 class TestCallClaude:
     def test_call_claude_returns_text(self):
@@ -152,6 +160,7 @@ class TestCallClaude:
 
 # ── _audit ─────────────────────────────────────────────────────────────────────
 
+
 class TestAudit:
     async def test_audit_writes_to_db(self):
         agent = ConcreteAgent(run_id="r1", agent_id="tester")
@@ -184,7 +193,7 @@ class TestAudit:
         @asynccontextmanager
         async def failing_get_db():
             raise RuntimeError("DB unavailable")
-            yield  # noqa: unreachable
+            yield  # type: ignore[misc]
 
         with patch("forge.db.session.get_db", failing_get_db):
             # Should NOT raise
@@ -192,6 +201,7 @@ class TestAudit:
 
 
 # ── _transition_run ────────────────────────────────────────────────────────────
+
 
 class TestTransitionRun:
     async def test_valid_transition_succeeds(self):
@@ -219,6 +229,7 @@ class TestTransitionRun:
 
     async def test_invalid_transition_raises(self):
         from forge.workflow.state_machine import InvalidTransitionError
+
         agent = ConcreteAgent(run_id="r1", agent_id="tester")
 
         # RESEARCHING → INTAKE is an invalid non-terminal transition
@@ -228,13 +239,15 @@ class TestTransitionRun:
 
 # ── get_anthropic_client singleton ────────────────────────────────────────────
 
+
 class TestGetAnthropicClient:
     def test_returns_same_instance(self):
         import forge.agents.base as base_module
+
         # Reset singleton
         base_module._anthropic_client = None
-        with patch("forge.agents.base.Anthropic") as MockAnthropic:
-            MockAnthropic.return_value = MagicMock()
+        with patch("forge.agents.base.Anthropic") as mock_anthropic:  # noqa: N806
+            mock_anthropic.return_value = MagicMock()
             c1 = get_anthropic_client()
             c2 = get_anthropic_client()
         assert c1 is c2

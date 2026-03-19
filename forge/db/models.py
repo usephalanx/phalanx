@@ -3,14 +3,15 @@ FORGE — Complete SQLAlchemy ORM models.
 All tables. All relationships. All constraints.
 Postgres is the single source of truth — never Redis.
 """
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Optional
+from datetime import datetime  # noqa: TC003
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    TIMESTAMP,
     BigInteger,
     Boolean,
     CheckConstraint,
@@ -20,15 +21,15 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
-    TIMESTAMP,
     Text,
     UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 TIMESTAMPTZ = TIMESTAMP(timezone=True)
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 
 
 def _uuid() -> str:
@@ -43,19 +44,18 @@ class Base(DeclarativeBase):
 # IDENTITY
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class Project(Base):
     __tablename__ = "projects"
 
-    id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), primary_key=True, default=_uuid
-    )
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
-    repo_url: Mapped[Optional[str]] = mapped_column(Text)
+    repo_url: Mapped[str | None] = mapped_column(Text)
     repo_provider: Mapped[str] = mapped_column(String(50), default="github")
     default_branch: Mapped[str] = mapped_column(String(100), default="main")
     domain: Mapped[str] = mapped_column(String(50), default="web")
-    team_id: Mapped[Optional[str]] = mapped_column(String(100))
+    team_id: Mapped[str | None] = mapped_column(String(100))
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
     onboarding_status: Mapped[str] = mapped_column(String(50), default="pending")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
@@ -72,18 +72,17 @@ class Project(Base):
 
 class Channel(Base):
     """Slack/Discord thread ↔ run binding."""
+
     __tablename__ = "channels"
-    __table_args__ = (
-        UniqueConstraint("platform", "channel_id", "thread_ts"),
-    )
+    __table_args__ = (UniqueConstraint("platform", "channel_id", "thread_ts"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    project_id: Mapped[Optional[str]] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"))
     platform: Mapped[str] = mapped_column(String(20), nullable=False)  # slack | discord
     channel_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    thread_ts: Mapped[Optional[str]] = mapped_column(String(50))   # Slack thread ts
-    thread_id: Mapped[Optional[str]] = mapped_column(String(100))  # Discord thread id
-    display_name: Mapped[Optional[str]] = mapped_column(String(255))
+    thread_ts: Mapped[str | None] = mapped_column(String(50))  # Slack thread ts
+    thread_id: Mapped[str | None] = mapped_column(String(100))  # Discord thread id
+    display_name: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
@@ -91,13 +90,15 @@ class Channel(Base):
 # OPERATIONAL CORE
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class WorkOrder(Base):
     """Top-level intent from a human. One work order → many runs."""
+
     __tablename__ = "work_orders"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
-    channel_id: Mapped[Optional[str]] = mapped_column(ForeignKey("channels.id"))
+    channel_id: Mapped[str | None] = mapped_column(ForeignKey("channels.id"))
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     raw_command: Mapped[str] = mapped_column(Text, nullable=False)
@@ -127,12 +128,15 @@ class Run(Base):
     Each execution attempt of a work order.
     State machine: INTAKE → ... → SHIPPED | FAILED
     """
+
     __tablename__ = "runs"
     __table_args__ = (
         UniqueConstraint("work_order_id", "run_number"),
-        Index("idx_runs_active", "status", postgresql_where=Column("status").notin_(
-            ["SHIPPED", "FAILED", "CANCELLED"]
-        )),
+        Index(
+            "idx_runs_active",
+            "status",
+            postgresql_where=Column("status").notin_(["SHIPPED", "FAILED", "CANCELLED"]),
+        ),
         Index("idx_runs_project_created", "project_id", "created_at"),
         CheckConstraint(
             "status IN ("
@@ -151,17 +155,17 @@ class Run(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
     run_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="INTAKE", nullable=False)
-    active_branch: Mapped[Optional[str]] = mapped_column(String(255))
-    pr_url: Mapped[Optional[str]] = mapped_column(Text)
-    pr_number: Mapped[Optional[int]] = mapped_column(Integer)
-    deploy_url: Mapped[Optional[str]] = mapped_column(Text)
-    error_message: Mapped[Optional[str]] = mapped_column(Text)
-    error_context: Mapped[Optional[dict]] = mapped_column(JSONB)
-    paused_by_interrupt_id: Mapped[Optional[str]] = mapped_column(String(100))
+    active_branch: Mapped[str | None] = mapped_column(String(255))
+    pr_url: Mapped[str | None] = mapped_column(Text)
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    deploy_url: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    error_context: Mapped[dict | None] = mapped_column(JSONB)
+    paused_by_interrupt_id: Mapped[str | None] = mapped_column(String(100))
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
@@ -178,6 +182,7 @@ class Run(Base):
 
 class Task(Base):
     """Atomic unit of work within a run. Assigned to one agent."""
+
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint(
@@ -195,12 +200,12 @@ class Task(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False)
-    parent_task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"))
+    parent_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
     sequence_num: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     agent_role: Mapped[str] = mapped_column(String(100), nullable=False)
-    assigned_agent_id: Mapped[Optional[str]] = mapped_column(String(100))
+    assigned_agent_id: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50), default="PENDING", nullable=False)
     # Skills required to execute this task (from planner)
     required_skills: Mapped[list] = mapped_column(ARRAY(String), default=list)
@@ -209,14 +214,14 @@ class Task(Base):
     # Task IDs this task depends on
     depends_on: Mapped[list] = mapped_column(ARRAY(String), default=list)
     estimated_complexity: Mapped[int] = mapped_column(Integer, default=3)
-    actual_complexity: Mapped[Optional[int]] = mapped_column(Integer)
-    output: Mapped[Optional[dict]] = mapped_column(JSONB)
-    error: Mapped[Optional[str]] = mapped_column(Text)
+    actual_complexity: Mapped[int | None] = mapped_column(Integer)
+    output: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
-    escalation_reason: Mapped[Optional[str]] = mapped_column(Text)
+    escalation_reason: Mapped[str | None] = mapped_column(Text)
     risk_flags: Mapped[list] = mapped_column(ARRAY(String), default=list)
-    started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
     run: Mapped[Run] = relationship(back_populates="tasks")
@@ -225,6 +230,7 @@ class Task(Base):
 
 class Artifact(Base):
     """All agent outputs. Content stored in S3, metadata here."""
+
     __tablename__ = "artifacts"
     __table_args__ = (
         Index("idx_artifacts_project_type", "project_id", "artifact_type"),
@@ -232,8 +238,8 @@ class Artifact(Base):
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("runs.id"))
-    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id"))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
     artifact_type: Mapped[str] = mapped_column(String(100), nullable=False)
     # research_memo | prd | task_plan | diff | test_report | security_report
@@ -244,12 +250,12 @@ class Artifact(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA256
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_final: Mapped[bool] = mapped_column(Boolean, default=False)
-    summary: Mapped[Optional[str]] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
     # Evidence: structured quality data attached to the artifact
-    quality_evidence: Mapped[Optional[dict]] = mapped_column(JSONB)
+    quality_evidence: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
-    run: Mapped[Optional[Run]] = relationship(back_populates="artifacts")
+    run: Mapped[Run | None] = relationship(back_populates="artifacts")
 
 
 class Approval(Base):
@@ -257,6 +263,7 @@ class Approval(Base):
     Human approval gates. CANNOT be bypassed in code.
     Append-only: once decided, status never changes.
     """
+
     __tablename__ = "approvals"
     __table_args__ = (
         CheckConstraint(
@@ -279,14 +286,14 @@ class Approval(Base):
     gate_phase: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
     # What evidence was shown to the human when they approved/rejected
-    context_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB)
+    context_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     # Required evidence before approval can even be requested
     required_evidence: Mapped[list] = mapped_column(JSONB, default=list)
     evidence_satisfied: Mapped[bool] = mapped_column(Boolean, default=False)
     requested_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
-    decided_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
-    decided_by: Mapped[Optional[str]] = mapped_column(String(100))
-    decision_note: Mapped[Optional[str]] = mapped_column(Text)
+    decided_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    decided_by: Mapped[str | None] = mapped_column(String(100))
+    decision_note: Mapped[str | None] = mapped_column(Text)
     # Minimum approver level (enforced, not just advisory)
     required_approver_level: Mapped[str] = mapped_column(String(10), default="ic6")
 
@@ -298,6 +305,7 @@ class AuditLog(Base):
     Append-only audit trail. Never updated or deleted.
     Every state transition, tool call, approval, and error logged here.
     """
+
     __tablename__ = "audit_log"
     __table_args__ = (
         Index("idx_audit_run", "run_id", "created_at"),
@@ -306,19 +314,19 @@ class AuditLog(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    run_id: Mapped[Optional[str]] = mapped_column(String(36))
-    work_order_id: Mapped[Optional[str]] = mapped_column(String(36))
-    project_id: Mapped[Optional[str]] = mapped_column(String(36))
+    run_id: Mapped[str | None] = mapped_column(String(36))
+    work_order_id: Mapped[str | None] = mapped_column(String(36))
+    project_id: Mapped[str | None] = mapped_column(String(36))
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     # state_transition | tool_call | approval_requested | approval_decided
     # skill_loaded | memory_written | error | escalation | interrupt
-    agent_role: Mapped[Optional[str]] = mapped_column(String(50))
-    agent_id: Mapped[Optional[str]] = mapped_column(String(100))
-    from_state: Mapped[Optional[str]] = mapped_column(String(50))
-    to_state: Mapped[Optional[str]] = mapped_column(String(50))
-    tool_name: Mapped[Optional[str]] = mapped_column(String(100))
-    tokens_used: Mapped[Optional[int]] = mapped_column(Integer)
-    duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    agent_role: Mapped[str | None] = mapped_column(String(50))
+    agent_id: Mapped[str | None] = mapped_column(String(100))
+    from_state: Mapped[str | None] = mapped_column(String(50))
+    to_state: Mapped[str | None] = mapped_column(String(50))
+    tool_name: Mapped[str | None] = mapped_column(String(100))
+    tokens_used: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
@@ -327,8 +335,10 @@ class AuditLog(Base):
 # WORKFLOW EVENTS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class Escalation(Base):
     """IC3/IC4 mid-task escalation to IC5/IC6. Task paused, not aborted."""
+
     __tablename__ = "escalations"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -340,9 +350,9 @@ class Escalation(Base):
     context_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     urgency: Mapped[str] = mapped_column(String(20), default="normal")
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
-    resolution: Mapped[Optional[str]] = mapped_column(Text)
-    resolved_by: Mapped[Optional[str]] = mapped_column(String(100))
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    resolution: Mapped[str | None] = mapped_column(Text)
+    resolved_by: Mapped[str | None] = mapped_column(String(100))
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
     run: Mapped[Run] = relationship(back_populates="escalations")
@@ -350,6 +360,7 @@ class Escalation(Base):
 
 class Handoff(Base):
     """Structured context transfer between agents at task boundaries."""
+
     __tablename__ = "handoffs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -371,17 +382,18 @@ class Handoff(Base):
 
 class Interrupt(Base):
     """P0/P1 incident that preempts active runs."""
+
     __tablename__ = "interrupts"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     team_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    project_id: Mapped[Optional[str]] = mapped_column(ForeignKey("projects.id"))
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"))
     priority: Mapped[str] = mapped_column(String(5), nullable=False)  # P0 | P1
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     paused_run_ids: Mapped[list] = mapped_column(ARRAY(String), default=list)
-    interrupt_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("runs.id"))
+    interrupt_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
-    resolved_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
@@ -389,16 +401,22 @@ class Interrupt(Base):
 # MEMORY
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class MemoryFact(Base):
     """
     Durable project knowledge. Versioned, deduplicated, confidence-scored.
     pgvector embedding for semantic retrieval.
     """
+
     __tablename__ = "memory_facts"
     __table_args__ = (
         Index("idx_memory_facts_project_status", "project_id", "status", "fact_type"),
-        Index("idx_memory_facts_standing", "project_id", "is_standing",
-              postgresql_where=Column("is_standing").is_(True)),
+        Index(
+            "idx_memory_facts_standing",
+            "project_id",
+            "is_standing",
+            postgresql_where=Column("is_standing").is_(True),
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -413,12 +431,12 @@ class MemoryFact(Base):
     # confirmed | provisional | superseded | conflicted
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_standing: Mapped[bool] = mapped_column(Boolean, default=False)
-    superseded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("memory_facts.id"))
-    conflicts_with: Mapped[Optional[str]] = mapped_column(ForeignKey("memory_facts.id"))
-    source_run_id: Mapped[Optional[str]] = mapped_column(String(36))
-    source_artifact_id: Mapped[Optional[str]] = mapped_column(String(36))
+    superseded_by: Mapped[str | None] = mapped_column(ForeignKey("memory_facts.id"))
+    conflicts_with: Mapped[str | None] = mapped_column(ForeignKey("memory_facts.id"))
+    source_run_id: Mapped[str | None] = mapped_column(String(36))
+    source_artifact_id: Mapped[str | None] = mapped_column(String(36))
     relevance_score: Mapped[float] = mapped_column(Float, default=1.0)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(1536))
+    embedding: Mapped[list | None] = mapped_column(Vector(1536))
     tags: Mapped[list] = mapped_column(ARRAY(String), default=list)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -430,18 +448,19 @@ class MemoryFact(Base):
 
 class MemoryDecision(Base):
     """Approved architectural and product decisions. Standing = always loaded."""
+
     __tablename__ = "memory_decisions"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     decision: Mapped[str] = mapped_column(Text, nullable=False)
-    rationale: Mapped[Optional[str]] = mapped_column(Text)
+    rationale: Mapped[str | None] = mapped_column(Text)
     rejected_alternatives: Mapped[list] = mapped_column(ARRAY(String), default=list)
-    approval_id: Mapped[Optional[str]] = mapped_column(ForeignKey("approvals.id"))
-    decided_by: Mapped[Optional[str]] = mapped_column(String(100))
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("approvals.id"))
+    decided_by: Mapped[str | None] = mapped_column(String(100))
     is_standing: Mapped[bool] = mapped_column(Boolean, default=False)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(1536))
+    embedding: Mapped[list | None] = mapped_column(Vector(1536))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
     project: Mapped[Project] = relationship(back_populates="memory_decisions")
@@ -449,10 +468,9 @@ class MemoryDecision(Base):
 
 class MemoryRole(Base):
     """Per-agent, per-project learned patterns (file structure, test patterns, etc.)"""
+
     __tablename__ = "memory_role"
-    __table_args__ = (
-        UniqueConstraint("project_id", "agent_role", "memory_type", "title"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "agent_role", "memory_type", "title"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False)
@@ -462,7 +480,7 @@ class MemoryRole(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     last_used_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     use_count: Mapped[int] = mapped_column(Integer, default=0)
-    embedding: Mapped[Optional[list]] = mapped_column(Vector(1536))
+    embedding: Mapped[list | None] = mapped_column(Vector(1536))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
@@ -470,8 +488,10 @@ class MemoryRole(Base):
 # SKILLS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class Skill(Base):
     """Postgres mirror of skill-registry YAML. Single source for queries."""
+
     __tablename__ = "skills"
 
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -483,8 +503,8 @@ class Skill(Base):
     min_level: Mapped[str] = mapped_column(String(10), nullable=False)
     token_cost_estimate: Mapped[int] = mapped_column(Integer, default=2000)
     spec: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    deprecated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
-    superseded_by: Mapped[Optional[str]] = mapped_column(ForeignKey("skills.id"))
+    deprecated_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    superseded_by: Mapped[str | None] = mapped_column(ForeignKey("skills.id"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
@@ -493,6 +513,7 @@ class Skill(Base):
 
 class SkillOverride(Base):
     """Project-specific overrides injected into skill knowledge blocks."""
+
     __tablename__ = "skill_overrides"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -500,13 +521,14 @@ class SkillOverride(Base):
     skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), nullable=False)
     overrides: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     generated_by: Mapped[str] = mapped_column(String(50), nullable=False)
-    source_run_id: Mapped[Optional[str]] = mapped_column(String(36))
+    source_run_id: Mapped[str | None] = mapped_column(String(36))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
 class SkillConfidence(Base):
     """Per-agent, per-skill, per-project confidence score. Drives routing."""
+
     __tablename__ = "skill_confidence"
     __table_args__ = (
         UniqueConstraint("agent_id", "skill_id", "project_id"),
@@ -522,7 +544,7 @@ class SkillConfidence(Base):
     proficiency_level: Mapped[str] = mapped_column(String(20), default="learning")
     level_entered_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     execution_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_execution: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    last_execution: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     flagged_for_review: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
@@ -531,6 +553,7 @@ class SkillConfidence(Base):
 
 class SkillExecution(Base):
     """Record of every skill use in a task. Feeds confidence scoring."""
+
     __tablename__ = "skill_executions"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -541,8 +564,8 @@ class SkillExecution(Base):
     skill_version: Mapped[str] = mapped_column(String(20), nullable=False)
     load_strategy: Mapped[str] = mapped_column(String(20), nullable=False)
     proficiency_at_execution: Mapped[str] = mapped_column(String(20), nullable=False)
-    token_cost: Mapped[Optional[int]] = mapped_column(Integer)
-    outcome_score: Mapped[Optional[float]] = mapped_column(Float)
+    token_cost: Mapped[int | None] = mapped_column(Integer)
+    outcome_score: Mapped[float | None] = mapped_column(Float)
     review_changes_requested: Mapped[int] = mapped_column(Integer, default=0)
     qa_rounds_needed: Mapped[int] = mapped_column(Integer, default=1)
     security_flags_raised: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -551,29 +574,31 @@ class SkillExecution(Base):
 
 class SkillPatchProposal(Base):
     """Proposed skill update from any learning source."""
+
     __tablename__ = "skill_patch_proposals"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     skill_id: Mapped[str] = mapped_column(ForeignKey("skills.id"), nullable=False)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # feed | mentorship | incident | pattern | drill
-    source_ref: Mapped[Optional[str]] = mapped_column(String(100))
+    source_ref: Mapped[str | None] = mapped_column(String(100))
     update_type: Mapped[str] = mapped_column(String(50), nullable=False)
     knowledge_section: Mapped[str] = mapped_column(String(50), nullable=False)
     proposed_content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    severity: Mapped[Optional[str]] = mapped_column(String(20))
+    severity: Mapped[str | None] = mapped_column(String(20))
     fast_track: Mapped[bool] = mapped_column(Boolean, default=False)
     notify_all_teams: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="PROPOSED")
-    reviewed_by: Mapped[Optional[str]] = mapped_column(String(100))
-    review_note: Mapped[Optional[str]] = mapped_column(Text)
-    applied_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    reviewed_by: Mapped[str | None] = mapped_column(String(100))
+    review_note: Mapped[str | None] = mapped_column(Text)
+    applied_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
 class ProficiencyHistory(Base):
     """Tracks when agents advance proficiency levels per skill."""
+
     __tablename__ = "proficiency_history"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -590,6 +615,7 @@ class ProficiencyHistory(Base):
 # SKILL FEEDS (learning from external sources)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class SkillFeed(Base):
     __tablename__ = "skill_feeds"
 
@@ -598,7 +624,7 @@ class SkillFeed(Base):
     feed_type: Mapped[str] = mapped_column(String(50), nullable=False)
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     affects_skills: Mapped[list] = mapped_column(ARRAY(String), default=list)
-    last_checked_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    last_checked_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -609,7 +635,7 @@ class SkillFeedItem(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     feed_id: Mapped[str] = mapped_column(ForeignKey("skill_feeds.id"), nullable=False)
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    title: Mapped[Optional[str]] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     proposals_count: Mapped[int] = mapped_column(Integer, default=0)
     processed_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
@@ -618,6 +644,7 @@ class SkillFeedItem(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 # SKILL DRILLS (deliberate practice)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class SkillDrill(Base):
     __tablename__ = "skill_drills"
@@ -641,7 +668,7 @@ class SkillDrillResult(Base):
     score: Mapped[float] = mapped_column(Float, nullable=False)
     dimension_scores: Mapped[dict] = mapped_column(JSONB, default=dict)
     gaps_identified: Mapped[list] = mapped_column(ARRAY(String), default=list)
-    triggered_by: Mapped[Optional[str]] = mapped_column(String(50))
+    triggered_by: Mapped[str | None] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
@@ -649,16 +676,17 @@ class SkillDrillResult(Base):
 # ONBOARDING
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class OnboardingRun(Base):
     __tablename__ = "onboarding_runs"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING")
-    repo_structure: Mapped[Optional[dict]] = mapped_column(JSONB)
-    patterns_found: Mapped[Optional[dict]] = mapped_column(JSONB)
-    conventions_extracted: Mapped[Optional[dict]] = mapped_column(JSONB)
+    repo_structure: Mapped[dict | None] = mapped_column(JSONB)
+    patterns_found: Mapped[dict | None] = mapped_column(JSONB)
+    conventions_extracted: Mapped[dict | None] = mapped_column(JSONB)
     constraints_registered: Mapped[int] = mapped_column(Integer, default=0)
     skill_overrides_created: Mapped[int] = mapped_column(Integer, default=0)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMPTZ)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())

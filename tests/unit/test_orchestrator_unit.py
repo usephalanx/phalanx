@@ -1,11 +1,14 @@
 """
 Unit tests for forge/workflow/orchestrator.py.
 """
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from forge.workflow.orchestrator import WorkflowOrchestrator, OrchestratorError
+
+import pytest
+
+from forge.workflow.orchestrator import OrchestratorError, WorkflowOrchestrator
 from forge.workflow.state_machine import RunStatus
 
 
@@ -82,6 +85,7 @@ class TestTransition:
 
     async def test_invalid_transition_raises(self, orchestrator):
         from forge.workflow.state_machine import InvalidTransitionError
+
         # RESEARCHING → INTAKE is an invalid non-terminal transition
         with pytest.raises(InvalidTransitionError):
             await orchestrator._transition(RunStatus.RESEARCHING, RunStatus.INTAKE)
@@ -103,7 +107,9 @@ class TestDispatchAndWait:
 
         mock_router.dispatch.assert_called_once()
 
-    async def test_failed_task_raises_orchestrator_error(self, orchestrator, mock_session, mock_router):
+    async def test_failed_task_raises_orchestrator_error(
+        self, orchestrator, mock_session, mock_router
+    ):
         task = make_task("t1", agent_role="qa", status="PENDING")
         failed_task = make_task("t1", agent_role="qa", status="FAILED", error="tests failed")
 

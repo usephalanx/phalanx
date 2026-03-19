@@ -3,14 +3,16 @@ FORGE FastAPI application.
 Milestone 1: health check only.
 Subsequent milestones add routes incrementally.
 """
+
+import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import structlog
+
+from forge.api.routes.runs import router as runs_router
+from forge.api.routes.work_orders import router as work_orders_router
 from forge.config.settings import get_settings
 from forge.observability.logging import configure_logging
-from forge.api.routes.work_orders import router as work_orders_router
-from forge.api.routes.runs import router as runs_router
 
 configure_logging()
 log = structlog.get_logger(__name__)
@@ -88,8 +90,10 @@ async def health():
 
     # DB check
     try:
-        from forge.db.session import engine as db_engine  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
+
+        from forge.db.session import engine as db_engine  # noqa: PLC0415
+
         async with db_engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
         checks["db"] = "ok"
@@ -100,6 +104,7 @@ async def health():
     # Redis check
     try:
         import redis.asyncio as aioredis  # noqa: PLC0415
+
         r = aioredis.from_url(settings.redis_url, socket_connect_timeout=2)
         await r.ping()
         await r.aclose()

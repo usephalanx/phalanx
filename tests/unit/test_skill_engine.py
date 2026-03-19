@@ -4,12 +4,12 @@ Unit tests for the SkillEngine.
 Uses the `skill_registry_path` fixture from conftest.py which writes
 real YAML files to a tmp_path — no mocking of file I/O needed.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
-import yaml
 
 from forge.skills.engine import (
     LoadStrategy,
@@ -18,6 +18,9 @@ from forge.skills.engine import (
     SkillNotFoundError,
     SkillRegistryError,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestSkillEngineIndexLoading:
@@ -104,9 +107,15 @@ class TestIC4LoadStrategy:
         ic4 = engine.load("write-clean-code", ic_level=4)
         # IC4 summary steps should be shorter strings
         if ic3.content.get("procedures") and ic4.content.get("procedures_summary"):
-            avg_ic3 = sum(len(s) for s in ic3.content["procedures"]) / len(ic3.content["procedures"])
-            avg_ic4 = sum(len(s) for s in ic4.content["procedures_summary"]) / len(ic4.content["procedures_summary"])
-            assert avg_ic4 <= avg_ic3 + 10  # summaries may be slightly longer due to trailing period
+            avg_ic3 = sum(len(s) for s in ic3.content["procedures"]) / len(
+                ic3.content["procedures"]
+            )
+            avg_ic4 = sum(len(s) for s in ic4.content["procedures_summary"]) / len(
+                ic4.content["procedures_summary"]
+            )
+            assert (
+                avg_ic4 <= avg_ic3 + 10
+            )  # summaries may be slightly longer due to trailing period
 
 
 class TestIC5LoadStrategy:
@@ -173,12 +182,16 @@ class TestProficiencyLevels:
         skill = engine.load("write-clean-code", ic_level=3, proficiency=ProficiencyLevel.LEARNING)
         assert len(skill.content["procedures"]) > 0
         # Learning steps should include beginner-friendly language
-        assert any("code style" in step.lower() or "read" in step.lower()
-                   for step in skill.content["procedures"])
+        assert any(
+            "code style" in step.lower() or "read" in step.lower()
+            for step in skill.content["procedures"]
+        )
 
     def test_expert_procedures_differ_from_learning(self, skill_registry_path: Path):
         engine = SkillEngine(skill_registry_path)
-        learning = engine.load("write-clean-code", ic_level=3, proficiency=ProficiencyLevel.LEARNING)
+        learning = engine.load(
+            "write-clean-code", ic_level=3, proficiency=ProficiencyLevel.LEARNING
+        )
         expert = engine.load("write-clean-code", ic_level=3, proficiency=ProficiencyLevel.EXPERT)
         assert learning.content["procedures"] != expert.content["procedures"]
 

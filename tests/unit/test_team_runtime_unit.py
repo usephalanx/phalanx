@@ -1,12 +1,14 @@
 """
 Unit tests for forge/runtime/team_runtime.py.
 """
+
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from forge.runtime.team_runtime import TeamRuntime, AgentUnavailableError
+import pytest
+
+from forge.runtime.team_runtime import AgentUnavailableError, TeamRuntime
 
 
 def make_member(member_id, role, ic_level, max_concurrent=2):

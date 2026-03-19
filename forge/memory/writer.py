@@ -10,15 +10,17 @@ Design (evidence in EXECUTION_PLAN.md §B, AD-003):
 
 AP-003: Exceptions from DB writes propagate to caller — never swallowed here.
 """
+
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.models import MemoryDecision, MemoryFact
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
@@ -48,8 +50,8 @@ class MemoryWriter:
         body: str,
         confidence: float = 1.0,
         is_standing: bool = False,
-        source_run_id: Optional[str] = None,
-        source_artifact_id: Optional[str] = None,
+        source_run_id: str | None = None,
+        source_artifact_id: str | None = None,
         tags: list[str] | None = None,
     ) -> MemoryFact:
         """
@@ -112,11 +114,11 @@ class MemoryWriter:
         self,
         title: str,
         decision: str,
-        rationale: Optional[str] = None,
+        rationale: str | None = None,
         rejected_alternatives: list[str] | None = None,
-        decided_by: Optional[str] = None,
+        decided_by: str | None = None,
         is_standing: bool = True,
-        approval_id: Optional[str] = None,
+        approval_id: str | None = None,
     ) -> MemoryDecision:
         """
         Persist an approved architectural or product decision.

@@ -16,12 +16,12 @@ Supported command formats:
 Priority mapping:
   P0 → 90, P1 → 75, P2 → 50 (default), P3 → 25, P4 → 10
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Optional
 
 
 class CommandType(StrEnum):
@@ -33,13 +33,19 @@ class CommandType(StrEnum):
 
 
 _PRIORITY_MAP: dict[str, int] = {
-    "P0": 90, "P1": 75, "P2": 50, "P3": 25, "P4": 10,
+    "P0": 90,
+    "P1": 75,
+    "P2": 50,
+    "P3": 25,
+    "P4": 10,
 }
 
 # Pattern: --priority P0 or --priority=P0
 _PRIORITY_PATTERN = re.compile(r"--priority[= ]?(P[0-4])", re.IGNORECASE)
 # Pattern: --description "..." or --desc "..."
-_DESCRIPTION_PATTERN = re.compile(r"--(?:description|desc)[= ]?[\"']?(.+?)[\"']?(?:--|$)", re.IGNORECASE)
+_DESCRIPTION_PATTERN = re.compile(
+    r"--(?:description|desc)[= ]?[\"']?(.+?)[\"']?(?:--|$)", re.IGNORECASE
+)
 
 
 @dataclass
@@ -48,10 +54,10 @@ class ParsedCommand:
     raw_text: str
     title: str = ""
     description: str = ""
-    priority: int = 50          # Default P2
-    run_id: Optional[str] = None
+    priority: int = 50  # Default P2
+    run_id: str | None = None
     tags: list[str] = field(default_factory=list)
-    parse_error: Optional[str] = None
+    parse_error: str | None = None
 
     @property
     def is_valid(self) -> bool:

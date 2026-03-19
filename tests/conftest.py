@@ -7,18 +7,19 @@ Fixtures are designed for maximum isolation:
 
 Import structure is intentionally flat — avoid circular deps in test infra.
 """
+
 from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncGenerator, Generator
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 import yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Event loop — use a single event loop per session for async tests
@@ -100,7 +101,12 @@ def skill_registry_path(tmp_path: Path) -> Path:
                 "examples": [
                     "Use dataclasses for value objects instead of plain dicts.",
                 ],
-                "load_strategies": {"3": "full_procedure", "4": "summary", "5": "principles_only", "6": "none"},
+                "load_strategies": {
+                    "3": "full_procedure",
+                    "4": "summary",
+                    "5": "principles_only",
+                    "6": "none",
+                },
             }
         )
     )

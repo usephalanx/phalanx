@@ -20,6 +20,7 @@ What we test:
   7. State machine transition tests against real DB
   8. Audit log append-only (no updates possible via ORM)
 """
+
 from __future__ import annotations
 
 import os
@@ -57,7 +58,7 @@ async def db_engine():
     async with engine.begin() as conn:
         # Ensure pgvector extension exists
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""))
+        await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
 
     yield engine
     await engine.dispose()
@@ -68,10 +69,9 @@ async def db_session(db_engine):
     """Provide an async session that rolls back after each test."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    async with AsyncSession(db_engine) as session:
-        async with session.begin():
-            yield session
-            await session.rollback()
+    async with AsyncSession(db_engine) as session, session.begin():
+        yield session
+        await session.rollback()
 
 
 @pytest_asyncio.fixture
@@ -148,10 +148,22 @@ async def sample_run(db_session, sample_work_order):
 
 class TestRunStatusConstraint:
     VALID_STATUSES = [
-        "INTAKE", "RESEARCHING", "PLANNING", "AWAITING_PLAN_APPROVAL",
-        "EXECUTING", "VERIFYING", "AWAITING_SHIP_APPROVAL", "READY_TO_MERGE",
-        "MERGED", "RELEASE_PREP", "AWAITING_RELEASE_APPROVAL", "SHIPPED",
-        "FAILED", "BLOCKED", "PAUSED", "CANCELLED",
+        "INTAKE",
+        "RESEARCHING",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_SHIP_APPROVAL",
+        "READY_TO_MERGE",
+        "MERGED",
+        "RELEASE_PREP",
+        "AWAITING_RELEASE_APPROVAL",
+        "SHIPPED",
+        "FAILED",
+        "BLOCKED",
+        "PAUSED",
+        "CANCELLED",
     ]
 
     @pytest.mark.parametrize("status", VALID_STATUSES)
@@ -188,9 +200,16 @@ class TestRunStatusConstraint:
 
 class TestTaskStatusConstraint:
     VALID_TASK_STATUSES = [
-        "PENDING", "IN_PROGRESS", "COMPLETED", "BLOCKED",
-        "WAITING_ON_DEP", "NEEDS_CLARIFICATION", "DEFERRED",
-        "CANCELLED", "FAILED", "ESCALATING",
+        "PENDING",
+        "IN_PROGRESS",
+        "COMPLETED",
+        "BLOCKED",
+        "WAITING_ON_DEP",
+        "NEEDS_CLARIFICATION",
+        "DEFERRED",
+        "CANCELLED",
+        "FAILED",
+        "ESCALATING",
     ]
 
     @pytest.mark.parametrize("status", VALID_TASK_STATUSES)
@@ -377,7 +396,7 @@ class TestStateMachineViaDB:
     """
 
     async def test_valid_transition_persisted(self, db_session, sample_run):
-        from forge.workflow.state_machine import validate_transition, RunStatus
+        from forge.workflow.state_machine import RunStatus, validate_transition
 
         validate_transition(RunStatus.INTAKE, RunStatus.RESEARCHING)
         sample_run.status = "RESEARCHING"
@@ -417,10 +436,20 @@ class TestAuditLogAppendOnly:
     async def test_audit_log_id_is_auto_increment(self, db_session, sample_run):
         from forge.db.models import AuditLog
 
-        e1 = AuditLog(project_id=sample_run.project_id, run_id=sample_run.id,
-                      agent_id="system", event_type="a", payload={})
-        e2 = AuditLog(project_id=sample_run.project_id, run_id=sample_run.id,
-                      agent_id="system", event_type="b", payload={})
+        e1 = AuditLog(
+            project_id=sample_run.project_id,
+            run_id=sample_run.id,
+            agent_id="system",
+            event_type="a",
+            payload={},
+        )
+        e2 = AuditLog(
+            project_id=sample_run.project_id,
+            run_id=sample_run.id,
+            agent_id="system",
+            event_type="b",
+            payload={},
+        )
         db_session.add_all([e1, e2])
         await db_session.flush()
         assert e2.id > e1.id

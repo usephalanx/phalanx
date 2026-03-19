@@ -14,26 +14,40 @@ Evidence:
   We query Postgres directly rather than caching in Redis to avoid stale reads
   when multiple commanders run concurrently.
 """
+
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.config.loader import ConfigLoader, TeamConfig, TeamMember
-from forge.db.models import Run, WorkOrder
+from forge.db.models import Run
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
 # Non-terminal Run states that count toward WIP
-_ACTIVE_STATUSES = frozenset({
-    "INTAKE", "RESEARCHING", "PLANNING", "AWAITING_PLAN_APPROVAL",
-    "EXECUTING", "VERIFYING", "AWAITING_SHIP_APPROVAL",
-    "READY_TO_MERGE", "MERGED", "RELEASE_PREP",
-    "AWAITING_RELEASE_APPROVAL", "BLOCKED", "PAUSED",
-})
+_ACTIVE_STATUSES = frozenset(
+    {
+        "INTAKE",
+        "RESEARCHING",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_SHIP_APPROVAL",
+        "READY_TO_MERGE",
+        "MERGED",
+        "RELEASE_PREP",
+        "AWAITING_RELEASE_APPROVAL",
+        "BLOCKED",
+        "PAUSED",
+    }
+)
 
 
 class AgentUnavailableError(RuntimeError):
@@ -75,7 +89,7 @@ class TeamRuntime:
         self,
         session: AsyncSession,
         agent_id: str,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> int:
         """
         Count runs currently active for the given agent (by work_order.requested_by
@@ -107,7 +121,7 @@ class TeamRuntime:
         session: AsyncSession,
         role: str,
         min_ic_level: int = 3,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> TeamMember:
         """
         Find the first available team member for the given role, respecting
@@ -118,7 +132,8 @@ class TeamRuntime:
         reserving senior members for complex/escalated tasks.
         """
         candidates = [
-            m for m in self.team_config.members
+            m
+            for m in self.team_config.members
             if m.ic_level >= min_ic_level and (m.role == role or m.id == role)
         ]
 
@@ -145,15 +160,14 @@ class TeamRuntime:
         # All candidates at WIP limit
         ids = [m.id for m in candidates]
         raise AgentUnavailableError(
-            f"All agents for role={role!r} are at WIP limit: {ids}. "
-            f"Retry when a run completes."
+            f"All agents for role={role!r} are at WIP limit: {ids}. Retry when a run completes."
         )
 
     async def is_at_wip_limit(
         self,
         session: AsyncSession,
         agent_id: str,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> bool:
         """Return True if the agent has reached their max_concurrent_tasks."""
         member = self.get_member(agent_id)

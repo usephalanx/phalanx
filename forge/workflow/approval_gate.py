@@ -11,17 +11,19 @@ Design (evidence in EXECUTION_PLAN.md §B):
 
 AP-002: All state transitions go through the state machine — never direct writes.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.models import Approval
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
@@ -41,8 +43,7 @@ class ApprovalRejectedError(RuntimeError):
 
     def __init__(self, gate_type: str, note: str | None = None) -> None:
         super().__init__(
-            f"Approval gate '{gate_type}' was REJECTED. "
-            f"Note: {note or 'no note provided'}"
+            f"Approval gate '{gate_type}' was REJECTED. Note: {note or 'no note provided'}"
         )
         self.gate_type = gate_type
         self.note = note
@@ -123,14 +124,10 @@ class ApprovalGate:
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
             elapsed += _POLL_INTERVAL_SECONDS
 
-            result = await self._session.execute(
-                select(Approval).where(Approval.id == approval_id)
-            )
+            result = await self._session.execute(select(Approval).where(Approval.id == approval_id))
             # expire + refresh to avoid stale cache
             self._session.expire_all()
-            result = await self._session.execute(
-                select(Approval).where(Approval.id == approval_id)
-            )
+            result = await self._session.execute(select(Approval).where(Approval.id == approval_id))
             approval = result.scalar_one()
 
             if approval.status == "APPROVED":
@@ -162,8 +159,7 @@ class ApprovalGate:
             )
 
         raise ApprovalTimeoutError(
-            f"Approval gate '{approval_id}' timed out after {elapsed}s "
-            f"without a human decision."
+            f"Approval gate '{approval_id}' timed out after {elapsed}s without a human decision."
         )
 
     async def _notify_slack(self, approval: Approval, context: dict | None) -> None:
@@ -173,10 +169,10 @@ class ApprovalGate:
         """
         try:
             from slack_sdk.web.async_client import AsyncWebClient  # noqa: PLC0415
+            from sqlalchemy import select as _select  # noqa: PLC0415
 
             from forge.config.settings import get_settings  # noqa: PLC0415
-            from forge.db.models import Run, WorkOrder, Channel  # noqa: PLC0415
-            from sqlalchemy import select as _select  # noqa: PLC0415
+            from forge.db.models import Channel, Run, WorkOrder  # noqa: PLC0415
 
             settings = get_settings()
             if not settings.slack_bot_token:

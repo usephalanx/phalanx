@@ -12,20 +12,22 @@ Responsibilities:
 
 The QA agent never writes code. It only evaluates what the builder produced.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
-from uuid import UUID
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 log = structlog.get_logger(__name__)
 
@@ -259,8 +261,14 @@ class QAAgent:
     """
 
     # Defaults — overridden by project.yaml at runtime
-    DEFAULT_TEST_CMD = ["pytest", "--tb=short", "-q", "--junit-xml=test-results.xml",
-                        "--cov=forge", "--cov-report=xml:coverage.xml"]
+    DEFAULT_TEST_CMD = [
+        "pytest",
+        "--tb=short",
+        "-q",
+        "--junit-xml=test-results.xml",
+        "--cov=forge",
+        "--cov-report=xml:coverage.xml",
+    ]
     DEFAULT_LINT_CMD = ["ruff", "check", "."]
     DEFAULT_FORMAT_CMD = ["ruff", "format", "--check", "."]
     COVERAGE_THRESHOLD = 70.0
@@ -357,22 +365,28 @@ class QAAgent:
 
         # ruff check
         rc, stdout, stderr = await _run(self.DEFAULT_LINT_CMD, cwd=self.repo_path)
-        violation_count = len([l for l in stdout.splitlines() if l.strip() and not l.startswith("Found")])
-        results.append(LintResult(
-            tool="ruff-check",
-            passed=rc == 0,
-            violation_count=violation_count,
-            output=stdout[:3000],
-        ))
+        violation_count = len(
+            [line for line in stdout.splitlines() if line.strip() and not line.startswith("Found")]
+        )
+        results.append(
+            LintResult(
+                tool="ruff-check",
+                passed=rc == 0,
+                violation_count=violation_count,
+                output=stdout[:3000],
+            )
+        )
 
         # ruff format check
         rc, stdout, stderr = await _run(self.DEFAULT_FORMAT_CMD, cwd=self.repo_path)
-        results.append(LintResult(
-            tool="ruff-format",
-            passed=rc == 0,
-            violation_count=0 if rc == 0 else 1,
-            output=stdout[:1000],
-        ))
+        results.append(
+            LintResult(
+                tool="ruff-format",
+                passed=rc == 0,
+                violation_count=0 if rc == 0 else 1,
+                output=stdout[:1000],
+            )
+        )
 
         return results
 
@@ -398,7 +412,8 @@ class QAAgent:
 
         if coverage and coverage.modules_below_threshold:
             critical_failures = [
-                m for m in coverage.modules_below_threshold
+                m
+                for m in coverage.modules_below_threshold
                 if any(c in m["filename"] for c in self.CRITICAL_MODULES)
                 and m["coverage_pct"] < self.CRITICAL_MODULE_THRESHOLD
             ]
@@ -444,11 +459,7 @@ class QAAgent:
                 "coverage_ok": coverage.threshold_met if coverage else None,
                 "lint_ok": all(lr.passed for lr in lint_results),
             },
-            "failures": [
-                f
-                for suite in suites
-                for f in suite.failures
-            ],
+            "failures": [f for suite in suites for f in suite.failures],
             "modules_below_coverage": coverage.modules_below_threshold if coverage else [],
         }
 
@@ -558,9 +569,7 @@ def execute_task(  # pragma: no cover
             run_result = await session.execute(select(Run).where(Run.id == run_id))
             run = run_result.scalar_one()
 
-        workspace = (
-            Path(_settings.git_workspace) / run.project_id / run_id
-        )
+        workspace = Path(_settings.git_workspace) / run.project_id / run_id
 
         agent = QAAgent(
             run_id=run.id,
@@ -581,11 +590,7 @@ def execute_task(  # pragma: no cover
                     .values(
                         status=task_status,
                         output=report.as_dict(),
-                        error=(
-                            report.blocking_reason
-                            if outcome != QAOutcome.PASSED
-                            else None
-                        ),
+                        error=(report.blocking_reason if outcome != QAOutcome.PASSED else None),
                         completed_at=datetime.now(UTC),
                     )
                 )

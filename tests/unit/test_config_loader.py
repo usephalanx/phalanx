@@ -4,21 +4,21 @@ Unit tests for the ConfigLoader and Pydantic config models.
 Uses the `config_dir` fixture from conftest.py which writes real YAML files
 to a tmp_path directory.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from forge.config.loader import (
     ConfigLoader,
-    GuardrailsConfig,
-    ProjectConfig,
-    TeamConfig,
-    TeamMember,
-    WorkflowConfig,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestTeamConfigLoading:
@@ -82,9 +82,7 @@ class TestTeamConfigLoading:
 class TestTeamConfigValidation:
     def test_invalid_member_id_raises(self, config_dir: Path, team_config: dict, tmp_path: Path):
         bad_config = dict(team_config)
-        bad_config["members"] = [
-            {**team_config["members"][0], "id": "INVALID ID WITH SPACES"}
-        ]
+        bad_config["members"] = [{**team_config["members"][0], "id": "INVALID ID WITH SPACES"}]
         bad_dir = tmp_path / "bad-configs"
         bad_dir.mkdir()
         (bad_dir / "team.yaml").write_text(yaml.dump(bad_config))
@@ -94,9 +92,7 @@ class TestTeamConfigValidation:
 
     def test_ic_level_out_of_range_raises(self, tmp_path: Path, team_config: dict):
         bad_config = dict(team_config)
-        bad_config["members"] = [
-            {**team_config["members"][0], "ic_level": 99}
-        ]
+        bad_config["members"] = [{**team_config["members"][0], "ic_level": 99}]
         bad_dir = tmp_path / "bad-ic"
         bad_dir.mkdir()
         (bad_dir / "team.yaml").write_text(yaml.dump(bad_config))
@@ -107,7 +103,9 @@ class TestTeamConfigValidation:
     def test_empty_members_raises(self, tmp_path: Path):
         bad_dir = tmp_path / "empty-members"
         bad_dir.mkdir()
-        (bad_dir / "team.yaml").write_text(yaml.dump({"team": {"name": "T", "domain": "web"}, "members": []}))
+        (bad_dir / "team.yaml").write_text(
+            yaml.dump({"team": {"name": "T", "domain": "web"}, "members": []})
+        )
         loader = ConfigLoader(bad_dir)
         with pytest.raises(ValueError, match="Invalid team.yaml"):
             _ = loader.team
@@ -198,10 +196,10 @@ class TestWorkflowConfigLoading:
 class TestConfigImmutability:
     def test_team_config_is_frozen(self, config_dir: Path):
         loader = ConfigLoader(config_dir)
-        with pytest.raises(Exception):  # ValidationError or AttributeError
+        with pytest.raises((ValidationError, AttributeError, TypeError)):
             loader.team.team = None  # type: ignore
 
     def test_guardrails_is_frozen(self, config_dir: Path):
         loader = ConfigLoader(config_dir)
-        with pytest.raises(Exception):
+        with pytest.raises((ValidationError, AttributeError, TypeError)):
             loader.guardrails.wip_limit_per_member = 99  # type: ignore

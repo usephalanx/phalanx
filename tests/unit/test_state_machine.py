@@ -14,6 +14,7 @@ Coverage targets:
   - allowed_next_states() completeness
   - is_valid_transition() boolean helper
 """
+
 import pytest
 
 from forge.workflow.state_machine import (
@@ -26,7 +27,6 @@ from forge.workflow.state_machine import (
     is_valid_transition,
     validate_transition,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -130,9 +130,15 @@ class TestApprovalRejections:
 
 class TestFailureTransitions:
     FAIL_FROM = [
-        "RESEARCHING", "PLANNING", "AWAITING_PLAN_APPROVAL",
-        "EXECUTING", "VERIFYING", "AWAITING_SHIP_APPROVAL",
-        "READY_TO_MERGE", "RELEASE_PREP", "AWAITING_RELEASE_APPROVAL",
+        "RESEARCHING",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_SHIP_APPROVAL",
+        "READY_TO_MERGE",
+        "RELEASE_PREP",
+        "AWAITING_RELEASE_APPROVAL",
     ]
 
     @pytest.mark.parametrize("from_state", FAIL_FROM)
@@ -161,10 +167,19 @@ class TestFailureTransitions:
 
 class TestCancellation:
     CANCEL_FROM = [
-        "INTAKE", "RESEARCHING", "PLANNING", "AWAITING_PLAN_APPROVAL",
-        "EXECUTING", "VERIFYING", "AWAITING_SHIP_APPROVAL",
-        "READY_TO_MERGE", "MERGED", "RELEASE_PREP",
-        "AWAITING_RELEASE_APPROVAL", "BLOCKED", "PAUSED",
+        "INTAKE",
+        "RESEARCHING",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_SHIP_APPROVAL",
+        "READY_TO_MERGE",
+        "MERGED",
+        "RELEASE_PREP",
+        "AWAITING_RELEASE_APPROVAL",
+        "BLOCKED",
+        "PAUSED",
     ]
 
     @pytest.mark.parametrize("from_state", CANCEL_FROM)
@@ -223,8 +238,12 @@ class TestBlocking:
 
 class TestPauseResume:
     PAUSE_FROM = [
-        "RESEARCHING", "PLANNING", "AWAITING_PLAN_APPROVAL",
-        "EXECUTING", "VERIFYING", "AWAITING_SHIP_APPROVAL",
+        "RESEARCHING",
+        "PLANNING",
+        "AWAITING_PLAN_APPROVAL",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_SHIP_APPROVAL",
     ]
 
     @pytest.mark.parametrize("from_state", PAUSE_FROM)
@@ -232,8 +251,12 @@ class TestPauseResume:
         assert_valid(from_state, "PAUSED")
 
     RESUME_TO = [
-        "RESEARCHING", "PLANNING", "EXECUTING", "VERIFYING",
-        "AWAITING_PLAN_APPROVAL", "AWAITING_SHIP_APPROVAL",
+        "RESEARCHING",
+        "PLANNING",
+        "EXECUTING",
+        "VERIFYING",
+        "AWAITING_PLAN_APPROVAL",
+        "AWAITING_SHIP_APPROVAL",
     ]
 
     @pytest.mark.parametrize("to_state", RESUME_TO)

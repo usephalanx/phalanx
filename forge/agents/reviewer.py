@@ -20,6 +20,7 @@ Only CRITICAL_ISSUES escalates to ESCALATING status (which pauses the run).
 
 AP-003: exceptions propagate — Celery handles retries.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -63,9 +64,7 @@ class ReviewerAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
             builder_output = await self._load_builder_output(session, task.sequence_num)
 
@@ -178,9 +177,7 @@ class ReviewerAgent(BaseAgent):
 
     # ── Review logic ──────────────────────────────────────────────────────────
 
-    async def _run_review(
-        self, task: Task, builder_output: dict, code_context: str
-    ) -> dict:
+    async def _run_review(self, task: Task, builder_output: dict, code_context: str) -> dict:
         """Call Claude to review the code changes."""
 
         summary = builder_output.get("summary", "No builder summary available.")
@@ -302,7 +299,6 @@ def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: review code changes for a single task."""
-    import asyncio  # noqa: PLC0415
 
     agent = ReviewerAgent(
         run_id=run_id,

@@ -4,19 +4,19 @@ Unit tests for forge/gateway/slack_bot.py.
 Tests the handler helper functions (_handle_build, _handle_status, _handle_cancel,
 _handle_approval_action) by mocking DB session and Slack client.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 
 def make_db_context(session):
     @asynccontextmanager
     async def _get_db():
         yield session
+
     return _get_db
 
 
@@ -31,10 +31,11 @@ def make_session():
 
 # ── _handle_build ──────────────────────────────────────────────────────────────
 
+
 class TestHandleBuild:
     async def test_build_channel_not_registered(self):
-        from forge.gateway.slack_bot import _handle_build
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth login")
         respond = AsyncMock()
@@ -49,11 +50,13 @@ class TestHandleBuild:
             await _handle_build(parsed, user_id="U123", channel_id="C123", respond=respond)
 
         respond.assert_awaited_once()
-        assert "not linked" in respond.call_args[0][0].lower() or "not linked" in str(respond.call_args)
+        assert "not linked" in respond.call_args[0][0].lower() or "not linked" in str(
+            respond.call_args
+        )
 
     async def test_build_channel_no_project(self):
-        from forge.gateway.slack_bot import _handle_build
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth")
         respond = AsyncMock()
@@ -72,8 +75,8 @@ class TestHandleBuild:
         assert "no associated project" in respond.call_args[0][0].lower()
 
     async def test_build_creates_work_order_and_dispatches(self):
-        from forge.gateway.slack_bot import _handle_build
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth login")
         respond = AsyncMock()
@@ -107,8 +110,8 @@ class TestHandleBuild:
         assert "✅" in call_text or "Work order" in call_text
 
     async def test_build_handles_exception_gracefully(self):
-        from forge.gateway.slack_bot import _handle_build
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth")
         respond = AsyncMock()
@@ -122,10 +125,11 @@ class TestHandleBuild:
 
 # ── _handle_status ─────────────────────────────────────────────────────────────
 
+
 class TestHandleStatus:
     async def test_status_no_active_runs(self):
-        from forge.gateway.slack_bot import _handle_status
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status")
         respond = AsyncMock()
@@ -142,8 +146,8 @@ class TestHandleStatus:
         assert "No active" in respond.call_args[0][0]
 
     async def test_status_specific_run_not_found(self):
-        from forge.gateway.slack_bot import _handle_status
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status abc-123")
         respond = AsyncMock()
@@ -160,8 +164,8 @@ class TestHandleStatus:
         assert "not found" in respond.call_args[0][0]
 
     async def test_status_specific_run_found(self):
-        from forge.gateway.slack_bot import _handle_status
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status abc-123")
         respond = AsyncMock()
@@ -191,9 +195,8 @@ class TestHandleStatus:
         assert respond.call_args[1].get("blocks") is not None
 
     async def test_status_list_returns_block_kit(self):
-        from forge.gateway.slack_bot import _handle_status
         from forge.gateway.command_parser import parse_command
-        from datetime import UTC, datetime
+        from forge.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status")
         respond = AsyncMock()
@@ -222,10 +225,11 @@ class TestHandleStatus:
 
 # ── _handle_cancel ─────────────────────────────────────────────────────────────
 
+
 class TestHandleCancel:
     async def test_cancel_run_not_found(self):
-        from forge.gateway.slack_bot import _handle_cancel
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -242,8 +246,8 @@ class TestHandleCancel:
         assert "not found" in respond.call_args[0][0]
 
     async def test_cancel_terminal_run_rejected(self):
-        from forge.gateway.slack_bot import _handle_cancel
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -263,8 +267,8 @@ class TestHandleCancel:
         assert "cannot be cancelled" in respond.call_args[0][0]
 
     async def test_cancel_active_run_succeeds(self):
-        from forge.gateway.slack_bot import _handle_cancel
         from forge.gateway.command_parser import parse_command
+        from forge.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -285,6 +289,7 @@ class TestHandleCancel:
 
 
 # ── _handle_approval_action ───────────────────────────────────────────────────
+
 
 class TestHandleApprovalAction:
     def _make_body(self, approval_id="approval-1", user_id="U-approver"):

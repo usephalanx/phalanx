@@ -3,8 +3,9 @@ Redis client — async connection pool.
 All Redis access goes through this module.
 Never use Redis for authoritative state — Postgres is truth.
 """
+
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 import redis.asyncio as aioredis
 

@@ -1,10 +1,13 @@
 """
 Unit tests for forge/workflow/approval_gate.py.
 """
+
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from forge.workflow.approval_gate import (
     ApprovalGate,
     ApprovalRejectedError,
@@ -79,7 +82,7 @@ class TestRequestAndWait:
         mock_session.execute.return_value = poll_result
 
         with patch("forge.workflow.approval_gate.asyncio.sleep", AsyncMock()):
-            result = await gate.request_and_wait(
+            await gate.request_and_wait(
                 gate_type="plan",
                 gate_phase="planning",
                 context_snapshot={"plan_summary": "Build OAuth"},
@@ -95,6 +98,7 @@ class TestRequestAndWait:
         # Set approval.id after refresh
         def set_id(a):
             a.id = "approval-123"
+
         mock_session.refresh.side_effect = set_id
 
         poll_result = MagicMock()
@@ -112,6 +116,7 @@ class TestRequestAndWait:
 
         def set_id(a):
             a.id = "approval-123"
+
         mock_session.refresh.side_effect = set_id
 
         poll_result = MagicMock()
@@ -138,6 +143,7 @@ class TestRequestAndWait:
 
         def set_id(a):
             a.id = "approval-123"
+
         mock_session.refresh.side_effect = set_id
 
         poll_result = MagicMock()

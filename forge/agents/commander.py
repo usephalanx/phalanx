@@ -18,15 +18,14 @@ Design (evidence in EXECUTION_PLAN.md §B):
 
 Celery task entry point: forge.agents.commander.execute_run
 """
+
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.agents.base import AgentResult, BaseAgent
 from forge.config.loader import ConfigLoader
@@ -41,7 +40,9 @@ from forge.workflow.approval_gate import (
     ApprovalTimeoutError,
 )
 from forge.workflow.orchestrator import WorkflowOrchestrator
-from forge.workflow.state_machine import RunStatus
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
@@ -84,7 +85,7 @@ class CommanderAgent(BaseAgent):
                 )
 
             # ── Phase 1: INTAKE → RESEARCHING ─────────────────────────────────
-            run = await self._create_or_load_run(session, wo)
+            await self._create_or_load_run(session, wo)
             await self._transition_run("INTAKE", "RESEARCHING")
             await self._audit("state_transition", from_state="INTAKE", to_state="RESEARCHING")
 
@@ -121,20 +122,24 @@ class CommanderAgent(BaseAgent):
             except ApprovalRejectedError as exc:
                 self._log.warning("commander.plan_rejected", reason=str(exc))
                 await self._transition_run(
-                    "AWAITING_PLAN_APPROVAL", "PLANNING",
-                    error_message=f"Plan rejected: {exc}"
+                    "AWAITING_PLAN_APPROVAL", "PLANNING", error_message=f"Plan rejected: {exc}"
                 )
                 return AgentResult(
-                    success=False, output={}, error=str(exc),
+                    success=False,
+                    output={},
+                    error=str(exc),
                     tokens_used=self._tokens_used,
                 )
             except ApprovalTimeoutError as exc:
                 await self._transition_run(
-                    "AWAITING_PLAN_APPROVAL", "FAILED",
+                    "AWAITING_PLAN_APPROVAL",
+                    "FAILED",
                     error_message=str(exc),
                 )
                 return AgentResult(
-                    success=False, output={}, error=str(exc),
+                    success=False,
+                    output={},
+                    error=str(exc),
                     tokens_used=self._tokens_used,
                 )
 
@@ -154,12 +159,15 @@ class CommanderAgent(BaseAgent):
             except Exception as exc:
                 self._log.exception("commander.execution_failed", error=str(exc))
                 await self._transition_run(
-                    "EXECUTING", "FAILED",
+                    "EXECUTING",
+                    "FAILED",
                     error_message=str(exc),
                     error_context={"phase": "execution"},
                 )
                 return AgentResult(
-                    success=False, output={}, error=str(exc),
+                    success=False,
+                    output={},
+                    error=str(exc),
                     tokens_used=self._tokens_used,
                 )
 
@@ -172,11 +180,14 @@ class CommanderAgent(BaseAgent):
                 )
             except ApprovalRejectedError as exc:
                 await self._transition_run(
-                    "AWAITING_SHIP_APPROVAL", "EXECUTING",
+                    "AWAITING_SHIP_APPROVAL",
+                    "EXECUTING",
                     error_message=f"Ship rejected — rework required: {exc}",
                 )
                 return AgentResult(
-                    success=False, output={}, error=str(exc),
+                    success=False,
+                    output={},
+                    error=str(exc),
                     tokens_used=self._tokens_used,
                 )
 
@@ -187,15 +198,11 @@ class CommanderAgent(BaseAgent):
             tokens_used=self._tokens_used,
         )
 
-    async def _load_work_order(self, session: AsyncSession) -> Optional[WorkOrder]:
-        result = await session.execute(
-            select(WorkOrder).where(WorkOrder.id == self.work_order_id)
-        )
+    async def _load_work_order(self, session: AsyncSession) -> WorkOrder | None:
+        result = await session.execute(select(WorkOrder).where(WorkOrder.id == self.work_order_id))
         return result.scalar_one_or_none()
 
-    async def _create_or_load_run(
-        self, session: AsyncSession, wo: WorkOrder
-    ) -> Run:
+    async def _create_or_load_run(self, session: AsyncSession, wo: WorkOrder) -> Run:
         """Create a new Run for this work order (run_number auto-incremented)."""
         from sqlalchemy import func  # noqa: PLC0415
 
@@ -309,6 +316,7 @@ JSON format:
 
 # ── Celery task entry point ───────────────────────────────────────────────────
 
+
 @celery_app.task(
     name="forge.agents.commander.execute_run",
     bind=True,
@@ -316,7 +324,9 @@ JSON format:
     max_retries=2,
     acks_late=True,
 )
-def execute_run(self, work_order_id: str, project_id: str, run_id: str, **kwargs):  # pragma: no cover
+def execute_run(
+    self, work_order_id: str, project_id: str, run_id: str, **kwargs
+):  # pragma: no cover
     """
     Celery task: bootstrap and drive a Commander for a single Run.
 

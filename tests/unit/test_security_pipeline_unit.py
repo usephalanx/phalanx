@@ -3,27 +3,26 @@ Unit tests for forge/guardrails/security_pipeline.py.
 
 Tests the data types and individual scanner functions with mocked subprocess calls.
 """
+
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from forge.guardrails.security_pipeline import (
+    _SEVERITY_RANK,
     ScanFinding,
     ScanResult,
     ScanSeverity,
     SecurityScanResult,
-    _SEVERITY_RANK,
     run_bandit,
 )
-from datetime import UTC, datetime
-import uuid
-
 
 # ── ScanSeverity ──────────────────────────────────────────────────────────────
+
 
 class TestScanSeverity:
     def test_severity_values(self):
@@ -41,6 +40,7 @@ class TestScanSeverity:
 
 
 # ── ScanFinding ───────────────────────────────────────────────────────────────
+
 
 class TestScanFinding:
     def test_as_dict_contains_all_fields(self):
@@ -73,6 +73,7 @@ class TestScanFinding:
 
 
 # ── ScanResult ────────────────────────────────────────────────────────────────
+
 
 class TestScanResult:
     def test_passed_scan_as_dict(self):
@@ -109,6 +110,7 @@ class TestScanResult:
 
 # ── SecurityScanResult ────────────────────────────────────────────────────────
 
+
 class TestSecurityScanResult:
     def _make_result(self, passed=True, severity=ScanSeverity.NONE):
         return SecurityScanResult(
@@ -144,6 +146,7 @@ class TestSecurityScanResult:
 
 # ── run_bandit ────────────────────────────────────────────────────────────────
 
+
 class TestRunBandit:
     async def test_bandit_clean_output_passes(self, tmp_path):
         clean_output = json.dumps({"results": [], "errors": []})
@@ -159,18 +162,20 @@ class TestRunBandit:
         assert len(result.findings) == 0
 
     async def test_bandit_high_severity_fails(self, tmp_path):
-        bandit_output = json.dumps({
-            "results": [
-                {
-                    "test_id": "B105",
-                    "issue_severity": "HIGH",
-                    "filename": "app.py",
-                    "line_number": 10,
-                    "issue_text": "Hardcoded password",
-                }
-            ],
-            "errors": [],
-        })
+        bandit_output = json.dumps(
+            {
+                "results": [
+                    {
+                        "test_id": "B105",
+                        "issue_severity": "HIGH",
+                        "filename": "app.py",
+                        "line_number": 10,
+                        "issue_text": "Hardcoded password",
+                    }
+                ],
+                "errors": [],
+            }
+        )
 
         with patch(
             "forge.guardrails.security_pipeline._run_subprocess",
@@ -184,17 +189,19 @@ class TestRunBandit:
 
     async def test_bandit_medium_severity_passes_gate(self, tmp_path):
         """MEDIUM findings are informational — gate only fails on HIGH+."""
-        bandit_output = json.dumps({
-            "results": [
-                {
-                    "test_id": "B201",
-                    "issue_severity": "MEDIUM",
-                    "filename": "app.py",
-                    "line_number": 5,
-                    "issue_text": "Flask debug mode",
-                }
-            ]
-        })
+        bandit_output = json.dumps(
+            {
+                "results": [
+                    {
+                        "test_id": "B201",
+                        "issue_severity": "MEDIUM",
+                        "filename": "app.py",
+                        "line_number": 5,
+                        "issue_text": "Flask debug mode",
+                    }
+                ]
+            }
+        )
 
         with patch(
             "forge.guardrails.security_pipeline._run_subprocess",

@@ -11,6 +11,7 @@ Valid states (mirrors ck_run_valid_status in models.py):
     → AWAITING_RELEASE_APPROVAL → SHIPPED
     Any active state → FAILED | BLOCKED | PAUSED | CANCELLED
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -62,7 +63,7 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[RunStatus, RunStatus]] = frozenset(
         (RunStatus.RELEASE_PREP, RunStatus.AWAITING_RELEASE_APPROVAL),
         (RunStatus.AWAITING_RELEASE_APPROVAL, RunStatus.SHIPPED),  # release approved
         # Approval rejections → back to prior work state
-        (RunStatus.AWAITING_PLAN_APPROVAL, RunStatus.PLANNING),   # plan rejected
+        (RunStatus.AWAITING_PLAN_APPROVAL, RunStatus.PLANNING),  # plan rejected
         (RunStatus.AWAITING_SHIP_APPROVAL, RunStatus.EXECUTING),  # ship rejected → rework
         (RunStatus.AWAITING_RELEASE_APPROVAL, RunStatus.RELEASE_PREP),  # release rejected
         # Failure from any active state
@@ -80,8 +81,8 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[RunStatus, RunStatus]] = frozenset(
         (RunStatus.PLANNING, RunStatus.BLOCKED),
         (RunStatus.EXECUTING, RunStatus.BLOCKED),
         (RunStatus.VERIFYING, RunStatus.BLOCKED),
-        (RunStatus.BLOCKED, RunStatus.EXECUTING),        # unblocked
-        (RunStatus.BLOCKED, RunStatus.PLANNING),         # unblocked to earlier phase
+        (RunStatus.BLOCKED, RunStatus.EXECUTING),  # unblocked
+        (RunStatus.BLOCKED, RunStatus.PLANNING),  # unblocked to earlier phase
         (RunStatus.BLOCKED, RunStatus.FAILED),
         # Pause/resume (human-initiated or interrupt handler)
         (RunStatus.RESEARCHING, RunStatus.PAUSED),

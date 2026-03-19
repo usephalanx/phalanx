@@ -12,22 +12,27 @@ Evidence for queue-per-role isolation:
   Celery docs: https://docs.celeryq.dev/en/stable/userguide/routing.html
   Prevents a stuck builder (git clone) from blocking commander tasks.
 """
+
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import structlog
-from celery import Celery
+
+if TYPE_CHECKING:
+    from celery import Celery
 
 log = structlog.get_logger(__name__)
 
 # Maps agent_role → Celery queue name. Must mirror celery_app.py task_queues.
 _ROLE_TO_QUEUE: dict[str, str] = {
     "commander": "commander",
-    "planner":   "planner",
-    "builder":   "builder",
-    "reviewer":  "reviewer",
-    "qa":        "qa",
-    "security":  "security",
-    "release":   "release",
+    "planner": "planner",
+    "builder": "builder",
+    "reviewer": "reviewer",
+    "qa": "qa",
+    "security": "security",
+    "release": "release",
     # Scheduled/ingestion tasks
     "ingestion": "ingestion",
     "skill_drills": "skill_drills",
@@ -39,12 +44,12 @@ _DEFAULT_QUEUE = "default"
 # These tasks are registered in their respective agent modules (M3+).
 _ROLE_TO_TASK: dict[str, str] = {
     "commander": "forge.agents.commander.execute_run",
-    "planner":   "forge.agents.planner.execute_task",
-    "builder":   "forge.agents.builder.execute_task",
-    "reviewer":  "forge.agents.reviewer.execute_task",
-    "qa":        "forge.agents.qa.execute_task",
-    "security":  "forge.agents.security.execute_task",
-    "release":   "forge.agents.release.execute_task",
+    "planner": "forge.agents.planner.execute_task",
+    "builder": "forge.agents.builder.execute_task",
+    "reviewer": "forge.agents.reviewer.execute_task",
+    "qa": "forge.agents.qa.execute_task",
+    "security": "forge.agents.security.execute_task",
+    "release": "forge.agents.release.execute_task",
 }
 
 

@@ -1,11 +1,13 @@
 """
 Unit tests for forge/runtime/task_router.py.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
 import pytest
+
 from forge.runtime.task_router import TaskRouter, UnroutableTaskError
 
 

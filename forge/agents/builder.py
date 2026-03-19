@@ -18,12 +18,12 @@ Design (AD-001):
   - If not: writes to local workspace only (for local demo/testing).
   - AP-003: exceptions propagate — Celery handles retries.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,9 +65,7 @@ class BuilderAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
             plan = await self._load_planner_plan(session, task.sequence_num)
 
@@ -124,7 +122,10 @@ class BuilderAgent(BaseAgent):
 
         await self._audit(
             event_type="task_complete",
-            payload={"files_written": len(files_written), "has_commit": bool(commit_info.get("sha"))},
+            payload={
+                "files_written": len(files_written),
+                "has_commit": bool(commit_info.get("sha")),
+            },
         )
 
         self._log.info(
@@ -183,30 +184,23 @@ class BuilderAgent(BaseAgent):
     async def _setup_git_workspace(self, workspace: Path, run: Run, branch: str) -> None:
         """Clone or update the repo, then checkout/create the working branch."""
         try:
-            from git import Actor, InvalidGitRepositoryError, Repo  # noqa: PLC0415
+            from git import Repo  # noqa: PLC0415
 
             # Try to get project repo_url from DB project.config
             async with get_db() as session:
                 from forge.db.models import Project  # noqa: PLC0415
-                result = await session.execute(
-                    select(Project).where(Project.id == run.project_id)
-                )
+
+                result = await session.execute(select(Project).where(Project.id == run.project_id))
                 project = result.scalar_one_or_none()
 
-            repo_url = (
-                (project.config or {}).get("repo_url", "")
-                if project
-                else ""
-            )
+            repo_url = (project.config or {}).get("repo_url", "") if project else ""
 
             if not repo_url:
                 self._log.info("builder.git.no_repo_url", project_id=run.project_id)
                 return
 
             # Embed token in URL for authentication
-            auth_url = repo_url.replace(
-                "https://", f"https://{settings.github_token}@"
-            )
+            auth_url = repo_url.replace("https://", f"https://{settings.github_token}@")
 
             git_dir = workspace / ".git"
             if git_dir.exists():
@@ -239,7 +233,7 @@ class BuilderAgent(BaseAgent):
         total_bytes = 0
 
         # First: explicitly listed files
-        for rel_path in (task.files_likely_touched or []):
+        for rel_path in task.files_likely_touched or []:
             full = workspace / rel_path
             if full.exists() and full.is_file():
                 try:
@@ -292,7 +286,11 @@ class BuilderAgent(BaseAgent):
                 parts.append(f"--- {path} ---\n{content}")
             file_context = "\n\n".join(parts)[:_MAX_CONTEXT_BYTES]
 
-        plan_text = json.dumps(plan, indent=2)[:4000] if plan else "No explicit plan — use task description."
+        plan_text = (
+            json.dumps(plan, indent=2)[:4000]
+            if plan
+            else "No explicit plan — use task description."
+        )
 
         system = """\
 You are an expert software engineer in FORGE, an AI team operating system.
@@ -483,7 +481,6 @@ def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: build code for a single task."""
-    import asyncio  # noqa: PLC0415
 
     agent = BuilderAgent(
         run_id=run_id,

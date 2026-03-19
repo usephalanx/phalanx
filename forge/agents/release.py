@@ -14,13 +14,13 @@ and records them as an artifact — the PR step is skipped gracefully.
 
 AP-003: exceptions propagate — Celery handles retries.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 import structlog
 from sqlalchemy import select, update
@@ -55,9 +55,7 @@ class ReleaseAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
             work_order = await self._load_work_order(session, run.work_order_id)
             task_summaries = await self._load_task_summaries(session)
@@ -85,9 +83,7 @@ class ReleaseAgent(BaseAgent):
             if pr_info.get("pr_number"):
                 pr_update["pr_number"] = pr_info["pr_number"]
 
-            await session.execute(
-                update(Run).where(Run.id == self.run_id).values(**pr_update)
-            )
+            await session.execute(update(Run).where(Run.id == self.run_id).values(**pr_update))
 
             await self._persist_artifact(session, output, run_ref.project_id, notes)
 
@@ -128,9 +124,7 @@ class ReleaseAgent(BaseAgent):
         return result.scalar_one()
 
     async def _load_work_order(self, session, work_order_id: str) -> WorkOrder | None:
-        result = await session.execute(
-            select(WorkOrder).where(WorkOrder.id == work_order_id)
-        )
+        result = await session.execute(select(WorkOrder).where(WorkOrder.id == work_order_id))
         return result.scalar_one_or_none()
 
     async def _load_task_summaries(self, session) -> list[dict]:
@@ -216,9 +210,7 @@ Return ONLY valid JSON — no markdown fences.
 
     # ── GitHub PR creation ────────────────────────────────────────────────────
 
-    async def _create_github_pr(
-        self, run: Run, work_order: WorkOrder | None, notes: dict
-    ) -> dict:
+    async def _create_github_pr(self, run: Run, work_order: WorkOrder | None, notes: dict) -> dict:
         """Create a GitHub PR. Returns {pr_url, pr_number} or empty dict."""
         if not settings.github_token or not run.active_branch:
             self._log.info(
@@ -234,9 +226,8 @@ Return ONLY valid JSON — no markdown fences.
             # Get project repo URL
             async with get_db() as session:
                 from forge.db.models import Project  # noqa: PLC0415
-                result = await session.execute(
-                    select(Project).where(Project.id == run.project_id)
-                )
+
+                result = await session.execute(select(Project).where(Project.id == run.project_id))
                 project = result.scalar_one_or_none()
 
             repo_name = (project.config or {}).get("github_repo", "") if project else ""
@@ -249,11 +240,11 @@ Return ONLY valid JSON — no markdown fences.
 
             # Build PR body from release notes
             changes_text = "\n".join(
-                f"- **{c['type']}**: {c['description']}"
-                for c in notes.get("changes", [])
+                f"- **{c['type']}**: {c['description']}" for c in notes.get("changes", [])
             )
             breaking = (
-                "\n\n⚠️ **Breaking changes:**\n" + "\n".join(f"- {b}" for b in notes["breaking_changes"])
+                "\n\n⚠️ **Breaking changes:**\n"
+                + "\n".join(f"- {b}" for b in notes["breaking_changes"])
                 if notes.get("breaking_changes")
                 else ""
             )
@@ -290,9 +281,7 @@ Return ONLY valid JSON — no markdown fences.
 
     # ── Artifact ──────────────────────────────────────────────────────────────
 
-    async def _persist_artifact(
-        self, session, output: dict, project_id: str, notes: dict
-    ) -> None:
+    async def _persist_artifact(self, session, output: dict, project_id: str, notes: dict) -> None:
         try:
             json_bytes = json.dumps(output).encode()
             artifact = Artifact(
@@ -331,7 +320,6 @@ def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: prepare release artifacts for a single task."""
-    import asyncio  # noqa: PLC0415
 
     agent = ReleaseAgent(
         run_id=run_id,

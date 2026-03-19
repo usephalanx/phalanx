@@ -14,25 +14,29 @@ Anti-patterns it prevents:
   - Agents calling each other's HTTP endpoints.
   - Status updates that bypass the state machine.
 """
+
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.db.models import Approval, Run, Task
-from forge.runtime.task_router import TaskRouter
-from forge.workflow.approval_gate import ApprovalGate, ApprovalRejectedError, ApprovalTimeoutError
+from forge.db.models import Run, Task
+from forge.workflow.approval_gate import ApprovalGate
 from forge.workflow.state_machine import RunStatus, validate_transition
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from forge.runtime.task_router import TaskRouter
 
 log = structlog.get_logger(__name__)
 
-_TASK_POLL_INTERVAL = 15   # seconds between task status checks
-_TASK_MAX_WAIT = 7200      # 2h hard cap per task (overridden by guardrails)
+_TASK_POLL_INTERVAL = 15  # seconds between task status checks
+_TASK_MAX_WAIT = 7200  # 2h hard cap per task (overridden by guardrails)
 _COMPLETED_STATUSES = frozenset({"COMPLETED"})
 _FAILED_STATUSES = frozenset({"FAILED", "CANCELLED"})
 _BLOCKED_STATUSES = frozenset({"BLOCKED", "ESCALATING", "NEEDS_CLARIFICATION"})
@@ -125,9 +129,7 @@ class WorkflowOrchestrator:
             elapsed += _TASK_POLL_INTERVAL
 
             self._session.expire_all()
-            result = await self._session.execute(
-                select(Task).where(Task.id == task.id)
-            )
+            result = await self._session.execute(select(Task).where(Task.id == task.id))
             refreshed = result.scalar_one()
 
             if refreshed.status in _COMPLETED_STATUSES:
@@ -153,9 +155,7 @@ class WorkflowOrchestrator:
                 )
                 # Continue polling — human or escalation will unblock
 
-        raise OrchestratorError(
-            f"Task {task.id} ({task.agent_role}) timed out after {elapsed}s"
-        )
+        raise OrchestratorError(f"Task {task.id} ({task.agent_role}) timed out after {elapsed}s")
 
     async def _transition(self, from_status: RunStatus, to_status: RunStatus) -> None:
         """Validate and apply a Run status transition."""

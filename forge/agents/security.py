@@ -17,6 +17,7 @@ Design (evidence in EXECUTION_PLAN.md §B):
   - AP-003: exceptions propagate — Celery handles retries.
   - The SecurityPipeline itself is non-bypassable in code (EXECUTION_PLAN AD-003).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -54,9 +55,7 @@ class SecurityAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
 
         workspace = Path(settings.git_workspace) / run.project_id / self.run_id
@@ -173,7 +172,6 @@ def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: run security scans for a single task."""
-    import asyncio  # noqa: PLC0415
 
     agent = SecurityAgent(
         run_id=run_id,

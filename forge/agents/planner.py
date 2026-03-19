@@ -17,6 +17,7 @@ Design notes:
   - Never modifies code; that is exclusively the Builder's domain.
   - AP-003: exceptions propagate to Celery retry handler.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -125,9 +126,7 @@ class PlannerAgent(BaseAgent):
 
     # ── Core logic ────────────────────────────────────────────────────────────
 
-    async def _generate_plan(
-        self, task: Task, run: Run, prior_outputs: list[dict]
-    ) -> dict:
+    async def _generate_plan(self, task: Task, run: Run, prior_outputs: list[dict]) -> dict:
         """Call Claude Opus to produce a structured implementation plan."""
         files_hint = (
             f"\nFiles likely touched: {', '.join(task.files_likely_touched)}"
@@ -136,9 +135,10 @@ class PlannerAgent(BaseAgent):
         )
         prior_ctx = ""
         if prior_outputs:
-            prior_ctx = "\n\nContext from prior tasks in this run:\n" + json.dumps(
-                prior_outputs, indent=2
-            )[:3000]
+            prior_ctx = (
+                "\n\nContext from prior tasks in this run:\n"
+                + json.dumps(prior_outputs, indent=2)[:3000]
+            )
 
         system = """\
 You are a senior software architect in FORGE, an AI team operating system.
@@ -253,7 +253,6 @@ def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs
 ) -> dict:
     """Celery entry point: plan a single task. Called by WorkflowOrchestrator."""
-    import asyncio  # noqa: PLC0415
 
     agent = PlannerAgent(
         run_id=run_id,

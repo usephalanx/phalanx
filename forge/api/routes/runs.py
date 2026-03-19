@@ -10,15 +10,14 @@ Routes:
   GET  /runs/{id}/tasks             — get tasks for a run
   POST /runs/{id}/cancel            — cancel an active run
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.models import Run, Task
 from forge.db.session import get_db
@@ -29,22 +28,23 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
+
 class TaskOut(BaseModel):
     id: str
     sequence_num: int
     title: str
     description: str
     agent_role: str
-    assigned_agent_id: Optional[str]
+    assigned_agent_id: str | None
     status: str
     estimated_complexity: int
-    error: Optional[str]
+    error: str | None
     created_at: str
-    started_at: Optional[str]
-    completed_at: Optional[str]
+    started_at: str | None
+    completed_at: str | None
 
     @classmethod
-    def from_orm(cls, t: Task) -> "TaskOut":
+    def from_orm(cls, t: Task) -> TaskOut:
         return cls(
             id=t.id,
             sequence_num=t.sequence_num,
@@ -67,19 +67,19 @@ class RunOut(BaseModel):
     project_id: str
     run_number: int
     status: str
-    active_branch: Optional[str]
-    pr_url: Optional[str]
-    pr_number: Optional[int]
-    error_message: Optional[str]
+    active_branch: str | None
+    pr_url: str | None
+    pr_number: int | None
+    error_message: str | None
     token_count: int
     estimated_cost_usd: float
     created_at: str
     updated_at: str
-    started_at: Optional[str]
-    completed_at: Optional[str]
+    started_at: str | None
+    completed_at: str | None
 
     @classmethod
-    def from_orm(cls, r: Run) -> "RunOut":
+    def from_orm(cls, r: Run) -> RunOut:
         return cls(
             id=r.id,
             work_order_id=r.work_order_id,
@@ -100,6 +100,7 @@ class RunOut(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=list[RunOut])
 async def list_runs(
@@ -151,9 +152,7 @@ async def get_run_tasks(run_id: str):
             )
 
         result = await session.execute(
-            select(Task)
-            .where(Task.run_id == run_id)
-            .order_by(Task.sequence_num)
+            select(Task).where(Task.run_id == run_id).order_by(Task.sequence_num)
         )
         tasks = list(result.scalars())
         return [TaskOut.from_orm(t) for t in tasks]
@@ -183,7 +182,7 @@ async def cancel_run(run_id: str):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot cancel run in status {run.status!r}: {exc}",
-            )
+            ) from exc
 
         await session.execute(
             update(Run)

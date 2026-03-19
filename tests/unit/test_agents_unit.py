@@ -2,17 +2,15 @@
 Unit tests for all FORGE agents.
 Tests the business logic by mocking Anthropic API, DB session, and file I/O.
 """
+
 from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-
 # ── Shared helpers ─────────────────────────────────────────────────────────────
+
 
 def make_session():
     session = AsyncMock()
@@ -26,6 +24,7 @@ def make_db_context(session):
     @asynccontextmanager
     async def _get_db():
         yield session
+
     return _get_db
 
 
@@ -88,9 +87,11 @@ def mock_claude_response(text: str):
 # PlannerAgent
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestPlannerAgent:
     def _make_agent(self):
         from forge.agents.planner import PlannerAgent
+
         return PlannerAgent(run_id="r-1", task_id="t-1", agent_id="planner")
 
     async def test_execute_returns_success(self):
@@ -114,7 +115,13 @@ class TestPlannerAgent:
         task_result.scalar_one_or_none.return_value = task
         run_result = MagicMock()
         run_result.scalar_one.return_value = run
-        session.execute.side_effect = [task_result, run_result, MagicMock(), MagicMock(), MagicMock()]
+        session.execute.side_effect = [
+            task_result,
+            run_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
 
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(plan))
@@ -153,7 +160,13 @@ class TestPlannerAgent:
         task_result.scalar_one_or_none.return_value = task
         run_result = MagicMock()
         run_result.scalar_one.return_value = run
-        session.execute.side_effect = [task_result, run_result, MagicMock(), MagicMock(), MagicMock()]
+        session.execute.side_effect = [
+            task_result,
+            run_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
 
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response("not json at all")
@@ -174,9 +187,11 @@ class TestPlannerAgent:
 # ReviewerAgent
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestReviewerAgent:
     def _make_agent(self):
         from forge.agents.reviewer import ReviewerAgent
+
         return ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
     async def test_execute_approved_verdict(self):
@@ -204,7 +219,14 @@ class TestReviewerAgent:
         builder_task.output = {"summary": "Added JWT", "files_written": []}
         builder_result.scalar_one_or_none.return_value = builder_task
 
-        session.execute.side_effect = [task_result, run_result, builder_result, run_result, MagicMock(), MagicMock()]
+        session.execute.side_effect = [
+            task_result,
+            run_result,
+            builder_result,
+            run_result,
+            MagicMock(),
+            MagicMock(),
+        ]
 
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(review))
@@ -221,6 +243,7 @@ class TestReviewerAgent:
 
     def test_read_changed_files_with_existing_files(self, tmp_path):
         from forge.agents.reviewer import ReviewerAgent
+
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
         (tmp_path / "auth.py").write_text("def authenticate(): pass")
@@ -232,6 +255,7 @@ class TestReviewerAgent:
 
     def test_read_changed_files_missing_workspace(self, tmp_path):
         from forge.agents.reviewer import ReviewerAgent
+
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
         nonexistent = tmp_path / "does_not_exist"
@@ -240,6 +264,7 @@ class TestReviewerAgent:
 
     def test_read_changed_files_handles_deleted(self, tmp_path):
         from forge.agents.reviewer import ReviewerAgent
+
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
         builder_output = {"files_written": ["DELETE:old_file.py"]}
@@ -247,7 +272,8 @@ class TestReviewerAgent:
         assert "DELETED" in context
 
     def test_read_changed_files_respects_max_bytes(self, tmp_path):
-        from forge.agents.reviewer import ReviewerAgent, _MAX_CODE_BYTES
+        from forge.agents.reviewer import _MAX_CODE_BYTES, ReviewerAgent
+
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
         # Create files totalling more than max
@@ -256,16 +282,20 @@ class TestReviewerAgent:
 
         builder_output = {"files_written": [f"file{i}.py" for i in range(5)]}
         context = agent._read_changed_files(tmp_path, builder_output)
-        assert len(context.encode()) < _MAX_CODE_BYTES * 2  # should be capped, with some slack for headers
+        assert (
+            len(context.encode()) < _MAX_CODE_BYTES * 2
+        )  # should be capped, with some slack for headers
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SecurityAgent
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSecurityAgent:
     def _make_agent(self):
         from forge.agents.security import SecurityAgent
+
         return SecurityAgent(run_id="r-1", task_id="t-1", agent_id="security")
 
     async def test_execute_passed_scan(self):
@@ -316,8 +346,15 @@ class TestSecurityAgent:
             "max_severity": "high",
             "blocking_reason": "Hardcoded secrets found",
             "scanned_at": "2026-01-01T00:00:00",
-            "scans": [{"tool": "detect-secrets", "passed": False, "max_severity": "high",
-                        "findings_count": 2, "error": None}],
+            "scans": [
+                {
+                    "tool": "detect-secrets",
+                    "passed": False,
+                    "max_severity": "high",
+                    "findings_count": 2,
+                    "error": None,
+                }
+            ],
         }
 
         with (
@@ -335,7 +372,10 @@ class TestSecurityAgent:
         agent = self._make_agent()
         run = make_run()
 
-        with patch("forge.guardrails.security_pipeline.SecurityPipeline", side_effect=ImportError("not installed")):
+        with patch(
+            "forge.guardrails.security_pipeline.SecurityPipeline",
+            side_effect=ImportError("not installed"),
+        ):
             result = await agent._run_security_pipeline(tmp_path, run)
 
         assert result["overall_passed"] is False
@@ -346,9 +386,11 @@ class TestSecurityAgent:
 # ReleaseAgent
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestReleaseAgent:
     def _make_agent(self):
         from forge.agents.release import ReleaseAgent
+
         return ReleaseAgent(run_id="r-1", task_id="t-1", agent_id="release")
 
     async def test_execute_without_github_token(self):
@@ -370,8 +412,14 @@ class TestReleaseAgent:
         project_result.scalar_one.return_value = run
 
         session.execute.side_effect = [
-            task_result, run_result, wo_result, tasks_result,
-            run_result, MagicMock(), MagicMock(), MagicMock(),
+            task_result,
+            run_result,
+            wo_result,
+            tasks_result,
+            run_result,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
         ]
 
         notes = {
@@ -464,9 +512,11 @@ class TestReleaseAgent:
 # CommanderAgent
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCommanderAgent:
     def _make_agent(self):
         from forge.agents.commander import CommanderAgent
+
         return CommanderAgent(
             run_id="r-1",
             work_order_id="wo-1",
@@ -535,10 +585,22 @@ class TestCommanderAgent:
 
         plan = {
             "tasks": [
-                {"sequence_num": 1, "title": "Task 1", "description": "D1",
-                 "agent_role": "builder", "depends_on": [], "files_likely_touched": []},
-                {"sequence_num": 2, "title": "Task 2", "description": "D2",
-                 "agent_role": "reviewer", "depends_on": [], "files_likely_touched": []},
+                {
+                    "sequence_num": 1,
+                    "title": "Task 1",
+                    "description": "D1",
+                    "agent_role": "builder",
+                    "depends_on": [],
+                    "files_likely_touched": [],
+                },
+                {
+                    "sequence_num": 2,
+                    "title": "Task 2",
+                    "description": "D2",
+                    "agent_role": "reviewer",
+                    "depends_on": [],
+                    "files_likely_touched": [],
+                },
             ]
         }
 

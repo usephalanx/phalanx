@@ -2,7 +2,9 @@
 Maintenance scheduled tasks.
 Detects runs stuck in non-terminal states and auto-cancels them after timeout.
 """
+
 import structlog
+
 from forge.queue.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

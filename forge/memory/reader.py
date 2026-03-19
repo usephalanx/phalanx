@@ -11,15 +11,18 @@ Evidence for pgvector approach:
   pgvector GitHub: https://github.com/pgvector/pgvector
   Vector similarity search is a SQL query — no extra service, no extra latency hop.
 """
+
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import and_, desc, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.models import MemoryDecision, MemoryFact
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
@@ -81,7 +84,7 @@ class MemoryReader:
         self,
         limit: int = 10,
         fact_types: list[str] | None = None,
-        source_run_id: Optional[str] = None,
+        source_run_id: str | None = None,
     ) -> list[MemoryFact]:
         """
         Return the most recent confirmed facts, optionally filtered by type or run.

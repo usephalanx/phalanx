@@ -2,7 +2,9 @@
 Memory scheduled tasks.
 Decays relevance scores of old memory entries to keep context windows lean.
 """
+
 import structlog
+
 from forge.queue.celery_app import celery_app
 
 log = structlog.get_logger(__name__)

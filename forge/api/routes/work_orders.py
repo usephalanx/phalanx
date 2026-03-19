@@ -10,14 +10,12 @@ Routes:
   GET  /work-orders/{id}          — get a single work order
   POST /work-orders               — create (internal tools / testing only)
 """
+
 from __future__ import annotations
 
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.db.models import WorkOrder
 from forge.db.session import get_db
@@ -26,6 +24,7 @@ router = APIRouter(prefix="/work-orders", tags=["work-orders"])
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
+
 
 class WorkOrderOut(BaseModel):
     id: str
@@ -41,7 +40,7 @@ class WorkOrderOut(BaseModel):
     model_config = {"from_attributes": True}
 
     @classmethod
-    def from_orm(cls, wo: WorkOrder) -> "WorkOrderOut":
+    def from_orm(cls, wo: WorkOrder) -> WorkOrderOut:
         return cls(
             id=wo.id,
             project_id=wo.project_id,
@@ -66,10 +65,11 @@ class CreateWorkOrderRequest(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+
 @router.get("", response_model=list[WorkOrderOut])
 async def list_work_orders(
     project_id: str = Query(..., description="Filter by project ID"),
-    status_filter: Optional[str] = Query(None, alias="status"),
+    status_filter: str | None = Query(None, alias="status"),
     limit: int = Query(default=50, le=200),
 ):
     """List work orders for a project, newest first."""
@@ -92,9 +92,7 @@ async def list_work_orders(
 async def get_work_order(work_order_id: str):
     """Get a single work order by ID."""
     async with get_db() as session:
-        result = await session.execute(
-            select(WorkOrder).where(WorkOrder.id == work_order_id)
-        )
+        result = await session.execute(select(WorkOrder).where(WorkOrder.id == work_order_id))
         wo = result.scalar_one_or_none()
         if wo is None:
             raise HTTPException(

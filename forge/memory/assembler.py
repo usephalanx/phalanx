@@ -11,9 +11,13 @@ Evidence: Context window management is critical for cost and quality.
   Standing decisions first (always in context), then high-confidence facts,
   then recent facts — mirrors how a senior engineer recalls institutional knowledge.
 """
+
 from __future__ import annotations
 
-from forge.db.models import MemoryDecision, MemoryFact
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from forge.db.models import MemoryDecision, MemoryFact
 
 # Approximate characters per token (conservative estimate for GPT/Claude)
 _CHARS_PER_TOKEN = 4
