@@ -109,6 +109,13 @@ $SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
   --exclude '.gitkeep' \
   "$REPO_DIR/configs/" "$SERVER:$APP_DIR/configs/" || true
 
+# Sync landing page + nginx config
+[ -d "$REPO_DIR/site" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  "$REPO_DIR/site/" "$SERVER:$APP_DIR/site/" || true
+
+[ -f "$REPO_DIR/nginx/nginx.conf" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  "$REPO_DIR/nginx/" "$SERVER:$APP_DIR/nginx/" || true
+
 # Upload .env.prod (must exist locally — not committed to git)
 if [ -f "$REPO_DIR/.env.prod" ]; then
   $SCP "$REPO_DIR/.env.prod" "$SERVER:$APP_DIR/.env"
