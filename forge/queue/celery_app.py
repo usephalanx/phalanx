@@ -8,7 +8,22 @@ from forge.config.settings import get_settings
 
 settings = get_settings()
 
-celery_app = Celery("forge")
+celery_app = Celery(
+    "forge",
+    include=[
+        "forge.agents.commander",
+        "forge.agents.planner",
+        "forge.agents.builder",
+        "forge.agents.reviewer",
+        "forge.agents.qa",
+        "forge.agents.security",
+        "forge.agents.release",
+        "forge.maintenance.tasks",
+        "forge.memory.tasks",
+        "forge.skills.ingestion.tasks",
+        "forge.skills.tasks",
+    ],
+)
 
 celery_app.config_from_object({
     "broker_url": settings.celery_broker_url,
@@ -84,12 +99,18 @@ celery_app.config_from_object({
     "task_time_limit": 600,
 })
 
-# Auto-discover tasks in forge/ submodules
+# Explicitly include all task modules — autodiscover only finds tasks.py files,
+# but FORGE tasks live in per-agent modules (forge.agents.commander, etc.)
 celery_app.autodiscover_tasks([
-    "forge.workflow",
-    "forge.agents",
-    "forge.skills",
-    "forge.skills.ingestion",
-    "forge.memory",
+    "forge.agents.commander",
+    "forge.agents.planner",
+    "forge.agents.builder",
+    "forge.agents.reviewer",
+    "forge.agents.qa",
+    "forge.agents.security",
+    "forge.agents.release",
     "forge.maintenance",
+    "forge.memory",
+    "forge.skills.ingestion",
+    "forge.skills",
 ])
