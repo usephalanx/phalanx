@@ -122,8 +122,6 @@ class SecurityAgent(BaseAgent):
             pipeline = SecurityPipeline(
                 run_id=run.id,
                 repo_path=workspace,
-                task_id=self.task_id,
-                project_id=run.project_id,
             )
             result = await pipeline.run()
 
