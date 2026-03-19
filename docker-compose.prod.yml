@@ -113,6 +113,8 @@ services:
       --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills
       --concurrency=4
       --max-tasks-per-child=100
+    environment:
+      FORGE_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
     volumes:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
