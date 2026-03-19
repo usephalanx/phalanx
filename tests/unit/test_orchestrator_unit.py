@@ -92,17 +92,32 @@ class TestTransition:
 
 
 class TestDispatchAndWait:
+    def _make_poll_get_db(self, refreshed_task):
+        """Build a mock get_db() context manager that returns refreshed_task on poll."""
+        from contextlib import asynccontextmanager
+
+        poll_session = AsyncMock()
+        poll_result = MagicMock()
+        poll_result.scalar_one.return_value = refreshed_task
+        poll_session.execute = AsyncMock(return_value=poll_result)
+
+        @asynccontextmanager
+        async def _mock_get_db():
+            yield poll_session
+
+        return _mock_get_db
+
     async def test_completed_task_returns_normally(self, orchestrator, mock_session, mock_router):
-        task = make_task("t1", agent_role="builder", status="PENDING")
-        completed_task = make_task("t1", agent_role="builder", status="COMPLETED")
+        task = make_task("task-uuid-1", agent_role="builder", status="PENDING")
+        completed_task = make_task("task-uuid-1", agent_role="builder", status="COMPLETED")
 
-        execute_results = [
-            MagicMock(scalar_one=MagicMock(return_value=None)),  # mark IN_PROGRESS
-            MagicMock(scalar_one=MagicMock(return_value=completed_task)),  # poll
-        ]
-        mock_session.execute.side_effect = execute_results
+        # mock_session handles the IN_PROGRESS update; get_db() handles the poll
+        mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=None))
 
-        with patch("forge.workflow.orchestrator.asyncio.sleep", AsyncMock()):
+        with (
+            patch("forge.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("forge.db.session.get_db", self._make_poll_get_db(completed_task)),
+        ):
             await orchestrator._dispatch_and_wait(task)
 
         mock_router.dispatch.assert_called_once()
@@ -110,17 +125,14 @@ class TestDispatchAndWait:
     async def test_failed_task_raises_orchestrator_error(
         self, orchestrator, mock_session, mock_router
     ):
-        task = make_task("t1", agent_role="qa", status="PENDING")
-        failed_task = make_task("t1", agent_role="qa", status="FAILED", error="tests failed")
+        task = make_task("task-uuid-2", agent_role="qa", status="PENDING")
+        failed_task = make_task("task-uuid-2", agent_role="qa", status="FAILED", error="tests failed")
 
-        execute_results = [
-            MagicMock(scalar_one=MagicMock(return_value=None)),  # mark IN_PROGRESS
-            MagicMock(scalar_one=MagicMock(return_value=failed_task)),  # poll
-        ]
-        mock_session.execute.side_effect = execute_results
+        mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=None))
 
         with (
             patch("forge.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("forge.db.session.get_db", self._make_poll_get_db(failed_task)),
             pytest.raises(OrchestratorError, match="failed"),
         ):
             await orchestrator._dispatch_and_wait(task)
