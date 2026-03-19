@@ -305,7 +305,7 @@ JSON format:
                 description=t.get("description", ""),
                 agent_role=t.get("agent_role", "builder"),
                 status="PENDING",
-                depends_on=t.get("depends_on", []),
+                depends_on=[str(d) for d in t.get("depends_on", [])],
                 files_likely_touched=t.get("files_likely_touched", []),
                 estimated_complexity=t.get("estimated_complexity", 3),
             )
