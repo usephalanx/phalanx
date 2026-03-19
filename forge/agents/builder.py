@@ -476,6 +476,8 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
     queue="builder",
     max_retries=2,
     acks_late=True,
+    soft_time_limit=1800,   # 30 min: git clone + LLM codegen can be slow
+    time_limit=3600,        # 1 hour hard kill
 )
 def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs

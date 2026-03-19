@@ -323,6 +323,8 @@ JSON format:
     queue="commander",
     max_retries=2,
     acks_late=True,
+    soft_time_limit=3600,   # 1 hour: full pipeline (plan+build+review+qa+security+release) needs time
+    time_limit=7200,        # 2 hour hard kill
 )
 def execute_run(
     self, work_order_id: str, project_id: str, run_id: str, **kwargs
