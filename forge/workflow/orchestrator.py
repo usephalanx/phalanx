@@ -122,15 +122,18 @@ class WorkflowOrchestrator:
             payload={"assigned_agent_id": task.assigned_agent_id},
         )
 
-        # Poll for completion
+        # Poll for completion — open a fresh session each iteration to avoid
+        # asyncpg greenlet context loss across asyncio.sleep() yields
+        from forge.db.session import get_db  # noqa: PLC0415
+
         elapsed = 0
         while elapsed < _TASK_MAX_WAIT:
             await asyncio.sleep(_TASK_POLL_INTERVAL)
             elapsed += _TASK_POLL_INTERVAL
 
-            self._session.expire_all()
-            result = await self._session.execute(select(Task).where(Task.id == task.id))
-            refreshed = result.scalar_one()
+            async with get_db() as poll_session:
+                result = await poll_session.execute(select(Task).where(Task.id == task.id))
+                refreshed = result.scalar_one()
 
             if refreshed.status in _COMPLETED_STATUSES:
                 self._log.info(

@@ -341,7 +341,7 @@ def execute_run(
         project_id=project_id,
     )
 
-    result = asyncio.get_event_loop().run_until_complete(agent.execute())
+    result = asyncio.run(agent.execute())
 
     if not result.success:
         # Celery will retry if we raise — but commander failure is usually

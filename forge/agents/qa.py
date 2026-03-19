@@ -619,5 +619,5 @@ def execute_task(  # pragma: no cover
                 await session.commit()
             raise
 
-    result = asyncio.get_event_loop().run_until_complete(_run())
+    result = asyncio.run(_run())
     return result

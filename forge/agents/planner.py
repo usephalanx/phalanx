@@ -259,7 +259,7 @@ def execute_task(  # pragma: no cover
         task_id=task_id,
         agent_id=assigned_agent_id or "planner",
     )
-    result = asyncio.get_event_loop().run_until_complete(agent.execute())
+    result = asyncio.run(agent.execute())
 
     if not result.success:
         log.error("planner.task_failed", task_id=task_id, run_id=run_id, error=result.error)
