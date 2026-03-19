@@ -75,9 +75,9 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
     PIP_NO_CACHE_DIR=1
 
-# Install all dependencies
+# Install runtime + qa extras (pytest/ruff needed by QA agent in workers)
 COPY pyproject.toml ./
-RUN pip install "setuptools>=61" wheel && pip install .
+RUN pip install "setuptools>=61" wheel && pip install ".[qa]"
 
 USER forge
 COPY --chown=forge:forge . .
