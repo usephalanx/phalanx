@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -260,13 +261,16 @@ class QAAgent:
         report = await agent.evaluate()
     """
 
-    # Defaults — overridden by project.yaml at runtime
+    # Defaults — overridden by project.yaml at runtime.
+    # Use the Python interpreter's sibling `pytest` so the correct venv is used
+    # regardless of PATH (Celery workers run in Docker with no activated venv).
+    _PYTEST_BIN = str(Path(sys.executable).parent / "pytest")
     DEFAULT_TEST_CMD = [
-        "pytest",
+        _PYTEST_BIN,
         "--tb=short",
         "-q",
         "--junit-xml=test-results.xml",
-        "--cov=forge",
+        "--cov=.",
         "--cov-report=xml:coverage.xml",
     ]
     DEFAULT_LINT_CMD = ["ruff", "check", "."]

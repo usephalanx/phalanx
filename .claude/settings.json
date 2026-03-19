@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(uv:*)",
+      "Bash(./deploy.sh:*)",
+      "Bash(ssh -i ~/work/LightsailDefaultKey-us-west-2.pem*)",
+      "Bash(docker logs*)",
+      "Bash(docker exec*)",
+      "Bash(docker ps*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git status:*)"
+    ]
+  }
+}
