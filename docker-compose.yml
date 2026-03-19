@@ -92,6 +92,7 @@ services:
       --hostname=worker-general@%h
     environment:
       SERVICE_NAME: forge-worker
+      FORGE_WORKER: "1"
 
   # ── Celery Worker — Builder queue (isolated, git ops happen here) ──────────
   forge-worker-builder:
@@ -111,6 +112,7 @@ services:
     environment:
       SERVICE_NAME: forge-worker-builder
       GIT_WORKSPACE: /tmp/forge-repos
+      FORGE_WORKER: "1"
 
   # ── Celery Beat — Scheduled tasks (one instance only) ─────────────────────
   forge-beat:
