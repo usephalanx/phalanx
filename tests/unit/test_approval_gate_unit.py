@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.workflow.approval_gate import (
+from phalanx.workflow.approval_gate import (
     ApprovalGate,
     ApprovalRejectedError,
     ApprovalTimeoutError,
@@ -81,7 +81,7 @@ class TestRequestAndWait:
         poll_result.scalar_one.return_value = approval
         mock_session.execute.return_value = poll_result
 
-        with patch("forge.workflow.approval_gate.asyncio.sleep", AsyncMock()):
+        with patch("phalanx.workflow.approval_gate.asyncio.sleep", AsyncMock()):
             await gate.request_and_wait(
                 gate_type="plan",
                 gate_phase="planning",
@@ -105,7 +105,7 @@ class TestRequestAndWait:
         poll_result.scalar_one.return_value = approval
         mock_session.execute.return_value = poll_result
 
-        with patch("forge.workflow.approval_gate.asyncio.sleep", AsyncMock()):
+        with patch("phalanx.workflow.approval_gate.asyncio.sleep", AsyncMock()):
             result = await gate.request_and_wait(gate_type="plan", gate_phase="planning")
 
         assert result.status == "APPROVED"
@@ -124,7 +124,7 @@ class TestRequestAndWait:
         mock_session.execute.return_value = poll_result
 
         with (
-            patch("forge.workflow.approval_gate.asyncio.sleep", AsyncMock()),
+            patch("phalanx.workflow.approval_gate.asyncio.sleep", AsyncMock()),
             pytest.raises(ApprovalRejectedError, match="plan"),
         ):
             await gate.request_and_wait(gate_type="plan", gate_phase="planning")
@@ -151,8 +151,8 @@ class TestRequestAndWait:
         mock_session.execute.return_value = poll_result
 
         with (
-            patch("forge.workflow.approval_gate.asyncio.sleep", AsyncMock()),
-            patch("forge.workflow.approval_gate._POLL_INTERVAL_SECONDS", 31),  # force timeout
+            patch("phalanx.workflow.approval_gate.asyncio.sleep", AsyncMock()),
+            patch("phalanx.workflow.approval_gate._POLL_INTERVAL_SECONDS", 31),  # force timeout
             pytest.raises(ApprovalTimeoutError),
         ):
             await gate.request_and_wait(gate_type="plan", gate_phase="planning")
@@ -163,7 +163,7 @@ class TestSlackNotify:
         gate = ApprovalGate(session=mock_session, run_id="r1", slack_notify=True)
         approval = make_approval()
 
-        with patch("forge.config.settings.get_settings") as mock_settings:
+        with patch("phalanx.config.settings.get_settings") as mock_settings:
             mock_settings.return_value.slack_bot_token = None
             # Should complete without raising
             await gate._notify_slack(approval, context={"plan_summary": "Test"})
@@ -173,6 +173,6 @@ class TestSlackNotify:
         gate = ApprovalGate(session=mock_session, run_id="r1", slack_notify=True)
         approval = make_approval()
 
-        with patch("forge.config.settings.get_settings", side_effect=Exception("no settings")):
+        with patch("phalanx.config.settings.get_settings", side_effect=Exception("no settings")):
             # Should NOT raise
             await gate._notify_slack(approval, context=None)

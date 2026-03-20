@@ -327,7 +327,7 @@ def mock_get_db(mock_db_session):
     async def _mock_get_db():
         yield mock_db_session
 
-    with patch("forge.db.session.get_db", _mock_get_db):
+    with patch("phalanx.db.session.get_db", _mock_get_db):
         yield mock_db_session
 
 

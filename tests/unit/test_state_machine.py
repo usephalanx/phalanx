@@ -17,7 +17,7 @@ Coverage targets:
 
 import pytest
 
-from forge.workflow.state_machine import (
+from phalanx.workflow.state_machine import (
     INTERRUPTIBLE_STATES,
     TERMINAL_STATES,
     InvalidTransitionError,

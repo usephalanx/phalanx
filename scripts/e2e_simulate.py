@@ -38,7 +38,7 @@ def sep():     print(f"{YELLOW}{'─'*60}{RESET}")
 
 async def get_db_state(session, run_id: str) -> dict:
     from sqlalchemy import select
-    from forge.db.models import Run, Task, Approval
+    from phalanx.db.models import Run, Task, Approval
 
     run_res = await session.execute(select(Run).where(Run.id == run_id))
     run = run_res.scalar_one_or_none()
@@ -84,13 +84,13 @@ def print_db_state(state: dict, label: str) -> None:
 
 async def run_simulation() -> None:
     from sqlalchemy import select, update
-    from forge.db.session import get_db
-    from forge.db.models import Project, Channel, WorkOrder, Run, Task, Approval
-    from forge.agents.commander import CommanderAgent
-    from forge.config.settings import get_settings
-    from forge.config.loader import ConfigLoader
-    from forge.memory.reader import MemoryReader
-    from forge.memory.assembler import MemoryAssembler
+    from phalanx.db.session import get_db
+    from phalanx.db.models import Project, Channel, WorkOrder, Run, Task, Approval
+    from phalanx.agents.commander import CommanderAgent
+    from phalanx.config.settings import get_settings
+    from phalanx.config.loader import ConfigLoader
+    from phalanx.memory.reader import MemoryReader
+    from phalanx.memory.assembler import MemoryAssembler
 
     hdr("╔══════════════════════════════════════════════════════════╗")
     hdr("║  FORGE E2E SIMULATION — Full Pipeline Test               ║")
@@ -111,7 +111,7 @@ async def run_simulation() -> None:
             project = Project(
                 slug="sim-project",
                 name="Simulation Project",
-                repo_url="https://github.com/rnagulapalle/forge",
+                repo_url="https://github.com/usephalanx/phalanx",
                 domain="backend",
                 config={"stack": {"language": "python", "framework": "fastapi"}},
                 onboarding_status="complete",
@@ -182,7 +182,7 @@ async def run_simulation() -> None:
         wo = await session.get(WorkOrder, work_order_id)
 
         # Create Run
-        from forge.db.models import Run
+        from phalanx.db.models import Run
         from sqlalchemy import func, select
         count_result = await session.execute(
             select(func.count()).select_from(Run).where(Run.work_order_id == wo.id)
@@ -281,7 +281,7 @@ async def run_simulation() -> None:
 
     # ── Step 5–N: Run each agent in sequence ──────────────────────
     import importlib
-    from forge.config.settings import get_settings as _get_settings
+    from phalanx.config.settings import get_settings as _get_settings
     _sim_settings = _get_settings()
 
     # QA needs the workspace path where builder wrote files
@@ -290,18 +290,18 @@ async def run_simulation() -> None:
     workspace_path = Path(_sim_settings.git_workspace) / _run.project_id / run_id
 
     AGENT_MAP = {
-        "planner":  ("forge.agents.planner",  "PlannerAgent",  "execute",  {}),
-        "builder":  ("forge.agents.builder",  "BuilderAgent",  "execute",  {}),
-        "reviewer": ("forge.agents.reviewer", "ReviewerAgent", "execute",  {}),
+        "planner":  ("phalanx.agents.planner",  "PlannerAgent",  "execute",  {}),
+        "builder":  ("phalanx.agents.builder",  "BuilderAgent",  "execute",  {}),
+        "reviewer": ("phalanx.agents.reviewer", "ReviewerAgent", "execute",  {}),
         # QA runs pytest in the generated workspace; use absolute venv pytest + --cov=.
-        "qa":       ("forge.agents.qa",       "QAAgent",       "evaluate",
+        "qa":       ("phalanx.agents.qa",       "QAAgent",       "evaluate",
                      {"repo_path": workspace_path,
                       "test_command": [str(Path(sys.executable).parent / "pytest"),
                                        "--tb=short", "-q",
                                        "--junit-xml=test-results.xml",
                                        "--cov=.", "--cov-report=xml:coverage.xml"]}),
-        "security": ("forge.agents.security", "SecurityAgent", "execute",  {}),
-        "release":  ("forge.agents.release",  "ReleaseAgent",  "execute",  {}),
+        "security": ("phalanx.agents.security", "SecurityAgent", "execute",  {}),
+        "release":  ("phalanx.agents.release",  "ReleaseAgent",  "execute",  {}),
     }
 
     step = 5
@@ -354,7 +354,7 @@ async def run_simulation() -> None:
                 error_msg = agent_result.error
             elif hasattr(agent_result, "outcome"):
                 # QAReport: outcome is QAOutcome enum
-                from forge.agents.qa import QAOutcome
+                from phalanx.agents.qa import QAOutcome
                 success = agent_result.outcome == QAOutcome.PASSED
                 tokens = 0
                 error_msg = None if success else str(agent_result.outcome)

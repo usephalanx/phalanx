@@ -6,7 +6,7 @@ Pure-logic module — no I/O — so 100% reachable without mocks.
 
 from __future__ import annotations
 
-from forge.gateway.command_parser import (
+from phalanx.gateway.command_parser import (
     HELP_TEXT,
     CommandType,
     ParsedCommand,

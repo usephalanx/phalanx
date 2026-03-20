@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.workflow.orchestrator import OrchestratorError, WorkflowOrchestrator
-from forge.workflow.state_machine import RunStatus
+from phalanx.workflow.orchestrator import OrchestratorError, WorkflowOrchestrator
+from phalanx.workflow.state_machine import RunStatus
 
 
 def make_task(
@@ -84,7 +84,7 @@ class TestTransition:
         mock_session.commit.assert_awaited()
 
     async def test_invalid_transition_raises(self, orchestrator):
-        from forge.workflow.state_machine import InvalidTransitionError
+        from phalanx.workflow.state_machine import InvalidTransitionError
 
         # RESEARCHING → INTAKE is an invalid non-terminal transition
         with pytest.raises(InvalidTransitionError):
@@ -115,8 +115,8 @@ class TestDispatchAndWait:
         mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=None))
 
         with (
-            patch("forge.workflow.orchestrator.asyncio.sleep", AsyncMock()),
-            patch("forge.db.session.get_db", self._make_poll_get_db(completed_task)),
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(completed_task)),
         ):
             await orchestrator._dispatch_and_wait(task)
 
@@ -131,8 +131,8 @@ class TestDispatchAndWait:
         mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=None))
 
         with (
-            patch("forge.workflow.orchestrator.asyncio.sleep", AsyncMock()),
-            patch("forge.db.session.get_db", self._make_poll_get_db(failed_task)),
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(failed_task)),
             pytest.raises(OrchestratorError, match="failed"),
         ):
             await orchestrator._dispatch_and_wait(task)
@@ -144,7 +144,7 @@ class TestRequestShipApproval:
         mock_gate.request_and_wait = AsyncMock(return_value=MagicMock(status="APPROVED"))
 
         with (
-            patch("forge.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
+            patch("phalanx.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
             patch.object(orchestrator, "_transition", AsyncMock()),
         ):
             await orchestrator.request_ship_approval(context_snapshot={"task_count": 3})
@@ -152,7 +152,7 @@ class TestRequestShipApproval:
         mock_gate.request_and_wait.assert_awaited_once()
 
     async def test_ship_approval_rejected_raises(self, orchestrator, mock_session):
-        from forge.workflow.approval_gate import ApprovalRejectedError
+        from phalanx.workflow.approval_gate import ApprovalRejectedError
 
         mock_gate = AsyncMock()
         mock_gate.request_and_wait = AsyncMock(
@@ -160,7 +160,7 @@ class TestRequestShipApproval:
         )
 
         with (
-            patch("forge.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
+            patch("phalanx.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
             patch.object(orchestrator, "_transition", AsyncMock()),
             pytest.raises(ApprovalRejectedError),
         ):

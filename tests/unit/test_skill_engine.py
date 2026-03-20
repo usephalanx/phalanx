@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from forge.skills.engine import (
+from phalanx.skills.engine import (
     LoadStrategy,
     ProficiencyLevel,
     SkillEngine,

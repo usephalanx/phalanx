@@ -17,7 +17,7 @@ if database_url:
     config.set_main_option("sqlalchemy.url", database_url)
 
 # Import all models so Alembic can detect schema changes
-from forge.db.models import Base  # noqa: E402
+from phalanx.db.models import Base  # noqa: E402
 target_metadata = Base.metadata
 
 

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from forge.guardrails.security_pipeline import (
+from phalanx.guardrails.security_pipeline import (
     _SEVERITY_RANK,
     ScanFinding,
     ScanResult,
@@ -152,7 +152,7 @@ class TestRunBandit:
         clean_output = json.dumps({"results": [], "errors": []})
 
         with patch(
-            "forge.guardrails.security_pipeline._run_subprocess",
+            "phalanx.guardrails.security_pipeline._run_subprocess",
             AsyncMock(return_value=(0, clean_output, "")),
         ):
             result = await run_bandit(tmp_path)
@@ -178,7 +178,7 @@ class TestRunBandit:
         )
 
         with patch(
-            "forge.guardrails.security_pipeline._run_subprocess",
+            "phalanx.guardrails.security_pipeline._run_subprocess",
             AsyncMock(return_value=(1, bandit_output, "")),
         ):
             result = await run_bandit(tmp_path)
@@ -204,7 +204,7 @@ class TestRunBandit:
         )
 
         with patch(
-            "forge.guardrails.security_pipeline._run_subprocess",
+            "phalanx.guardrails.security_pipeline._run_subprocess",
             AsyncMock(return_value=(1, bandit_output, "")),
         ):
             result = await run_bandit(tmp_path)
@@ -214,7 +214,7 @@ class TestRunBandit:
 
     async def test_bandit_json_parse_failure_returns_error_result(self, tmp_path):
         with patch(
-            "forge.guardrails.security_pipeline._run_subprocess",
+            "phalanx.guardrails.security_pipeline._run_subprocess",
             AsyncMock(return_value=(1, "not json", "some error")),
         ):
             result = await run_bandit(tmp_path)
@@ -224,7 +224,7 @@ class TestRunBandit:
 
     async def test_bandit_empty_output_returns_passed(self, tmp_path):
         with patch(
-            "forge.guardrails.security_pipeline._run_subprocess",
+            "phalanx.guardrails.security_pipeline._run_subprocess",
             AsyncMock(return_value=(0, "", "")),
         ):
             result = await run_bandit(tmp_path)

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from forge.runtime.task_router import TaskRouter, UnroutableTaskError
+from phalanx.runtime.task_router import TaskRouter, UnroutableTaskError
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ class TestDispatch:
     def test_dispatch_calls_send_task_with_correct_name(self, router, mock_celery):
         router.dispatch(agent_role="builder", task_id="t1", run_id="r1")
         call_args = mock_celery.send_task.call_args
-        assert call_args[0][0] == "forge.agents.builder.execute_task"
+        assert call_args[0][0] == "phalanx.agents.builder.execute_task"
 
     def test_dispatch_passes_task_and_run_ids(self, router, mock_celery):
         router.dispatch(agent_role="reviewer", task_id="t-123", run_id="r-456")

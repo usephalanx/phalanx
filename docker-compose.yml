@@ -4,7 +4,7 @@
 # Usage: docker compose up
 # ─────────────────────────────────────────────────────────────────────────────
 
-name: forge-dev
+name: phalanx-dev
 
 x-forge-common: &forge-common
   build:
@@ -70,10 +70,10 @@ services:
       - forge-net
 
   # ── FastAPI — Main API ─────────────────────────────────────────────────────
-  forge-api:
+  phalanx-api:
     <<: *forge-common
     container_name: forge-api
-    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    command: uvicorn phalanx.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
     ports:
       - "8000:8000"
       - "5678:5678"    # debugpy port
@@ -82,23 +82,23 @@ services:
       DEBUG: "true"
 
   # ── Celery Worker — General queue ─────────────────────────────────────────
-  forge-worker:
+  phalanx-worker:
     <<: *forge-common
     container_name: forge-worker
-    command: celery -A forge.queue.celery_app worker
+    command: celery -A phalanx.queue.celery_app worker
       --loglevel=info
       --queues=default,commander,planner,reviewer,qa,release,security
       --concurrency=4
       --hostname=worker-general@%h
     environment:
       SERVICE_NAME: forge-worker
-      FORGE_WORKER: "1"
+      PHALANX_WORKER: "1"
 
   # ── Celery Worker — Builder queue (isolated, git ops happen here) ──────────
   forge-worker-builder:
     <<: *forge-common
     container_name: forge-worker-builder
-    command: celery -A forge.queue.celery_app worker
+    command: celery -A phalanx.queue.celery_app worker
       --loglevel=info
       --queues=builder
       --concurrency=2
@@ -112,23 +112,23 @@ services:
     environment:
       SERVICE_NAME: forge-worker-builder
       GIT_WORKSPACE: /tmp/forge-repos
-      FORGE_WORKER: "1"
+      PHALANX_WORKER: "1"
 
   # ── Celery Beat — Scheduled tasks (one instance only) ─────────────────────
   forge-beat:
     <<: *forge-common
     container_name: forge-beat
-    command: celery -A forge.queue.celery_app beat
+    command: celery -A phalanx.queue.celery_app beat
       --loglevel=info
       --scheduler=django_celery_beat.schedulers:DatabaseScheduler
     environment:
       SERVICE_NAME: forge-beat
 
   # ── Slack/Discord Gateway ─────────────────────────────────────────────────
-  forge-gateway:
+  phalanx-gateway:
     <<: *forge-common
     container_name: forge-gateway
-    command: python -m forge.gateway.slack_bot
+    command: python -m phalanx.gateway.slack_bot
     environment:
       SERVICE_NAME: forge-gateway
       SLACK_SOCKET_MODE: "true"
@@ -137,7 +137,7 @@ services:
   forge-ingestion:
     <<: *forge-common
     container_name: forge-ingestion
-    command: celery -A forge.queue.celery_app worker
+    command: celery -A phalanx.queue.celery_app worker
       --loglevel=info
       --queues=ingestion,skill_drills
       --concurrency=2
@@ -149,7 +149,7 @@ services:
   flower:
     <<: *forge-common
     container_name: forge-flower
-    command: celery -A forge.queue.celery_app flower
+    command: celery -A phalanx.queue.celery_app flower
       --port=5555
       --broker_api=redis://${REDIS_HOST:-redis}:6379/0
     ports:
@@ -161,13 +161,13 @@ services:
       SERVICE_NAME: forge-flower
 
   # ── Alembic Migrations (runs once then exits) ──────────────────────────────
-  forge-migrate:
+  phalanx-migrate:
     <<: *forge-common
-    container_name: forge-migrate
+    container_name: phalanx-migrate
     command: alembic upgrade head
     restart: "no"
     environment:
-      SERVICE_NAME: forge-migrate
+      SERVICE_NAME: phalanx-migrate
 
   # ── PgAdmin (dev only, inspect DB) ────────────────────────────────────────
   pgadmin:

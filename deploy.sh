@@ -39,7 +39,7 @@ SCP="scp -i $SSH_KEY -o StrictHostKeyChecking=no"
 # ── Migrate-only mode ────────────────────────────────────────────────────
 if [ "${1:-}" = "--migrate-only" ]; then
   echo "▶ Running DB migrations only..."
-  $SSH "$SERVER" "cd $APP_DIR && docker compose run --rm forge-migrate"
+  $SSH "$SERVER" "cd $APP_DIR && docker compose run --rm phalanx-migrate"
   echo "✓ Migrations complete."
   exit 0
 fi
@@ -65,37 +65,37 @@ echo "╚═══════════════════════�
 echo ""
 
 # ── Step 1: Build images locally (linux/amd64) ───────────────────────────
-echo "▶ [1/6] Building forge-api image (linux/amd64)..."
+echo "▶ [1/6] Building phalanx-api image (linux/amd64)..."
 docker build --platform "$PLATFORM" \
   --target production \
-  -t forge-api:latest \
-  -t "forge-api:$RELEASE_TAG" \
+  -t phalanx-api:latest \
+  -t "phalanx-api:$RELEASE_TAG" \
   "$REPO_DIR"
 
 echo ""
-echo "▶ [1/6] Building forge-worker image..."
+echo "▶ [1/6] Building phalanx-worker image..."
 # Worker uses the same Dockerfile — production target
 docker build --platform "$PLATFORM" \
   --target production \
-  -t forge-worker:latest \
-  -t "forge-worker:$RELEASE_TAG" \
+  -t phalanx-worker:latest \
+  -t "phalanx-worker:$RELEASE_TAG" \
   "$REPO_DIR"
 
 # ── Step 2: Save images as compressed tarballs ───────────────────────────
 echo ""
 echo "▶ [2/6] Saving images to tarballs..."
-docker save forge-api:latest | gzip > /tmp/forge-api.tar.gz
-docker save forge-worker:latest | gzip > /tmp/forge-worker.tar.gz
+docker save phalanx-api:latest | gzip > /tmp/phalanx-api.tar.gz
+docker save phalanx-worker:latest | gzip > /tmp/phalanx-worker.tar.gz
 
-API_SIZE=$(du -h /tmp/forge-api.tar.gz | cut -f1)
-WORKER_SIZE=$(du -h /tmp/forge-worker.tar.gz | cut -f1)
-echo "  forge-api:    $API_SIZE"
-echo "  forge-worker: $WORKER_SIZE"
+API_SIZE=$(du -h /tmp/phalanx-api.tar.gz | cut -f1)
+WORKER_SIZE=$(du -h /tmp/phalanx-worker.tar.gz | cut -f1)
+echo "  phalanx-api:    $API_SIZE"
+echo "  phalanx-worker: $WORKER_SIZE"
 
 # ── Step 3: Upload images + configs to server ────────────────────────────
 echo ""
 echo "▶ [3/6] Uploading images to server..."
-$SCP /tmp/forge-api.tar.gz /tmp/forge-worker.tar.gz "$SERVER:/tmp/"
+$SCP /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz "$SERVER:/tmp/"
 
 echo "▶ [3/6] Uploading configs..."
 $SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
@@ -131,16 +131,16 @@ $SSH "$SERVER" bash -s <<'REMOTE'
 set -e
 cd /home/ubuntu/forge
 
-echo "  Loading forge-api image..."
-docker load < /tmp/forge-api.tar.gz
+echo "  Loading phalanx-api image..."
+docker load < /tmp/phalanx-api.tar.gz
 
-echo "  Loading forge-worker image..."
-docker load < /tmp/forge-worker.tar.gz
+echo "  Loading phalanx-worker image..."
+docker load < /tmp/phalanx-worker.tar.gz
 
-rm -f /tmp/forge-api.tar.gz /tmp/forge-worker.tar.gz
+rm -f /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz
 
 echo "  Running DB migrations..."
-docker compose run --rm forge-migrate < /dev/null
+docker compose run --rm phalanx-migrate < /dev/null
 
 echo "  Stopping old containers..."
 docker compose down --remove-orphans 2>/dev/null || true
@@ -150,14 +150,14 @@ docker compose up -d --no-build
 
 echo "  Waiting for API health check..."
 for i in $(seq 1 18); do
-  STATUS=$(docker inspect --format='{{.State.Health.Status}}' forge-prod-forge-api-1 2>/dev/null || echo "starting")
+  STATUS=$(docker inspect --format='{{.State.Health.Status}}' phalanx-prod-phalanx-api-1 2>/dev/null || echo "starting")
   if [ "$STATUS" = "healthy" ]; then
     echo "  ✓ API healthy after ~$((i * 10))s"
     break
   fi
   if [ "$i" = "18" ]; then
     echo "  WARNING: API not healthy after 180s — check logs"
-    docker logs forge-prod-forge-api-1 --tail 30
+    docker logs phalanx-prod-phalanx-api-1 --tail 30
   fi
   sleep 10
 done
@@ -187,7 +187,7 @@ if [ "$HTTP_HEALTH" = "200" ]; then
   echo "  ✓ API health: $HTTP_HEALTH"
 else
   echo "  ✗ API health: $HTTP_HEALTH — deployment may need investigation"
-  echo "    Run: ssh -i \$SSH_KEY ubuntu@44.233.157.41 'docker logs forge-prod-forge-api-1 --tail 50'"
+  echo "    Run: ssh -i \$SSH_KEY ubuntu@44.233.157.41 'docker logs phalanx-prod-phalanx-api-1 --tail 50'"
 fi
 
 # ── Step 6: Tag release ──────────────────────────────────────────────────
@@ -209,7 +209,7 @@ EOF
 )" 2>/dev/null || echo "  Tag $RELEASE_TAG already exists, skipping"
 
 # ── Cleanup local tarballs ───────────────────────────────────────────────
-rm -f /tmp/forge-api.tar.gz /tmp/forge-worker.tar.gz
+rm -f /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"

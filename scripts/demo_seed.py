@@ -77,7 +77,7 @@ DEMO_WORK_ORDERS = [
 async def reset_demo(session, project_id: str | None) -> None:
     """Wipe all demo data tied to the demo project."""
     from sqlalchemy import delete, select
-    from forge.db.models import (
+    from phalanx.db.models import (
         WorkOrder, Run, Task, Approval, Artifact, Channel,
         AuditLog, Project,
     )
@@ -123,8 +123,8 @@ async def seed(
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy import select
 
-    from forge.config.settings import get_settings
-    from forge.db.models import Project, Channel, WorkOrder
+    from phalanx.config.settings import get_settings
+    from phalanx.db.models import Project, Channel, WorkOrder
 
     settings = get_settings()
     info(f"env={settings.forge_env}  db={settings.database_url!r}")

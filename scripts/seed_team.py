@@ -32,10 +32,10 @@ async def seed(config_dir: Path, registry_dir: Path) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
     from sqlalchemy.orm import sessionmaker
 
-    from forge.config.loader import ConfigLoader
-    from forge.config.settings import get_settings
-    from forge.db.models import Project, Skill, SkillConfidence
-    from forge.skills.engine import SkillEngine
+    from phalanx.config.loader import ConfigLoader
+    from phalanx.config.settings import get_settings
+    from phalanx.db.models import Project, Skill, SkillConfidence
+    from phalanx.skills.engine import SkillEngine
 
     settings = get_settings()
     print(f"[seed_team] env={settings.forge_env} db={settings.database_url!r}")

@@ -77,7 +77,7 @@ async def db_session(db_engine):
 @pytest_asyncio.fixture
 async def sample_project(db_session):
     """Insert a project row and return its ID."""
-    from forge.db.models import Project
+    from phalanx.db.models import Project
 
     project = Project(
         slug=f"test-project-{uuid.uuid4().hex[:8]}",
@@ -92,7 +92,7 @@ async def sample_project(db_session):
 @pytest_asyncio.fixture
 async def sample_channel(db_session, sample_project):
     """Insert a channel row."""
-    from forge.db.models import Channel
+    from phalanx.db.models import Channel
 
     channel = Channel(
         project_id=sample_project.id,
@@ -108,7 +108,7 @@ async def sample_channel(db_session, sample_project):
 @pytest_asyncio.fixture
 async def sample_work_order(db_session, sample_project, sample_channel):
     """Insert a WorkOrder row."""
-    from forge.db.models import WorkOrder
+    from phalanx.db.models import WorkOrder
 
     wo = WorkOrder(
         project_id=sample_project.id,
@@ -128,7 +128,7 @@ async def sample_work_order(db_session, sample_project, sample_channel):
 @pytest_asyncio.fixture
 async def sample_run(db_session, sample_work_order):
     """Insert a Run in INTAKE status."""
-    from forge.db.models import Run
+    from phalanx.db.models import Run
 
     run = Run(
         work_order_id=sample_work_order.id,
@@ -168,7 +168,7 @@ class TestRunStatusConstraint:
 
     @pytest.mark.parametrize("status", VALID_STATUSES)
     async def test_valid_run_status_accepted(self, db_session, sample_work_order, status: str):
-        from forge.db.models import Run
+        from phalanx.db.models import Run
 
         run = Run(
             work_order_id=sample_work_order.id,
@@ -180,7 +180,7 @@ class TestRunStatusConstraint:
         await db_session.flush()  # should not raise
 
     async def test_invalid_run_status_rejected(self, db_session, sample_work_order):
-        from forge.db.models import Run
+        from phalanx.db.models import Run
 
         run = Run(
             work_order_id=sample_work_order.id,
@@ -214,7 +214,7 @@ class TestTaskStatusConstraint:
 
     @pytest.mark.parametrize("status", VALID_TASK_STATUSES)
     async def test_valid_task_status_accepted(self, db_session, sample_run, status: str):
-        from forge.db.models import Task
+        from phalanx.db.models import Task
 
         task = Task(
             run_id=sample_run.id,
@@ -228,7 +228,7 @@ class TestTaskStatusConstraint:
         await db_session.flush()
 
     async def test_invalid_task_status_rejected(self, db_session, sample_run):
-        from forge.db.models import Task
+        from phalanx.db.models import Task
 
         task = Task(
             run_id=sample_run.id,
@@ -250,7 +250,7 @@ class TestTaskStatusConstraint:
 
 class TestApprovalStatusConstraint:
     async def test_valid_pending_approval_accepted(self, db_session, sample_run):
-        from forge.db.models import Approval
+        from phalanx.db.models import Approval
 
         approval = Approval(
             run_id=sample_run.id,
@@ -262,7 +262,7 @@ class TestApprovalStatusConstraint:
         await db_session.flush()
 
     async def test_valid_approved_status_accepted(self, db_session, sample_run):
-        from forge.db.models import Approval
+        from phalanx.db.models import Approval
 
         approval = Approval(
             run_id=sample_run.id,
@@ -275,7 +275,7 @@ class TestApprovalStatusConstraint:
         await db_session.flush()
 
     async def test_invalid_approval_status_rejected(self, db_session, sample_run):
-        from forge.db.models import Approval
+        from phalanx.db.models import Approval
 
         approval = Approval(
             run_id=sample_run.id,
@@ -295,7 +295,7 @@ class TestApprovalStatusConstraint:
 
 class TestSkillConfidenceConstraint:
     async def test_valid_score_accepted(self, db_session, sample_project):
-        from forge.db.models import SkillConfidence
+        from phalanx.db.models import SkillConfidence
 
         sc = SkillConfidence(
             project_id=sample_project.id,
@@ -307,7 +307,7 @@ class TestSkillConfidenceConstraint:
         await db_session.flush()
 
     async def test_zero_score_accepted(self, db_session, sample_project):
-        from forge.db.models import SkillConfidence
+        from phalanx.db.models import SkillConfidence
 
         sc = SkillConfidence(
             project_id=sample_project.id,
@@ -319,7 +319,7 @@ class TestSkillConfidenceConstraint:
         await db_session.flush()
 
     async def test_one_score_accepted(self, db_session, sample_project):
-        from forge.db.models import SkillConfidence
+        from phalanx.db.models import SkillConfidence
 
         sc = SkillConfidence(
             project_id=sample_project.id,
@@ -331,7 +331,7 @@ class TestSkillConfidenceConstraint:
         await db_session.flush()
 
     async def test_score_above_one_rejected(self, db_session, sample_project):
-        from forge.db.models import SkillConfidence
+        from phalanx.db.models import SkillConfidence
 
         sc = SkillConfidence(
             project_id=sample_project.id,
@@ -344,7 +344,7 @@ class TestSkillConfidenceConstraint:
             await db_session.flush()
 
     async def test_negative_score_rejected(self, db_session, sample_project):
-        from forge.db.models import SkillConfidence
+        from phalanx.db.models import SkillConfidence
 
         sc = SkillConfidence(
             project_id=sample_project.id,
@@ -364,7 +364,7 @@ class TestSkillConfidenceConstraint:
 
 class TestUniqueConstraints:
     async def test_duplicate_project_slug_rejected(self, db_session, sample_project):
-        from forge.db.models import Project
+        from phalanx.db.models import Project
 
         duplicate = Project(
             slug=sample_project.slug,  # same slug
@@ -376,7 +376,7 @@ class TestUniqueConstraints:
             await db_session.flush()
 
     async def test_different_slugs_accepted(self, db_session):
-        from forge.db.models import Project
+        from phalanx.db.models import Project
 
         p1 = Project(slug=f"proj-a-{uuid.uuid4().hex[:6]}", name="A", config={})
         p2 = Project(slug=f"proj-b-{uuid.uuid4().hex[:6]}", name="B", config={})
@@ -396,7 +396,7 @@ class TestStateMachineViaDB:
     """
 
     async def test_valid_transition_persisted(self, db_session, sample_run):
-        from forge.workflow.state_machine import RunStatus, validate_transition
+        from phalanx.workflow.state_machine import RunStatus, validate_transition
 
         validate_transition(RunStatus.INTAKE, RunStatus.RESEARCHING)
         sample_run.status = "RESEARCHING"
@@ -420,7 +420,7 @@ class TestStateMachineViaDB:
 
 class TestAuditLogAppendOnly:
     async def test_audit_log_inserted_successfully(self, db_session, sample_run):
-        from forge.db.models import AuditLog
+        from phalanx.db.models import AuditLog
 
         entry = AuditLog(
             project_id=sample_run.project_id,
@@ -434,7 +434,7 @@ class TestAuditLogAppendOnly:
         assert entry.id is not None
 
     async def test_audit_log_id_is_auto_increment(self, db_session, sample_run):
-        from forge.db.models import AuditLog
+        from phalanx.db.models import AuditLog
 
         e1 = AuditLog(
             project_id=sample_run.project_id,

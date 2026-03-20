@@ -90,7 +90,7 @@ def mock_claude_response(text: str):
 
 class TestPlannerAgent:
     def _make_agent(self):
-        from forge.agents.planner import PlannerAgent
+        from phalanx.agents.planner import PlannerAgent
 
         return PlannerAgent(run_id="r-1", task_id="t-1", agent_id="planner")
 
@@ -127,8 +127,8 @@ class TestPlannerAgent:
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(plan))
 
         with (
-            patch("forge.agents.planner.get_db", make_db_context(session)),
-            patch("forge.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.planner.get_db", make_db_context(session)),
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -144,7 +144,7 @@ class TestPlannerAgent:
         result_mock.scalar_one_or_none.return_value = None
         session.execute.return_value = result_mock
 
-        with patch("forge.agents.planner.get_db", make_db_context(session)):
+        with patch("phalanx.agents.planner.get_db", make_db_context(session)):
             result = await agent.execute()
 
         assert result.success is False
@@ -172,8 +172,8 @@ class TestPlannerAgent:
         mock_client.messages.create.return_value = mock_claude_response("not json at all")
 
         with (
-            patch("forge.agents.planner.get_db", make_db_context(session)),
-            patch("forge.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.planner.get_db", make_db_context(session)),
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -190,7 +190,7 @@ class TestPlannerAgent:
 
 class TestReviewerAgent:
     def _make_agent(self):
-        from forge.agents.reviewer import ReviewerAgent
+        from phalanx.agents.reviewer import ReviewerAgent
 
         return ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
@@ -232,8 +232,8 @@ class TestReviewerAgent:
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(review))
 
         with (
-            patch("forge.agents.reviewer.get_db", make_db_context(session)),
-            patch("forge.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.reviewer.get_db", make_db_context(session)),
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -242,7 +242,7 @@ class TestReviewerAgent:
         assert result.output["verdict"] == "APPROVED"
 
     def test_read_changed_files_with_existing_files(self, tmp_path):
-        from forge.agents.reviewer import ReviewerAgent
+        from phalanx.agents.reviewer import ReviewerAgent
 
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
@@ -254,7 +254,7 @@ class TestReviewerAgent:
         assert "authenticate" in context
 
     def test_read_changed_files_missing_workspace(self, tmp_path):
-        from forge.agents.reviewer import ReviewerAgent
+        from phalanx.agents.reviewer import ReviewerAgent
 
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
@@ -263,7 +263,7 @@ class TestReviewerAgent:
         assert context == ""
 
     def test_read_changed_files_handles_deleted(self, tmp_path):
-        from forge.agents.reviewer import ReviewerAgent
+        from phalanx.agents.reviewer import ReviewerAgent
 
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
@@ -272,7 +272,7 @@ class TestReviewerAgent:
         assert "DELETED" in context
 
     def test_read_changed_files_respects_max_bytes(self, tmp_path):
-        from forge.agents.reviewer import _MAX_CODE_BYTES, ReviewerAgent
+        from phalanx.agents.reviewer import _MAX_CODE_BYTES, ReviewerAgent
 
         agent = ReviewerAgent(run_id="r-1", task_id="t-1", agent_id="reviewer")
 
@@ -294,7 +294,7 @@ class TestReviewerAgent:
 
 class TestSecurityAgent:
     def _make_agent(self):
-        from forge.agents.security import SecurityAgent
+        from phalanx.agents.security import SecurityAgent
 
         return SecurityAgent(run_id="r-1", task_id="t-1", agent_id="security")
 
@@ -319,7 +319,7 @@ class TestSecurityAgent:
         }
 
         with (
-            patch("forge.agents.security.get_db", make_db_context(session)),
+            patch("phalanx.agents.security.get_db", make_db_context(session)),
             patch.object(agent, "_run_security_pipeline", AsyncMock(return_value=scan_result)),
             patch.object(agent, "_audit", AsyncMock()),
         ):
@@ -358,7 +358,7 @@ class TestSecurityAgent:
         }
 
         with (
-            patch("forge.agents.security.get_db", make_db_context(session)),
+            patch("phalanx.agents.security.get_db", make_db_context(session)),
             patch.object(agent, "_run_security_pipeline", AsyncMock(return_value=scan_result)),
             patch.object(agent, "_audit", AsyncMock()),
         ):
@@ -373,7 +373,7 @@ class TestSecurityAgent:
         run = make_run()
 
         with patch(
-            "forge.guardrails.security_pipeline.SecurityPipeline",
+            "phalanx.guardrails.security_pipeline.SecurityPipeline",
             side_effect=ImportError("not installed"),
         ):
             result = await agent._run_security_pipeline(tmp_path, run)
@@ -389,7 +389,7 @@ class TestSecurityAgent:
 
 class TestReleaseAgent:
     def _make_agent(self):
-        from forge.agents.release import ReleaseAgent
+        from phalanx.agents.release import ReleaseAgent
 
         return ReleaseAgent(run_id="r-1", task_id="t-1", agent_id="release")
 
@@ -435,9 +435,9 @@ class TestReleaseAgent:
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(notes))
 
         with (
-            patch("forge.agents.release.get_db", make_db_context(session)),
-            patch("forge.agents.base.get_anthropic_client", return_value=mock_client),
-            patch("forge.agents.release.settings") as mock_settings,
+            patch("phalanx.agents.release.get_db", make_db_context(session)),
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.release.settings") as mock_settings,
             patch.object(agent, "_audit", AsyncMock()),
             patch.object(agent, "_persist_artifact", AsyncMock()),
         ):
@@ -465,7 +465,7 @@ class TestReleaseAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(notes))
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             result = await agent._generate_release_notes(run, wo, [])
 
         assert result["title"] == "Release Notes: Feature X"
@@ -479,7 +479,7 @@ class TestReleaseAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response("not valid json")
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             result = await agent._generate_release_notes(run, wo, [])
 
         assert "title" in result
@@ -490,7 +490,7 @@ class TestReleaseAgent:
         run = make_run(active_branch="feature/auth")
         wo = make_work_order()
 
-        with patch("forge.agents.release.settings") as mock_settings:
+        with patch("phalanx.agents.release.settings") as mock_settings:
             mock_settings.github_token = None
             result = await agent._create_github_pr(run, wo, {})
 
@@ -501,7 +501,7 @@ class TestReleaseAgent:
         run = make_run(active_branch=None)
         wo = make_work_order()
 
-        with patch("forge.agents.release.settings") as mock_settings:
+        with patch("phalanx.agents.release.settings") as mock_settings:
             mock_settings.github_token = "ghp_token"
             result = await agent._create_github_pr(run, wo, {})
 
@@ -515,7 +515,7 @@ class TestReleaseAgent:
 
 class TestCommanderAgent:
     def _make_agent(self):
-        from forge.agents.commander import CommanderAgent
+        from phalanx.agents.commander import CommanderAgent
 
         return CommanderAgent(
             run_id="r-1",
@@ -532,7 +532,7 @@ class TestCommanderAgent:
         wo_result.scalar_one_or_none.return_value = None
         session.execute.return_value = wo_result
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             result = await agent.execute()
 
         assert result.success is False
@@ -559,7 +559,7 @@ class TestCommanderAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(plan))
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             result = await agent._generate_task_plan(wo, "memory context")
 
         assert len(result["tasks"]) == 1
@@ -572,7 +572,7 @@ class TestCommanderAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response("not json")
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             result = await agent._generate_task_plan(wo, "")
 
         # Fallback: one builder task

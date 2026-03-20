@@ -5,12 +5,12 @@ FORGE is an AI-powered software development OS. Slack commands trigger a multi-a
 
 ## Architecture
 ```
-Slack /forge build → Gateway → Celery → Commander → Orchestrator
+Slack /phalanx build → Gateway → Celery → Commander → Orchestrator
                                                           ↓
                                Planner → Builder → Reviewer → QA → Security → Release
 ```
 
-- **Gateway** (`forge/gateway/slack_bot.py`) — Bolt socket-mode app. Receives `/forge` slash commands, creates WorkOrder + Run in DB, dispatches `commander` Celery task.
+- **Gateway** (`forge/gateway/slack_bot.py`) — Bolt socket-mode app. Receives `/phalanx` slash commands, creates WorkOrder + Run in DB, dispatches `commander` Celery task.
 - **Commander** (`forge/agents/commander.py`) — Drives the run: LLM plans tasks, posts plan approval to Slack, then hands off to `WorkflowOrchestrator`.
 - **Orchestrator** (`forge/workflow/orchestrator.py`) — Dispatches tasks in sequence, polls DB for completion, handles approval gates.
 - **Agents** (`forge/agents/`) — Each agent (planner, builder, reviewer, qa, security, release) is a Celery task + async class. All use `asyncio.run()` (not deprecated `get_event_loop()`).

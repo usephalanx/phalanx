@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from forge.api.main import app
+from phalanx.api.main import app
 
 
 @pytest.mark.asyncio
@@ -29,8 +29,8 @@ async def test_health_check_ok():
     mock_redis.aclose = AsyncMock()
 
     with (
-        patch("forge.api.main.settings") as mock_settings,
-        patch("forge.db.session.engine", mock_engine),
+        patch("phalanx.api.main.settings") as mock_settings,
+        patch("phalanx.db.session.engine", mock_engine),
         patch("redis.asyncio.from_url", return_value=mock_redis),
     ):
         mock_settings.redis_url = "redis://localhost:6379/0"
@@ -59,7 +59,7 @@ async def test_health_check_degraded_when_db_down():
     mock_redis.aclose = AsyncMock()
 
     with (
-        patch("forge.db.session.engine", mock_engine),
+        patch("phalanx.db.session.engine", mock_engine),
         patch("redis.asyncio.from_url", return_value=mock_redis),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

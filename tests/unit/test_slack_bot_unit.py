@@ -34,8 +34,8 @@ def make_session():
 
 class TestHandleBuild:
     async def test_build_channel_not_registered(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_build
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth login")
         respond = AsyncMock()
@@ -46,7 +46,7 @@ class TestHandleBuild:
         result_mock.scalar_one_or_none.return_value = None
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_build(parsed, user_id="U123", channel_id="C123", respond=respond)
 
         respond.assert_awaited_once()
@@ -55,8 +55,8 @@ class TestHandleBuild:
         )
 
     async def test_build_channel_no_project(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_build
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth")
         respond = AsyncMock()
@@ -68,15 +68,15 @@ class TestHandleBuild:
         result_mock.scalar_one_or_none.return_value = channel
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_build(parsed, user_id="U123", channel_id="C456", respond=respond)
 
         respond.assert_awaited_once()
         assert "no associated project" in respond.call_args[0][0].lower()
 
     async def test_build_creates_work_order_and_dispatches(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_build
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth login")
         respond = AsyncMock()
@@ -99,9 +99,9 @@ class TestHandleBuild:
         mock_router.dispatch.return_value = "celery-task-123"
 
         with (
-            patch("forge.db.session.get_db", make_db_context(session)),
-            patch("forge.runtime.task_router.TaskRouter", return_value=mock_router),
-            patch("forge.queue.celery_app.celery_app", MagicMock()),
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.runtime.task_router.TaskRouter", return_value=mock_router),
+            patch("phalanx.queue.celery_app.celery_app", MagicMock()),
         ):
             await _handle_build(parsed, user_id="U123", channel_id="C789", respond=respond)
 
@@ -110,13 +110,13 @@ class TestHandleBuild:
         assert "✅" in call_text or "Work order" in call_text
 
     async def test_build_handles_exception_gracefully(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_build
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
 
         parsed = parse_command("build Add OAuth")
         respond = AsyncMock()
 
-        with patch("forge.db.session.get_db", side_effect=Exception("DB down")):
+        with patch("phalanx.db.session.get_db", side_effect=Exception("DB down")):
             await _handle_build(parsed, user_id="U123", channel_id="C123", respond=respond)
 
         respond.assert_awaited_once()
@@ -128,8 +128,8 @@ class TestHandleBuild:
 
 class TestHandleStatus:
     async def test_status_no_active_runs(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_status
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status")
         respond = AsyncMock()
@@ -139,15 +139,15 @@ class TestHandleStatus:
         result_mock.all.return_value = []
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_status(parsed, respond=respond)
 
         respond.assert_awaited_once()
         assert "No active" in respond.call_args[0][0]
 
     async def test_status_specific_run_not_found(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_status
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status abc-123")
         respond = AsyncMock()
@@ -157,15 +157,15 @@ class TestHandleStatus:
         result_mock.scalar_one_or_none.return_value = None
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_status(parsed, respond=respond)
 
         respond.assert_awaited_once()
         assert "not found" in respond.call_args[0][0]
 
     async def test_status_specific_run_found(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_status
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status abc-123")
         respond = AsyncMock()
@@ -186,7 +186,7 @@ class TestHandleStatus:
         counts_result.all.return_value = []
         session.execute.side_effect = [run_result, counts_result]
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_status(parsed, respond=respond)
 
         respond.assert_awaited_once()
@@ -195,8 +195,8 @@ class TestHandleStatus:
         assert respond.call_args[1].get("blocks") is not None
 
     async def test_status_list_returns_block_kit(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_status
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_status
 
         parsed = parse_command("status")
         respond = AsyncMock()
@@ -214,7 +214,7 @@ class TestHandleStatus:
         counts_result.all.return_value = []
         session.execute.side_effect = [rows_result, counts_result]
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_status(parsed, respond=respond)
 
         respond.assert_awaited_once()
@@ -228,8 +228,8 @@ class TestHandleStatus:
 
 class TestHandleCancel:
     async def test_cancel_run_not_found(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_cancel
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -239,15 +239,15 @@ class TestHandleCancel:
         result_mock.scalar_one_or_none.return_value = None
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_cancel(parsed, user_id="U123", respond=respond)
 
         respond.assert_awaited_once()
         assert "not found" in respond.call_args[0][0]
 
     async def test_cancel_terminal_run_rejected(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_cancel
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -260,15 +260,15 @@ class TestHandleCancel:
         result_mock.scalar_one_or_none.return_value = run
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_cancel(parsed, user_id="U123", respond=respond)
 
         respond.assert_awaited_once()
         assert "cannot be cancelled" in respond.call_args[0][0]
 
     async def test_cancel_active_run_succeeds(self):
-        from forge.gateway.command_parser import parse_command
-        from forge.gateway.slack_bot import _handle_cancel
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_cancel
 
         parsed = parse_command("cancel abc-123")
         respond = AsyncMock()
@@ -281,7 +281,7 @@ class TestHandleCancel:
         result_mock.scalar_one_or_none.return_value = run
         session.execute.side_effect = [result_mock, MagicMock()]
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_cancel(parsed, user_id="U123", respond=respond)
 
         respond.assert_awaited_once()
@@ -303,7 +303,7 @@ class TestHandleApprovalAction:
         }
 
     async def test_approve_updates_db_and_updates_message(self):
-        from forge.gateway.slack_bot import _handle_approval_action
+        from phalanx.gateway.slack_bot import _handle_approval_action
 
         body = self._make_body("approval-abc")
         mock_client = AsyncMock()
@@ -318,7 +318,7 @@ class TestHandleApprovalAction:
         result_mock.scalar_one_or_none.return_value = approval
         session.execute.side_effect = [result_mock, MagicMock()]
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_approval_action(body, mock_client, decision="APPROVED")
 
         mock_client.chat_update.assert_awaited_once()
@@ -326,7 +326,7 @@ class TestHandleApprovalAction:
         assert "APPROVED" in call_kwargs["text"]
 
     async def test_reject_updates_db_with_rejected(self):
-        from forge.gateway.slack_bot import _handle_approval_action
+        from phalanx.gateway.slack_bot import _handle_approval_action
 
         body = self._make_body("approval-xyz")
         mock_client = AsyncMock()
@@ -341,7 +341,7 @@ class TestHandleApprovalAction:
         result_mock.scalar_one_or_none.return_value = approval
         session.execute.side_effect = [result_mock, MagicMock()]
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_approval_action(body, mock_client, decision="REJECTED")
 
         mock_client.chat_update.assert_awaited_once()
@@ -349,7 +349,7 @@ class TestHandleApprovalAction:
         assert "REJECTED" in call_kwargs["text"]
 
     async def test_already_decided_returns_early(self):
-        from forge.gateway.slack_bot import _handle_approval_action
+        from phalanx.gateway.slack_bot import _handle_approval_action
 
         body = self._make_body("approval-done")
         mock_client = AsyncMock()
@@ -364,7 +364,7 @@ class TestHandleApprovalAction:
         result_mock.scalar_one_or_none.return_value = approval
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_approval_action(body, mock_client, decision="APPROVED")
 
         # Should update message but NOT write to DB again
@@ -373,7 +373,7 @@ class TestHandleApprovalAction:
         assert session.execute.await_count == 1
 
     async def test_approval_not_found_returns_silently(self):
-        from forge.gateway.slack_bot import _handle_approval_action
+        from phalanx.gateway.slack_bot import _handle_approval_action
 
         body = self._make_body("nonexistent")
         mock_client = AsyncMock()
@@ -383,7 +383,7 @@ class TestHandleApprovalAction:
         result_mock.scalar_one_or_none.return_value = None
         session.execute.return_value = result_mock
 
-        with patch("forge.db.session.get_db", make_db_context(session)):
+        with patch("phalanx.db.session.get_db", make_db_context(session)):
             await _handle_approval_action(body, mock_client, decision="APPROVED")
 
         mock_client.chat_update.assert_not_awaited()

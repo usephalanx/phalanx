@@ -14,7 +14,7 @@ from textwrap import dedent
 
 import pytest
 
-from forge.agents.qa import (
+from phalanx.agents.qa import (
     CoverageResult,
     LintResult,
     QAOutcome,

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from forge.agents.base import AgentResult, BaseAgent, get_anthropic_client
+from phalanx.agents.base import AgentResult, BaseAgent, get_anthropic_client
 
 # ── Concrete subclass for testing ─────────────────────────────────────────────
 
@@ -122,7 +122,7 @@ class TestCallClaude:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_response
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             result = agent._call_claude(
                 messages=[{"role": "user", "content": "Hi"}],
                 system="You are helpful",
@@ -142,7 +142,7 @@ class TestCallClaude:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_response
 
-        with patch("forge.agents.base.get_anthropic_client", return_value=mock_client):
+        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
             agent._call_claude(messages=[{"role": "user", "content": "Test"}])
 
         assert agent._tokens_used == 150
@@ -175,7 +175,7 @@ class TestAudit:
         async def mock_get_db():
             yield mock_session
 
-        with patch("forge.db.session.get_db", mock_get_db):
+        with patch("phalanx.db.session.get_db", mock_get_db):
             await agent._audit(
                 event_type="test_event",
                 payload={"key": "value"},
@@ -195,7 +195,7 @@ class TestAudit:
             raise RuntimeError("DB unavailable")
             yield  # type: ignore[misc]
 
-        with patch("forge.db.session.get_db", failing_get_db):
+        with patch("phalanx.db.session.get_db", failing_get_db):
             # Should NOT raise
             await agent._audit(event_type="test_event")
 
@@ -218,7 +218,7 @@ class TestTransitionRun:
             yield mock_session
 
         with (
-            patch("forge.db.session.get_db", mock_get_db),
+            patch("phalanx.db.session.get_db", mock_get_db),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             # INTAKE → RESEARCHING is a valid transition
@@ -228,7 +228,7 @@ class TestTransitionRun:
         mock_session.commit.assert_awaited()
 
     async def test_invalid_transition_raises(self):
-        from forge.workflow.state_machine import InvalidTransitionError
+        from phalanx.workflow.state_machine import InvalidTransitionError
 
         agent = ConcreteAgent(run_id="r1", agent_id="tester")
 
@@ -242,11 +242,11 @@ class TestTransitionRun:
 
 class TestGetAnthropicClient:
     def test_returns_same_instance(self):
-        import forge.agents.base as base_module
+        import phalanx.agents.base as base_module
 
         # Reset singleton
         base_module._anthropic_client = None
-        with patch("forge.agents.base.Anthropic") as mock_anthropic:  # noqa: N806
+        with patch("phalanx.agents.base.Anthropic") as mock_anthropic:  # noqa: N806
             mock_anthropic.return_value = MagicMock()
             c1 = get_anthropic_client()
             c2 = get_anthropic_client()

@@ -13,7 +13,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from forge.config.loader import (
+from phalanx.config.loader import (
     ConfigLoader,
 )
 

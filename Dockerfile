@@ -47,13 +47,13 @@ USER forge
 COPY --chown=forge:forge . .
 
 # Default: run API with hot reload
-CMD ["uvicorn", "forge.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "phalanx.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # ── Stage 3: Builder (compile wheels) ────────────────────────────────────────
 FROM base AS builder
 
 COPY pyproject.toml ./
-COPY forge/ ./forge/
+COPY phalanx/ ./phalanx/
 RUN pip install setuptools wheel && \
     pip wheel --no-deps --wheel-dir /wheels .
 
@@ -86,4 +86,4 @@ COPY --chown=forge:forge . .
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "forge.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "phalanx.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

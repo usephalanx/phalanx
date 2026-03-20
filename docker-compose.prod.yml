@@ -4,7 +4,7 @@
 # Usage (server): docker compose up -d --no-build
 # ─────────────────────────────────────────────────────────────────────────────
 
-name: forge-prod
+name: phalanx-prod
 
 x-forge-base: &forge-base
   env_file: .env
@@ -67,8 +67,8 @@ services:
           memory: 512M
 
   # ── Alembic Migrations (runs once then exits) ────────────────────────────
-  forge-migrate:
-    image: forge-api:latest
+  phalanx-migrate:
+    image: phalanx-api:latest
     <<: *forge-base
     command: alembic -c alembic/alembic.ini upgrade head
     restart: "no"
@@ -77,10 +77,10 @@ services:
         condition: service_healthy
 
   # ── FastAPI ───────────────────────────────────────────────────────────────
-  forge-api:
-    image: forge-api:latest
+  phalanx-api:
+    image: phalanx-api:latest
     <<: *forge-base
-    command: uvicorn forge.api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    command: uvicorn phalanx.api.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
       - "8000:8000"
     volumes:
@@ -104,17 +104,17 @@ services:
           memory: 512M
 
   # ── Celery Worker (all queues consolidated for MVP) ───────────────────────
-  forge-worker:
-    image: forge-worker:latest
+  phalanx-worker:
+    image: phalanx-worker:latest
     <<: *forge-base
     command: >
-      celery -A forge.queue.celery_app worker
+      celery -A phalanx.queue.celery_app worker
       --loglevel=warning
       --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills
       --concurrency=4
       --max-tasks-per-child=100
     environment:
-      FORGE_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
+      PHALANX_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
     volumes:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
@@ -126,7 +126,7 @@ services:
         condition: service_healthy
     healthcheck:
       # Check the celery master process is alive (no broker round-trip needed)
-      test: ["CMD-SHELL", "celery -A forge.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 2>&1 | grep -q pong"]
+      test: ["CMD-SHELL", "celery -A phalanx.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 2>&1 | grep -q pong"]
       interval: 60s
       timeout: 15s
       start_period: 60s
@@ -147,7 +147,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./site:/usr/share/nginx/html:ro
     depends_on:
-      forge-api:
+      phalanx-api:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/health"]
@@ -161,15 +161,15 @@ services:
           memory: 64M
 
   # ── Slack Gateway ─────────────────────────────────────────────────────────
-  forge-gateway:
-    image: forge-api:latest
+  phalanx-gateway:
+    image: phalanx-api:latest
     <<: *forge-base
-    command: python -m forge.gateway.slack_bot
+    command: python -m phalanx.gateway.slack_bot
     volumes:
       - ./configs:/app/configs:ro
       - ./skill-registry:/app/skill-registry:ro
     depends_on:
-      forge-api:
+      phalanx-api:
         condition: service_healthy
     healthcheck:
       disable: true

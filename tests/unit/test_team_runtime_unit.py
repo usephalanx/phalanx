@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from forge.runtime.team_runtime import AgentUnavailableError, TeamRuntime
+from phalanx.runtime.team_runtime import AgentUnavailableError, TeamRuntime
 
 
 def make_member(member_id, role, ic_level, max_concurrent=2):

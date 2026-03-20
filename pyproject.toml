@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "forge"
+name = "phalanx"
 version = "0.1.0"
 description = "FORGE — Configurable AI Team Operating System"
 requires-python = ">=3.12"
@@ -90,7 +90,7 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["forge*"]
+include = ["phalanx*"]
 
 # ── Ruff (linting + formatting) ──────────────────────────────────────────────
 [tool.ruff]
@@ -102,7 +102,7 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "TCH"]
 ignore = ["E501", "B008", "N805"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["forge"]
+known-first-party = ["phalanx"]
 
 # ── MyPy ─────────────────────────────────────────────────────────────────────
 [tool.mypy]
@@ -119,11 +119,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--cov=forge --cov-report=term-missing --cov-report=html --tb=short"
+addopts = "--cov=phalanx --cov-report=term-missing --cov-report=html --tb=short"
 
 # ── Coverage ─────────────────────────────────────────────────────────────────
 [tool.coverage.run]
-source = ["forge"]
+source = ["phalanx"]
 omit = ["tests/*", "alembic/*", "scripts/*"]
 
 [tool.coverage.report]
