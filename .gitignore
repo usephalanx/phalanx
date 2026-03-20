@@ -42,3 +42,12 @@ Thumbs.db
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
+
+# ── Internal / deployment-specific (not for public OSS) ──────────────────────
+site/
+.claude/
+EXECUTION_PLAN.md
+CLAUDE.md
+deploy.sh.local
+.env.prod
+deploy.local.sh

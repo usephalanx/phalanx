@@ -1,42 +1,50 @@
 #!/bin/bash
-# FORGE — Deploy to AWS Lightsail
+# Phalanx — Deploy to your server
 #
-# Build images LOCALLY (Mac, linux/amd64), transfer to server, restart.
+# Builds images locally (linux/amd64), transfers to server, restarts.
 # The server never runs `docker build` — it only loads pre-built images.
 #
 # Usage:
 #   ./deploy.sh           # auto-bump patch version
-#   ./deploy.sh v0.2.0    # explicit version
+#   ./deploy.sh v1.2.0    # explicit version
 #   ./deploy.sh --migrate-only   # run DB migrations without redeploying images
+#
+# Required environment variables (or set defaults below):
+#   DEPLOY_HOST   — user@your-server-ip (e.g. ubuntu@1.2.3.4)
+#   DEPLOY_DIR    — app directory on server (e.g. /home/ubuntu/phalanx)
+#   DEPLOY_KEY    — path to SSH private key (e.g. ~/.ssh/id_rsa)
 
 set -euo pipefail
 
-SERVER="ubuntu@44.233.157.41"
-APP_DIR="/home/ubuntu/forge"
+# ── Configuration — set via env vars or edit defaults here ───────────────────
+SERVER="${DEPLOY_HOST:-}"
+APP_DIR="${DEPLOY_DIR:-/home/ubuntu/phalanx}"
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLATFORM="linux/amd64"
 
-# ── SSH key resolution (same fallback chain as sandbox) ──────────────────
-if [ -n "${LIGHTSAIL_KEY:-}" ] && [ -f "$LIGHTSAIL_KEY" ]; then
-  SSH_KEY="$LIGHTSAIL_KEY"
-elif [ -f "$HOME/work/LightsailDefaultKey-us-west-2.pem" ]; then
-  SSH_KEY="$HOME/work/LightsailDefaultKey-us-west-2.pem"
-elif [ -f "$HOME/work/aws/LightsailDefaultKey-us-west-2.pem" ]; then
-  SSH_KEY="$HOME/work/aws/LightsailDefaultKey-us-west-2.pem"
-elif [ -f "$HOME/.ssh/LightsailDefaultKey-us-west-2.pem" ]; then
-  SSH_KEY="$HOME/.ssh/LightsailDefaultKey-us-west-2.pem"
+if [ -z "$SERVER" ]; then
+  echo "ERROR: DEPLOY_HOST is not set."
+  echo "  Usage: DEPLOY_HOST=ubuntu@1.2.3.4 ./deploy.sh"
+  echo "  Or edit deploy.sh to set a default."
+  exit 1
+fi
+
+# ── SSH key resolution ────────────────────────────────────────────────────────
+if [ -n "${DEPLOY_KEY:-}" ] && [ -f "$DEPLOY_KEY" ]; then
+  SSH_KEY="$DEPLOY_KEY"
+elif [ -f "$HOME/.ssh/id_rsa" ]; then
+  SSH_KEY="$HOME/.ssh/id_rsa"
+elif [ -f "$HOME/.ssh/id_ed25519" ]; then
+  SSH_KEY="$HOME/.ssh/id_ed25519"
 else
-  echo "ERROR: Lightsail SSH key not found. Set LIGHTSAIL_KEY env var or place the key at:"
-  echo "  $HOME/work/LightsailDefaultKey-us-west-2.pem"
-  echo "  $HOME/work/aws/LightsailDefaultKey-us-west-2.pem"
-  echo "  $HOME/.ssh/LightsailDefaultKey-us-west-2.pem"
+  echo "ERROR: SSH key not found. Set DEPLOY_KEY env var or place your key at ~/.ssh/id_rsa"
   exit 1
 fi
 
 SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=10"
 SCP="scp -i $SSH_KEY -o StrictHostKeyChecking=no"
 
-# ── Migrate-only mode ────────────────────────────────────────────────────
+# ── Migrate-only mode ─────────────────────────────────────────────────────────
 if [ "${1:-}" = "--migrate-only" ]; then
   echo "▶ Running DB migrations only..."
   $SSH "$SERVER" "cd $APP_DIR && docker compose run --rm phalanx-migrate"
@@ -44,7 +52,7 @@ if [ "${1:-}" = "--migrate-only" ]; then
   exit 0
 fi
 
-# ── Release tag ──────────────────────────────────────────────────────────
+# ── Release tag ───────────────────────────────────────────────────────────────
 if [ -n "${1:-}" ]; then
   RELEASE_TAG="$1"
 else
@@ -57,14 +65,14 @@ else
 fi
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║  FORGE Deploy                                ║"
+echo "║  Phalanx Deploy                              ║"
 echo "║  Release : $RELEASE_TAG"
 echo "║  Target  : $SERVER"
 echo "║  App dir : $APP_DIR"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
-# ── Step 1: Build images locally (linux/amd64) ───────────────────────────
+# ── Step 1: Build images locally (linux/amd64) ────────────────────────────────
 echo "▶ [1/6] Building phalanx-api image (linux/amd64)..."
 docker build --platform "$PLATFORM" \
   --target production \
@@ -74,14 +82,13 @@ docker build --platform "$PLATFORM" \
 
 echo ""
 echo "▶ [1/6] Building phalanx-worker image..."
-# Worker uses the same Dockerfile — production target
 docker build --platform "$PLATFORM" \
   --target production \
   -t phalanx-worker:latest \
   -t "phalanx-worker:$RELEASE_TAG" \
   "$REPO_DIR"
 
-# ── Step 2: Save images as compressed tarballs ───────────────────────────
+# ── Step 2: Save images as compressed tarballs ────────────────────────────────
 echo ""
 echo "▶ [2/6] Saving images to tarballs..."
 docker save phalanx-api:latest | gzip > /tmp/phalanx-api.tar.gz
@@ -92,7 +99,7 @@ WORKER_SIZE=$(du -h /tmp/phalanx-worker.tar.gz | cut -f1)
 echo "  phalanx-api:    $API_SIZE"
 echo "  phalanx-worker: $WORKER_SIZE"
 
-# ── Step 3: Upload images + configs to server ────────────────────────────
+# ── Step 3: Upload images + configs to server ─────────────────────────────────
 echo ""
 echo "▶ [3/6] Uploading images to server..."
 $SCP /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz "$SERVER:/tmp/"
@@ -100,7 +107,7 @@ $SCP /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz "$SERVER:/tmp/"
 echo "▶ [3/6] Uploading configs..."
 $SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
 
-# Sync skill-registry and configs (no images, just YAML)
+# Sync skill-registry and configs
 [ -d "$REPO_DIR/skill-registry" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   --exclude '__pycache__' --exclude '*.pyc' --exclude '.gitkeep' \
   "$REPO_DIR/skill-registry/" "$SERVER:$APP_DIR/skill-registry/" || true
@@ -108,10 +115,6 @@ $SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
 [ -d "$REPO_DIR/configs" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   --exclude '.gitkeep' \
   "$REPO_DIR/configs/" "$SERVER:$APP_DIR/configs/" || true
-
-# Sync landing page + nginx config
-[ -d "$REPO_DIR/site" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-  "$REPO_DIR/site/" "$SERVER:$APP_DIR/site/" || true
 
 [ -f "$REPO_DIR/nginx/nginx.conf" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   "$REPO_DIR/nginx/" "$SERVER:$APP_DIR/nginx/" || true
@@ -124,12 +127,12 @@ else
   echo "  WARNING: .env.prod not found locally — server will use existing .env"
 fi
 
-# ── Step 4: Load images and restart on server ────────────────────────────
+# ── Step 4: Load images and restart on server ─────────────────────────────────
 echo ""
 echo "▶ [4/6] Loading images and restarting services on server..."
 $SSH "$SERVER" bash -s <<'REMOTE'
 set -e
-cd /home/ubuntu/forge
+cd /home/ubuntu/phalanx
 
 echo "  Loading phalanx-api image..."
 docker load < /tmp/phalanx-api.tar.gz
@@ -172,25 +175,24 @@ echo ""
 echo "  Container memory:"
 docker stats --no-stream --format 'table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}'
 
-# Cleanup old images
 docker image prune -f 2>/dev/null || true
 REMOTE
 
-# ── Step 5: Verify deployment ────────────────────────────────────────────
+# ── Step 5: Verify deployment ─────────────────────────────────────────────────
 echo ""
 echo "▶ [5/6] Verifying deployment..."
 sleep 5
+API_HOST=$(echo "$SERVER" | cut -d@ -f2)
 HTTP_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
-  "http://44.233.157.41:8000/health" --max-time 10 || echo "000")
+  "http://$API_HOST:8000/health" --max-time 10 || echo "000")
 
 if [ "$HTTP_HEALTH" = "200" ]; then
   echo "  ✓ API health: $HTTP_HEALTH"
 else
   echo "  ✗ API health: $HTTP_HEALTH — deployment may need investigation"
-  echo "    Run: ssh -i \$SSH_KEY ubuntu@44.233.157.41 'docker logs phalanx-prod-phalanx-api-1 --tail 50'"
 fi
 
-# ── Step 6: Tag release ──────────────────────────────────────────────────
+# ── Step 6: Tag release ───────────────────────────────────────────────────────
 echo ""
 echo "▶ [6/6] Tagging release $RELEASE_TAG..."
 LAST_TAG_FOR_LOG=$(git tag --sort=-v:refname | head -n 1 2>/dev/null || echo "")
@@ -208,11 +210,10 @@ $RELEASE_NOTES
 EOF
 )" 2>/dev/null || echo "  Tag $RELEASE_TAG already exists, skipping"
 
-# ── Cleanup local tarballs ───────────────────────────────────────────────
+# ── Cleanup ───────────────────────────────────────────────────────────────────
 rm -f /tmp/phalanx-api.tar.gz /tmp/phalanx-worker.tar.gz
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"
 echo "║  Deploy complete: $RELEASE_TAG               ║"
-echo "║  http://44.233.157.41:8000/health            ║"
 echo "╚══════════════════════════════════════════════╝"
