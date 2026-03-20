@@ -1,9 +1,9 @@
 """
-FORGE Slack Gateway — single entry point for all human commands.
+Phalanx Slack Gateway — single entry point for all human commands.
 
-Architecture (evidence in EXECUTION_PLAN.md §B, AD-005):
+Architecture:
   - Uses Slack Socket Mode (no public webhook URL needed for MVP).
-  - Listens for /forge slash commands and app_mention events.
+  - Listens for /phalanx slash commands and app_mention events.
   - Validates commands via CommandParser, writes WorkOrder to Postgres,
     then dispatches to Commander via Celery.
   - AP-001: This is the ONLY human entry point. No REST API commands for MVP.
@@ -39,12 +39,12 @@ def _build_app(token: str) -> AsyncApp:
     """Create and configure the Slack AsyncApp with all handlers registered."""
     _app = AsyncApp(token=token)
 
-    # ── /forge slash command handler ──────────────────────────────────────────
+    # ── /phalanx slash command handler ──────────────────────────────────────────
 
     @_app.command("/phalanx")
     async def handle_forge_command(ack, command, say, respond):
         """
-        Handle /forge slash command.
+        Handle /phalanx slash command.
         Acknowledges immediately (Slack requires < 3s), then processes async.
         """
         await ack()  # acknowledge within 3 seconds
@@ -84,18 +84,18 @@ def _build_app(token: str) -> AsyncApp:
 
     @_app.event("app_mention")
     async def handle_mention(event, say):
-        """Respond to @forge mentions with guidance."""
+        """Respond to @phalanx mentions with guidance."""
         await say("Use `/phalanx help` to see available commands.")
 
     # ── Approval button handlers ───────────────────────────────────────────────
 
-    @_app.action("forge_approve")
+    @_app.action("phalanx_approve")
     async def handle_approve(ack, body, client):
         """Handle the Approve button click on an approval gate message."""
         await ack()
         await _handle_approval_action(body, client, decision="APPROVED")
 
-    @_app.action("forge_reject")
+    @_app.action("phalanx_reject")
     async def handle_reject(ack, body, client):
         """Handle the Reject button click on an approval gate message."""
         await ack()
@@ -387,7 +387,7 @@ async def _handle_status(parsed, respond) -> None:
                         "elements": [
                             {
                                 "type": "mrkdwn",
-                                "text": "Use `/forge status <run-id>` for details  •  `/forge cancel <run-id>` to stop",
+                                "text": "Use `/phalanx status <run-id>` for details  •  `/phalanx cancel <run-id>` to stop",
                             },
                         ],
                     }
@@ -448,7 +448,7 @@ async def _handle_cancel(parsed, user_id: str, respond) -> None:
 
 async def _handle_approval_action(body: dict, client, decision: str) -> None:
     """
-    Common handler for forge_approve / forge_reject button actions.
+    Common handler for phalanx_approve / phalanx_reject button actions.
 
     Updates the Approval row in Postgres and replaces the interactive
     Slack message with a decision receipt so the buttons can't be clicked twice.

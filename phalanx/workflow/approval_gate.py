@@ -223,7 +223,7 @@ class ApprovalGate:
                             "type": "button",
                             "text": {"type": "plain_text", "text": "✅ Approve"},
                             "style": "primary",
-                            "action_id": "forge_approve",
+                            "action_id": "phalanx_approve",
                             "value": approval.id,
                             "confirm": {
                                 "title": {"type": "plain_text", "text": "Approve this gate?"},
@@ -239,7 +239,7 @@ class ApprovalGate:
                             "type": "button",
                             "text": {"type": "plain_text", "text": "❌ Reject"},
                             "style": "danger",
-                            "action_id": "forge_reject",
+                            "action_id": "phalanx_reject",
                             "value": approval.id,
                         },
                     ],
