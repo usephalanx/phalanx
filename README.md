@@ -12,9 +12,11 @@ Phalanx is an open-source AI engineering team. Specialized agents coordinate fro
 
 ## Demo
 
-https://github.com/usephalanx/phalanx/assets/demo.mp4
+https://github.com/user-attachments/assets/phalanx-helloworld-demo.mp4
 
-> `/phalanx build "Add a hello world endpoint"` → plan approval → agents build, test, review → PR opened in 3 minutes.
+> `/phalanx build "Create a Hello World REST API"` → agents plan, build, test, review → API live in under 2 minutes.
+
+[![Watch the demo](https://usephalanx.com/demo.mp4)](https://usephalanx.com)
 
 ---
 
