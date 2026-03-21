@@ -8,9 +8,12 @@ Reports each step with DB evidence.
 
 Usage:
     FORGE_WORKER=1 python scripts/e2e_simulate.py
+    FORGE_WORKER=1 python scripts/e2e_simulate.py --title "My feature" --prompt "Build X that does Y"
+    FORGE_WORKER=1 python scripts/e2e_simulate.py --prompt-file scripts/prompts/my_prompt.txt
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 import uuid
@@ -18,6 +21,50 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# ── Saved prompts (reusable) ──────────────────────────────────────────────────
+PROMPTS: dict[str, dict] = {
+    "healthcheck": {
+        "title": "Add health-check endpoint",
+        "description": (
+            "Add a GET /health endpoint that returns {status: ok, version: <current>}. "
+            "It should check DB connectivity and return 503 if unhealthy. "
+            "Add tests. Follow existing FastAPI patterns."
+        ),
+        "command": "/phalanx build Add health-check endpoint",
+    },
+    "nextjs-demo": {
+        "title": "Build polished Next.js demo site for Phalanx",
+        "description": (
+            "build a polished nextjs demo site for phalanx\n\n"
+            "brand: Phalanx\n"
+            "tagline: from slack command to shipped software\n\n"
+            "tech:\n"
+            "- next.js 14 app router\n"
+            "- typescript\n"
+            "- tailwind css\n\n"
+            "sections:\n"
+            "1. hero with tagline and CTA\n"
+            "2. how it works (slack command → plan → code → shipped)\n"
+            "3. feature grid\n"
+            "4. pricing cards\n"
+            "5. faq accordion\n"
+            "6. final call to action\n\n"
+            "design:\n"
+            "- modern startup homepage look\n"
+            "- clean typography\n"
+            "- subtle gradients ok\n"
+            "- credible, not flashy\n"
+            "- responsive (mobile + desktop)\n\n"
+            "constraints:\n"
+            "- one page only\n"
+            "- no backend, no login, no database\n"
+            "- use mock data throughout\n"
+            "- no paid external dependencies"
+        ),
+        "command": "/phalanx build polished nextjs demo site for phalanx",
+    },
+}
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 GREEN  = "\033[32m"
@@ -82,7 +129,7 @@ def print_db_state(state: dict, label: str) -> None:
 
 # ── Main simulation ───────────────────────────────────────────────────────────
 
-async def run_simulation() -> None:
+async def run_simulation(prompt_key: str = "healthcheck", title: str | None = None, description: str | None = None) -> None:
     from sqlalchemy import select, update
     from phalanx.db.session import get_db
     from phalanx.db.models import Project, Channel, WorkOrder, Run, Task, Approval
@@ -146,17 +193,17 @@ async def run_simulation() -> None:
 
     # ── Step 2: Create WorkOrder ──────────────────────────────────
     hdr("STEP 2 — Create WorkOrder")
+    _prompt = PROMPTS.get(prompt_key, PROMPTS["healthcheck"])
+    _title = title or _prompt["title"]
+    _description = description or _prompt["description"]
+    _command = _prompt.get("command", f"/phalanx build {_title}")
     async with get_db() as session:
         work_order = WorkOrder(
             project_id=project_id,
             channel_id=channel_id,
-            title="Add health-check endpoint",
-            description=(
-                "Add a GET /health endpoint that returns {status: ok, version: <current>}. "
-                "It should check DB connectivity and return 503 if unhealthy. "
-                "Add tests. Follow existing FastAPI patterns."
-            ),
-            raw_command="/forge build Add health-check endpoint",
+            title=_title,
+            description=_description,
+            raw_command=_command,
             status="OPEN",
             priority=75,
             requested_by="U_SIM_001",
@@ -471,4 +518,20 @@ async def run_simulation() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_simulation())
+    parser = argparse.ArgumentParser(description="FORGE E2E Simulation")
+    parser.add_argument("--prompt", choices=list(PROMPTS.keys()), default="healthcheck",
+                        help=f"Saved prompt to use. Options: {list(PROMPTS.keys())}")
+    parser.add_argument("--title", default=None, help="Override the work order title")
+    parser.add_argument("--description", default=None, help="Override the work order description")
+    parser.add_argument("--prompt-file", default=None, help="Load description from a text file")
+    args = parser.parse_args()
+
+    description = args.description
+    if args.prompt_file:
+        description = Path(args.prompt_file).read_text().strip()
+
+    asyncio.run(run_simulation(
+        prompt_key=args.prompt,
+        title=args.title,
+        description=description,
+    ))

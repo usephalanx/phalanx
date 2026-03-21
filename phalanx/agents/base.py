@@ -109,7 +109,7 @@ class BaseAgent(abc.ABC):
         self.run_id = str(run_id)
         self.task_id = str(task_id) if task_id else None
         self.agent_id = agent_id
-        self.token_budget = token_budget or settings.anthropic_max_tokens_default
+        self.token_budget = token_budget or settings.forge_max_tokens_per_run
         self._tokens_used = 0
 
         self._log = log.bind(
