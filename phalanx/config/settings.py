@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     forge_enable_skill_drills: bool = False
     forge_enable_daily_digest: bool = False
     forge_enable_deploy_verify: bool = False
+    phalanx_enable_dag_orchestration: bool = False
 
     # ── API ───────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
