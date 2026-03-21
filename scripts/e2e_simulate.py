@@ -516,6 +516,102 @@ async def run_simulation(prompt_key: str = "healthcheck", title: str | None = No
         print(f"{YELLOW}{BOLD}  ⚠  {len(pending)} task(s) still pending{RESET}")
     print()
 
+    # ── Push generated workspace to usephalanx/showcase ───────────────────────
+    await _push_to_showcase(workspace_path, run_id, prompt_key, len(completed), len(failed))
+
+
+async def _push_to_showcase(
+    workspace_path: Path,
+    run_id: str,
+    prompt_key: str,
+    completed: int,
+    failed: int,
+) -> None:
+    """
+    Clone usephalanx/showcase, copy the generated workspace into
+    showcase/<prompt_key>/<short_run_id>/, commit, and push.
+
+    Requires GITHUB_TOKEN env var with write access to usephalanx/showcase.
+    Skips silently if workspace is empty or token is missing.
+    """
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("PHALANX_GITHUB_TOKEN")
+    if not token:
+        print(f"  {YELLOW}showcase: skipped — GITHUB_TOKEN not set{RESET}")
+        return
+
+    if not workspace_path.exists() or not any(workspace_path.iterdir()):
+        print(f"  {YELLOW}showcase: skipped — workspace empty{RESET}")
+        return
+
+    showcase_url = f"https://{token}@github.com/usephalanx/showcase.git"
+    short_id = run_id[:8]
+    dest_name = f"{prompt_key}/{short_id}"
+
+    print(f"\n  {CYAN}→ Pushing to usephalanx/showcase/{dest_name}...{RESET}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth=1", showcase_url, tmpdir],
+                check=True, capture_output=True,
+            )
+
+            dest = Path(tmpdir) / prompt_key / short_id
+            dest.mkdir(parents=True, exist_ok=True)
+
+            # Copy workspace files, skip git internals and node_modules
+            for item in workspace_path.iterdir():
+                if item.name in (".git", "node_modules", "__pycache__", ".next"):
+                    continue
+                dst = dest / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dst, ignore=shutil.ignore_patterns(
+                        "node_modules", "__pycache__", ".next", "*.pyc"
+                    ))
+                else:
+                    shutil.copy2(item, dst)
+
+            # Write a run summary
+            summary = dest / "_phalanx_run.md"
+            summary.write_text(
+                f"# Phalanx Run — {prompt_key}/{short_id}\n\n"
+                f"- **Run ID**: `{run_id}`\n"
+                f"- **Prompt**: `{prompt_key}`\n"
+                f"- **Tasks completed**: {completed}\n"
+                f"- **Tasks failed**: {failed}\n"
+                f"- **Generated**: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                f"_Built end-to-end by Phalanx agents from a single command._\n"
+            )
+
+            env = {**os.environ,
+                   "GIT_AUTHOR_NAME": "Raj Nagulapalle",
+                   "GIT_AUTHOR_EMAIL": "raj.nagulapalle@kraken.com",
+                   "GIT_COMMITTER_NAME": "Raj Nagulapalle",
+                   "GIT_COMMITTER_EMAIL": "raj.nagulapalle@kraken.com"}
+
+            subprocess.run(["git", "-C", tmpdir, "add", "."], check=True, capture_output=True, env=env)
+            subprocess.run(
+                ["git", "-C", tmpdir, "commit", "-m",
+                 f"add: {prompt_key}/{short_id} — {completed} tasks, {failed} failed"],
+                check=True, capture_output=True, env=env,
+            )
+            subprocess.run(
+                ["git", "-C", tmpdir, "push", "origin", "main"],
+                check=True, capture_output=True, env=env,
+            )
+            print(f"  {GREEN}✓ showcase: pushed to usephalanx/showcase/{dest_name}{RESET}")
+
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode(errors="replace").strip()
+            print(f"  {YELLOW}showcase: push failed — {err[:120]}{RESET}")
+        except Exception as exc:
+            print(f"  {YELLOW}showcase: push failed — {exc}{RESET}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FORGE E2E Simulation")
