@@ -41,8 +41,8 @@ log = structlog.get_logger(__name__)
 
 settings = get_settings()
 
-# Token budget for code generation — generous to fit full file contents
-_BUILD_MAX_TOKENS = 8000
+# Token budget for code generation — large enough for multi-file Next.js output
+_BUILD_MAX_TOKENS = 16000
 # Max bytes to read from any single existing file (avoid token overflow)
 _MAX_FILE_READ_BYTES = 12_000
 # Max total bytes of existing file context to send to Claude
