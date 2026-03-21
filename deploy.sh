@@ -119,6 +119,9 @@ $SCP "$REPO_DIR/docker-compose.prod.yml" "$SERVER:$APP_DIR/docker-compose.yml"
 [ -f "$REPO_DIR/nginx/nginx.conf" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   "$REPO_DIR/nginx/" "$SERVER:$APP_DIR/nginx/" || true
 
+[ -d "$REPO_DIR/ssl" ] && rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  "$REPO_DIR/ssl/" "$SERVER:$APP_DIR/ssl/" || true
+
 # Upload .env.prod (must exist locally — not committed to git)
 if [ -f "$REPO_DIR/.env.prod" ]; then
   $SCP "$REPO_DIR/.env.prod" "$SERVER:$APP_DIR/.env"

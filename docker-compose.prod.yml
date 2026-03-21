@@ -143,9 +143,11 @@ services:
     <<: *forge-base
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./site:/usr/share/nginx/html:ro
+      - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       phalanx-api:
         condition: service_healthy
