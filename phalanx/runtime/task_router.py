@@ -31,6 +31,8 @@ _ROLE_TO_QUEUE: dict[str, str] = {
     "builder": "builder",
     "reviewer": "reviewer",
     "qa": "qa",
+    "verifier": "qa",              # lightweight post-build check — shares qa queue
+    "integration_wiring": "qa",    # entry-point wiring — shares qa queue
     "security": "security",
     "release": "release",
     # Scheduled/ingestion tasks
@@ -48,6 +50,8 @@ _ROLE_TO_TASK: dict[str, str] = {
     "builder": "phalanx.agents.builder.execute_task",
     "reviewer": "phalanx.agents.reviewer.execute_task",
     "qa": "phalanx.agents.qa.execute_task",
+    "verifier": "phalanx.agents.verifier.execute_task",
+    "integration_wiring": "phalanx.agents.integration_wiring.execute_task",
     "security": "phalanx.agents.security.execute_task",
     "release": "phalanx.agents.release.execute_task",
 }
