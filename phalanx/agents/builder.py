@@ -250,19 +250,43 @@ class BuilderAgent(BaseAgent):
                 except OSError:
                     pass
 
-        # If workspace has Python files and we have budget, add a few for context
+        # Always include shared data/type files if they exist (critical for cross-task consistency)
+        _SHARED_FILES = [
+            "lib/data.ts", "lib/types.ts", "lib/constants.ts",
+            "src/lib/data.ts", "src/lib/types.ts",
+            "app/page.tsx", "app/layout.tsx",
+        ]
+        for shared in _SHARED_FILES:
+            if shared in contents:
+                continue
+            full = workspace / shared
+            if full.exists() and full.is_file():
+                try:
+                    text = full.read_text(errors="replace")[:_MAX_FILE_READ_BYTES]
+                    contents[shared] = text
+                    total_bytes += len(text.encode())
+                    if total_bytes >= _MAX_CONTEXT_BYTES:
+                        break
+                except OSError:
+                    pass
+
+        # Fill remaining budget with source files (Python or TypeScript/TSX)
         if total_bytes < _MAX_CONTEXT_BYTES // 2:
-            for py_file in sorted(workspace.rglob("*.py"))[:20]:
-                if py_file.stat().st_size == 0:
+            py_files = sorted(workspace.rglob("*.py"))
+            ts_files = sorted(workspace.rglob("*.ts")) + sorted(workspace.rglob("*.tsx"))
+            source_files = py_files if py_files else ts_files
+            for src_file in source_files[:30]:
+                if src_file.stat().st_size == 0:
                     continue
-                rel = str(py_file.relative_to(workspace))
+                rel = str(src_file.relative_to(workspace))
                 if rel in contents:
                     continue
-                # Skip test files and migrations to save tokens
-                if any(skip in rel for skip in ("test_", "alembic/versions", "__pycache__")):
+                # Skip test files, migrations, generated files
+                if any(skip in rel for skip in ("test_", "alembic/versions", "__pycache__",
+                                                 ".test.", ".spec.", "__tests__", "node_modules")):
                     continue
                 try:
-                    text = py_file.read_text(errors="replace")[:_MAX_FILE_READ_BYTES]
+                    text = src_file.read_text(errors="replace")[:_MAX_FILE_READ_BYTES]
                     contents[rel] = text
                     total_bytes += len(text.encode())
                     if total_bytes >= _MAX_CONTEXT_BYTES:
