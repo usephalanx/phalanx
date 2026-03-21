@@ -163,21 +163,26 @@ class BuilderAgent(BaseAgent):
 
     # ── Workspace helpers ─────────────────────────────────────────────────────
 
-    def _workspace_path(self, run: Run) -> Path:
+    def _workspace_path(self, run: Run, branch_name: str | None = None) -> Path:
         base = Path(settings.git_workspace)
-        return base / run.project_id / self.run_id
+        run_dir = base / run.project_id / self.run_id
+        if branch_name:
+            # Isolate each epic in its own subdir; replace / with _ for safety
+            slug = branch_name.replace("/", "_")
+            return run_dir / slug
+        return run_dir
 
-    async def _ensure_workspace(self, workspace: Path, run: Run) -> None:
+    async def _ensure_workspace(self, workspace: Path, run: Run, branch: str | None = None) -> None:
         """
         Set up the workspace directory. If GitHub is configured and project has
         a repo_url, clone/update. Otherwise create a local directory.
         """
         workspace.mkdir(parents=True, exist_ok=True)
 
-        branch = run.active_branch or f"forge/run-{self.run_id[:8]}"
+        resolved_branch = branch or run.active_branch or f"phalanx/run-{self.run_id[:8]}"
 
         if settings.github_token:
-            await self._setup_git_workspace(workspace, run, branch)
+            await self._setup_git_workspace(workspace, run, resolved_branch)
         else:
             self._log.info("builder.workspace.local", path=str(workspace))
 
@@ -386,13 +391,14 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
     # ── Git commit ────────────────────────────────────────────────────────────
 
     async def _commit_changes(
-        self, workspace: Path, task: Task, run: Run, files_written: list[str]
+        self, workspace: Path, task: Task, run: Run, files_written: list[str],
+        branch: str | None = None,
     ) -> dict:
         """Commit changes to git if available. Returns commit info dict."""
         if not files_written:
             return {}
 
-        branch = run.active_branch or f"forge/run-{self.run_id[:8]}"
+        branch = branch or run.active_branch or f"phalanx/run-{self.run_id[:8]}"
 
         try:
             from git import Actor, Repo  # noqa: PLC0415

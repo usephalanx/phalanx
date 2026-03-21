@@ -138,6 +138,78 @@ class TestDispatchAndWait:
             await orchestrator._dispatch_and_wait(task)
 
 
+class TestExecuteDag:
+    """Tests for the DAG-aware execution path."""
+
+    def _make_poll_get_db(self, statuses: dict[str, str]):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _mock_get_db():
+            poll_session = AsyncMock()
+
+            def _execute(stmt):
+                result = MagicMock()
+                # Return a task whose status depends on its ID
+                task = MagicMock()
+                # We can't easily know the task_id from the stmt, so always COMPLETED
+                task.status = "COMPLETED"
+                task.agent_role = "builder"
+                task.error = None
+                result.scalar_one.return_value = task
+                return result
+
+            poll_session.execute = AsyncMock(side_effect=_execute)
+            yield poll_session
+
+        return _mock_get_db
+
+    async def test_dag_path_dispatches_ready_tasks(self, orchestrator, mock_session, mock_router):
+        from phalanx.workflow.dag import DagNode, DagResolver
+
+        t1 = make_task("t1", agent_role="builder")
+        t2 = make_task("t2", agent_role="reviewer")
+
+        nodes = {
+            "t1": DagNode(task_id="t1", agent_role="builder", estimated_minutes=30),
+            "t2": DagNode(task_id="t2", agent_role="reviewer", estimated_minutes=15,
+                          deps={"t1": "full"}),
+        }
+        task_map = {"t1": t1, "t2": t2}
+
+        mock_session.execute.return_value = MagicMock()
+
+        with (
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db({})),
+        ):
+            await orchestrator._execute_dag(nodes, task_map, DagResolver())
+
+        assert mock_router.dispatch.call_count == 2
+
+    async def test_execute_uses_dag_when_flag_enabled(self, orchestrator, mock_session, mock_router):
+        """execute() routes to DAG path when phalanx_enable_dag_orchestration=True."""
+        t1 = make_task("t1")
+        tasks_result = MagicMock()
+        tasks_result.scalars.return_value = iter([t1])
+
+        deps_result = MagicMock()
+        deps_result.scalars.return_value = iter([])
+
+        mock_session.execute = AsyncMock(side_effect=[tasks_result, deps_result, MagicMock()])
+
+        with (
+            patch("phalanx.workflow.orchestrator.get_settings") as mock_settings,
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db({})),
+            patch.object(orchestrator, "_transition", AsyncMock()),
+        ):
+            mock_settings.return_value.phalanx_enable_dag_orchestration = True
+            await orchestrator.execute()
+
+        mock_router.dispatch.assert_called_once()
+
+
 class TestRequestShipApproval:
     async def test_ship_approval_creates_gate(self, orchestrator, mock_session):
         mock_gate = AsyncMock()

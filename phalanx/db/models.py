@@ -224,8 +224,25 @@ class Task(Base):
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
+    # DAG / integration wiring fields
+    epic_id: Mapped[str | None] = mapped_column(String(100))
+    branch_name: Mapped[str | None] = mapped_column(String(255))
+    estimated_minutes: Mapped[int] = mapped_column(Integer, default=30)
+
     run: Mapped[Run] = relationship(back_populates="tasks")
     subtasks: Mapped[list[Task]] = relationship()
+
+
+class TaskDependency(Base):
+    """Explicit DAG edge between two tasks within a run."""
+
+    __tablename__ = "task_dependencies"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    depends_on_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), nullable=False)
+    dependency_type: Mapped[str] = mapped_column(String(50), default="full")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
 class Artifact(Base):
