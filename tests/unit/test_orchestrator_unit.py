@@ -215,6 +215,13 @@ class TestRequestShipApproval:
         mock_gate = AsyncMock()
         mock_gate.request_and_wait = AsyncMock(return_value=MagicMock(status="APPROVED"))
 
+        # request_ship_approval now loads run + tasks after approval for run_complete
+        run_result = MagicMock()
+        run_result.scalar_one.return_value = MagicMock()
+        tasks_result = MagicMock()
+        tasks_result.scalars.return_value = iter([])
+        mock_session.execute = AsyncMock(side_effect=[run_result, tasks_result])
+
         with (
             patch("phalanx.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
             patch.object(orchestrator, "_transition", AsyncMock()),
@@ -237,3 +244,134 @@ class TestRequestShipApproval:
             pytest.raises(ApprovalRejectedError),
         ):
             await orchestrator.request_ship_approval()
+
+
+class TestSlackNotifierIntegration:
+    """WorkflowOrchestrator calls SlackNotifier at the right lifecycle points."""
+
+    def _make_poll_get_db(self, refreshed_task):
+        from contextlib import asynccontextmanager
+
+        poll_session = AsyncMock()
+        poll_result = MagicMock()
+        poll_result.scalar_one.return_value = refreshed_task
+        poll_session.execute = AsyncMock(return_value=poll_result)
+
+        @asynccontextmanager
+        async def _mock_get_db():
+            yield poll_session
+
+        return _mock_get_db
+
+    def _make_notifier(self):
+        n = MagicMock()
+        n.task_started = AsyncMock()
+        n.task_completed = AsyncMock()
+        n.task_failed = AsyncMock()
+        n.run_complete = AsyncMock()
+        return n
+
+    def _make_orch(self, mock_session, mock_router, notifier):
+        return WorkflowOrchestrator(
+            session=mock_session,
+            run_id="run-uuid-1",
+            task_router=mock_router,
+            approval_timeout_hours=24,
+            notifier=notifier,
+        )
+
+    async def test_task_started_called_on_dispatch(self, mock_session, mock_router):
+        """_dispatch_and_wait calls notifier.task_started(task) after marking IN_PROGRESS."""
+        notifier = self._make_notifier()
+        orch = self._make_orch(mock_session, mock_router, notifier)
+
+        task = make_task("t1", agent_role="builder", status="PENDING")
+        completed = make_task("t1", agent_role="builder", status="COMPLETED")
+        mock_session.execute.return_value = MagicMock()
+
+        with (
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(completed)),
+        ):
+            await orch._dispatch_and_wait(task)
+
+        notifier.task_started.assert_awaited_once_with(task)
+
+    async def test_task_completed_called_on_success(self, mock_session, mock_router):
+        """_dispatch_and_wait calls notifier.task_completed(refreshed) on COMPLETED."""
+        notifier = self._make_notifier()
+        orch = self._make_orch(mock_session, mock_router, notifier)
+
+        task = make_task("t1", agent_role="builder", status="PENDING")
+        completed = make_task("t1", agent_role="builder", status="COMPLETED")
+        mock_session.execute.return_value = MagicMock()
+
+        with (
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(completed)),
+        ):
+            await orch._dispatch_and_wait(task)
+
+        notifier.task_completed.assert_awaited_once_with(completed)
+
+    async def test_task_failed_called_before_raise(self, mock_session, mock_router):
+        """_dispatch_and_wait calls notifier.task_failed(refreshed) before OrchestratorError."""
+        notifier = self._make_notifier()
+        orch = self._make_orch(mock_session, mock_router, notifier)
+
+        task = make_task("t2", agent_role="builder", status="PENDING")
+        failed = make_task("t2", agent_role="builder", status="FAILED", error="tests failed")
+        mock_session.execute.return_value = MagicMock()
+
+        with (
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(failed)),
+            pytest.raises(OrchestratorError, match="failed"),
+        ):
+            await orch._dispatch_and_wait(task)
+
+        notifier.task_failed.assert_awaited_once_with(failed)
+
+    async def test_run_complete_called_after_ship_approval(self, mock_session, mock_router):
+        """request_ship_approval calls notifier.run_complete(run, tasks) after READY_TO_MERGE."""
+        notifier = self._make_notifier()
+        orch = self._make_orch(mock_session, mock_router, notifier)
+
+        mock_gate = AsyncMock()
+        mock_gate.request_and_wait = AsyncMock()
+
+        mock_run = MagicMock()
+        mock_tasks = [make_task("t1"), make_task("t2")]
+
+        run_result = MagicMock()
+        run_result.scalar_one.return_value = mock_run
+
+        tasks_result = MagicMock()
+        tasks_result.scalars.return_value = iter(mock_tasks)
+
+        mock_session.execute = AsyncMock(side_effect=[run_result, tasks_result])
+
+        with (
+            patch("phalanx.workflow.orchestrator.ApprovalGate", return_value=mock_gate),
+            patch.object(orch, "_transition", AsyncMock()),
+        ):
+            await orch.request_ship_approval(context_snapshot={"task_count": 2})
+
+        notifier.run_complete.assert_awaited_once_with(mock_run, mock_tasks)
+
+    async def test_notifier_noop_when_not_passed(self, mock_session, mock_router):
+        """Orchestrator with no notifier= still works — default no-op never raises."""
+        orch = WorkflowOrchestrator(
+            session=mock_session,
+            run_id="run-uuid-1",
+            task_router=mock_router,
+        )
+        task = make_task("t1", agent_role="builder", status="PENDING")
+        completed = make_task("t1", agent_role="builder", status="COMPLETED")
+        mock_session.execute.return_value = MagicMock()
+
+        with (
+            patch("phalanx.workflow.orchestrator.asyncio.sleep", AsyncMock()),
+            patch("phalanx.db.session.get_db", self._make_poll_get_db(completed)),
+        ):
+            await orch._dispatch_and_wait(task)  # must not raise

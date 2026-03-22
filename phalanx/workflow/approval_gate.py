@@ -18,8 +18,10 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import structlog
+from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import select
 
+from phalanx.config.settings import get_settings
 from phalanx.db.models import Approval
 
 if TYPE_CHECKING:
@@ -168,24 +170,25 @@ class ApprovalGate:
         Posts Block Kit message with Approve / Reject buttons.
         """
         try:
-            from slack_sdk.web.async_client import AsyncWebClient  # noqa: PLC0415
-            from sqlalchemy import select as _select  # noqa: PLC0415
-
-            from phalanx.config.settings import get_settings  # noqa: PLC0415
             from phalanx.db.models import Channel, Run, WorkOrder  # noqa: PLC0415
 
             settings = get_settings()
             if not settings.slack_bot_token:
                 return
 
-            # Fetch channel_id from run → work_order → channel
+            # Fetch channel_id + thread_ts from run → work_order → channel.
+            # slack_thread_ts is set by the gateway when it posts the ack message —
+            # NULL for old runs or non-Slack paths; safe to skip threading in that case.
             result = await self._session.execute(
-                _select(Channel.channel_id)
+                select(Channel.channel_id, WorkOrder.slack_thread_ts)
                 .join(WorkOrder, WorkOrder.channel_id == Channel.id)
                 .join(Run, Run.work_order_id == WorkOrder.id)
                 .where(Run.id == self.run_id)
             )
-            slack_channel_id = result.scalar_one_or_none()
+            row = result.one_or_none()
+            if not row:
+                return
+            slack_channel_id, thread_ts = row
             if not slack_channel_id:
                 return
 
@@ -247,11 +250,14 @@ class ApprovalGate:
             ]
 
             client = AsyncWebClient(token=settings.slack_bot_token)
-            await client.chat_postMessage(
-                channel=slack_channel_id,
-                text=f"🔔 Approval required: `{approval.gate_type}` gate for run `{self.run_id[:8]}…`",
-                blocks=blocks,
-            )
+            post_kwargs: dict = {
+                "channel": slack_channel_id,
+                "text": f"🔔 Approval required: `{approval.gate_type}` gate for run `{self.run_id[:8]}…`",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                post_kwargs["thread_ts"] = thread_ts
+            await client.chat_postMessage(**post_kwargs)
             self._log.info(
                 "approval_gate.slack_notified",
                 approval_id=approval.id,

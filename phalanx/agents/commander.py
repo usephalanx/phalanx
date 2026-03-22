@@ -29,7 +29,7 @@ from sqlalchemy import select
 
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.config.loader import ConfigLoader
-from phalanx.db.models import Run, Task, WorkOrder
+from phalanx.db.models import Run, Task, TaskDependency, WorkOrder
 from phalanx.memory.assembler import MemoryAssembler
 from phalanx.memory.reader import MemoryReader
 from phalanx.queue.celery_app import celery_app
@@ -40,6 +40,7 @@ from phalanx.workflow.approval_gate import (
     ApprovalTimeoutError,
 )
 from phalanx.workflow.orchestrator import WorkflowOrchestrator
+from phalanx.workflow.slack_notifier import SlackNotifier
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,6 +89,13 @@ class CommanderAgent(BaseAgent):
             await self._create_or_load_run(session, wo)
             await self._transition_run("INTAKE", "RESEARCHING")
             await self._audit("state_transition", from_state="INTAKE", to_state="RESEARCHING")
+
+            # Build Slack notifier once — all subsequent posts go to the thread
+            # anchored on WorkOrder.slack_thread_ts (set by gateway).
+            # Returns a silent no-op notifier if flag is off, token is missing,
+            # or the run has no registered Slack channel (simulator / API path).
+            notifier = await SlackNotifier.from_run(self.run_id, session)
+            await notifier.post(f"🧠 Planning your *{wo.title}*…")
 
             # ── Phase 2: Load memory context ──────────────────────────────────
             reader = MemoryReader(session, self.project_id)
@@ -143,6 +151,14 @@ class CommanderAgent(BaseAgent):
                     tokens_used=self._tokens_used,
                 )
 
+            # ── Plan approved: post summary to Slack thread ───────────────────
+            # Load the tasks we persisted so run_planned can show role breakdown.
+            # This is a cheap indexed read (Task.run_id is indexed).
+            approved_tasks_result = await session.execute(
+                select(Task).where(Task.run_id == self.run_id).order_by(Task.sequence_num)
+            )
+            await notifier.run_planned(list(approved_tasks_result.scalars()))
+
             # ── Phase 5: AWAITING_PLAN_APPROVAL → EXECUTING ───────────────────
             await self._transition_run("AWAITING_PLAN_APPROVAL", "EXECUTING")
 
@@ -152,6 +168,7 @@ class CommanderAgent(BaseAgent):
                 run_id=self.run_id,
                 task_router=router,
                 approval_timeout_hours=self._loader.workflow.workflow.approval_timeout_hours,
+                notifier=notifier,
             )
 
             try:
@@ -225,8 +242,87 @@ class CommanderAgent(BaseAgent):
 
     async def _generate_task_plan(self, wo: WorkOrder, memory_block: str) -> dict:
         """
-        Call Claude to decompose the work order into a structured task plan.
-        Returns a dict: {tasks: [{title, description, agent_role, sequence_num, ...}]}
+        Build the task plan for the current phase.
+
+        If WorkOrder has enriched_spec (from PromptEnricher), use the current phase's
+        claude_prompt directly — no Claude call needed for decomposition.
+
+        Falls back to Claude decomposition if enrichment is absent or disabled.
+        """
+        # ── Enriched path: use phase spec from PromptEnricher ──────────────────
+        current_phase_num = getattr(wo, "current_phase", None)
+        current_phase_num = current_phase_num if isinstance(current_phase_num, int) else 0
+        enriched_spec = getattr(wo, "enriched_spec", None)
+        if enriched_spec and isinstance(enriched_spec, dict) and current_phase_num >= 1:
+            phases = enriched_spec.get("phases", [])
+            phase_idx = current_phase_num - 1  # 1-indexed → 0-indexed
+            if 0 <= phase_idx < len(phases):
+                phase = phases[phase_idx]
+                self._log.info(
+                    "commander.plan_from_enriched_spec",
+                    phase_id=phase.get("id"),
+                    phase_name=phase.get("name"),
+                    total_phases=len(phases),
+                )
+                return self._build_plan_from_phase(phase, wo)
+
+        # ── Fallback: Claude decomposition (no enrichment or phase exhausted) ──
+        return await self._plan_via_claude(wo, memory_block)
+
+    def _build_plan_from_phase(self, phase: dict, wo: WorkOrder) -> dict:
+        """
+        Build a single-task plan from a PhaseSpec.
+
+        One builder task per phase — the claude_prompt IS the task description.
+        role_context and phase metadata are attached for Builder to use.
+        """
+        role = phase.get("role", {})
+        role_context = (
+            f"[ROLE]\n"
+            f"Title: {role.get('title', 'Senior Software Engineer')}\n"
+            f"Seniority: {role.get('seniority', 'Senior')}\n"
+            f"Domain: {role.get('domain', '')}\n\n"
+            f"{role.get('persona', '')}"
+        ).strip()
+
+        claude_prompt = phase.get("claude_prompt", "")
+        if not claude_prompt:
+            # Fall back to assembling from structured fields
+            objectives = "\n".join(f"- {o}" for o in phase.get("objectives", []))
+            deliverables = "\n".join(
+                f"- {d.get('file', '')}: {d.get('description', '')}"
+                for d in phase.get("deliverables", [])
+            )
+            claude_prompt = (
+                f"{phase.get('context', '')}\n\n"
+                f"Objectives:\n{objectives}\n\n"
+                f"Deliverables:\n{deliverables}"
+            )
+
+        return {
+            "tasks": [
+                {
+                    "sequence_num": 1,
+                    "title": f"[Phase {phase.get('id', '?')}] {phase.get('name', wo.title)}",
+                    "description": claude_prompt,
+                    "agent_role": phase.get("agent_role", "builder"),
+                    "depends_on": [],
+                    "files_likely_touched": [
+                        d.get("file", "") for d in phase.get("deliverables", []) if d.get("file")
+                    ],
+                    "estimated_complexity": 4,
+                    # Enricher metadata — consumed by BuilderAgent
+                    "_phase_id": phase.get("id"),
+                    "_phase_name": phase.get("name"),
+                    "_role_context": role_context,
+                }
+            ]
+        }
+
+    async def _plan_via_claude(self, wo: WorkOrder, memory_block: str) -> dict:
+        """
+        Original Claude-based task decomposition (fallback path).
+        Used when enrichment is disabled or not available.
         """
         system = f"""You are the Commander in FORGE, an AI team operating system.
 Your job is to decompose a work order into an ordered list of tasks for different agents.
@@ -270,17 +366,15 @@ JSON format:
         response_text = self._call_claude(
             messages=messages,
             system=system,
-            max_tokens=4096,
+            max_tokens=8192,  # Increased from 4096 to prevent JSON truncation
         )
 
         try:
-            # Extract JSON from response
             start = response_text.find("{")
             end = response_text.rfind("}") + 1
             return json.loads(response_text[start:end])
         except (json.JSONDecodeError, ValueError) as exc:
             self._log.error("commander.plan_parse_failed", error=str(exc))
-            # Return a minimal fallback plan
             return {
                 "tasks": [
                     {
@@ -296,8 +390,15 @@ JSON format:
             }
 
     async def _persist_task_plan(self, session: AsyncSession, plan: dict) -> None:
-        """Write all tasks from the plan to Postgres."""
-        for t in plan.get("tasks", []):
+        """Write all tasks and their DAG dependency edges to Postgres."""
+        tasks_data = plan.get("tasks", [])
+
+        # Detect which optional columns exist in the deployed model
+        _task_cols = {c.key for c in Task.__table__.columns}
+
+        # First pass: create Task rows, map sequence_num → Task object
+        seq_to_task: dict[int, Task] = {}
+        for t in tasks_data:
             task = Task(
                 run_id=self.run_id,
                 sequence_num=t.get("sequence_num", 1),
@@ -309,9 +410,40 @@ JSON format:
                 files_likely_touched=t.get("files_likely_touched", []),
                 estimated_complexity=t.get("estimated_complexity", 3),
             )
+            # Phase enricher metadata — only set if columns exist in deployed model
+            if "phase_id" in _task_cols:
+                task.phase_id = t.get("_phase_id")
+            if "phase_name" in _task_cols:
+                task.phase_name = t.get("_phase_name")
+            if "role_context" in _task_cols:
+                task.role_context = t.get("_role_context")
             session.add(task)
+            seq_to_task[t.get("sequence_num", 1)] = task
+
+        # Flush to get DB-assigned UUIDs without committing yet
+        await session.flush()
+
+        # Second pass: write TaskDependency edges so DagResolver can build the graph
+        dep_count = 0
+        for t in tasks_data:
+            child_seq = t.get("sequence_num", 1)
+            child_task = seq_to_task[child_seq]
+            for dep_seq in t.get("depends_on", []):
+                parent_task = seq_to_task.get(int(dep_seq))
+                if parent_task:
+                    session.add(TaskDependency(
+                        task_id=child_task.id,
+                        depends_on_id=parent_task.id,
+                        dependency_type="full",
+                    ))
+                    dep_count += 1
+
         await session.commit()
-        self._log.info("commander.plan_persisted", task_count=len(plan.get("tasks", [])))
+        self._log.info(
+            "commander.plan_persisted",
+            task_count=len(tasks_data),
+            dependency_edges=dep_count,
+        )
 
 
 # ── Celery task entry point ───────────────────────────────────────────────────

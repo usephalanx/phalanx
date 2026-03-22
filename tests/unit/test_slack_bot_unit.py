@@ -107,7 +107,131 @@ class TestHandleBuild:
 
         respond.assert_awaited_once()
         call_text = respond.call_args[0][0]
-        assert "✅" in call_text or "Work order" in call_text
+        assert "🏗️" in call_text or "Building" in call_text
+
+    async def test_build_posts_channel_message_when_client_provided(self):
+        """When client is provided, chat_postMessage is called and respond() is NOT called."""
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
+
+        parsed = parse_command("build Add OAuth login")
+        respond = AsyncMock()
+        session = make_session()
+
+        channel = MagicMock()
+        channel.id = "ch-uuid"
+        channel.project_id = "proj-uuid"
+        channel_result = MagicMock()
+        channel_result.scalar_one_or_none.return_value = channel
+        session.execute.return_value = channel_result
+
+        session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", "wo-uuid"))
+
+        mock_client = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1711111111.000100"})
+
+        mock_router = MagicMock()
+
+        with (
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.runtime.task_router.TaskRouter", return_value=mock_router),
+            patch("phalanx.queue.celery_app.celery_app", MagicMock()),
+        ):
+            await _handle_build(
+                parsed, user_id="U123", channel_id="C789", respond=respond, client=mock_client
+            )
+
+        # chat_postMessage called with correct channel and human-readable text
+        mock_client.chat_postMessage.assert_awaited_once()
+        call_kwargs = mock_client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["channel"] == "C789"
+        assert "🏗️" in call_kwargs["text"]
+        assert "Add OAuth login" in call_kwargs["text"]
+        # No UUIDs or internal terms in the message
+        assert "work order" not in call_kwargs["text"].lower()
+        assert "commander" not in call_kwargs["text"].lower()
+
+        # respond() NOT called — channel message is the ack
+        respond.assert_not_awaited()
+
+    async def test_build_stores_thread_ts_on_work_order(self):
+        """thread_ts from chat_postMessage is persisted on WorkOrder before dispatch."""
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
+
+        parsed = parse_command("build Add OAuth login")
+        respond = AsyncMock()
+        session = make_session()
+
+        channel = MagicMock()
+        channel.id = "ch-uuid"
+        channel.project_id = "proj-uuid"
+        channel_result = MagicMock()
+        channel_result.scalar_one_or_none.return_value = channel
+        # session.execute returns channel lookup, then accepts the UPDATE
+        session.execute.side_effect = [channel_result, MagicMock()]
+        session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", "wo-uuid"))
+
+        mock_client = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1711111111.000100"})
+
+        mock_router = MagicMock()
+        dispatch_order = []
+        mock_router.dispatch.side_effect = lambda **kw: dispatch_order.append("dispatch")
+        session.commit.side_effect = lambda: dispatch_order.append("commit")
+
+        with (
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.runtime.task_router.TaskRouter", return_value=mock_router),
+            patch("phalanx.queue.celery_app.celery_app", MagicMock()),
+        ):
+            await _handle_build(
+                parsed, user_id="U123", channel_id="C789", respond=respond, client=mock_client
+            )
+
+        # session.execute called twice: channel SELECT + thread_ts UPDATE
+        assert session.execute.await_count == 2
+
+        # Commit happened before dispatch — thread_ts persisted before Commander fires
+        assert dispatch_order.index("commit") < dispatch_order.index("dispatch")
+
+    async def test_build_falls_back_to_respond_if_slack_post_fails(self):
+        """If chat_postMessage raises, pipeline continues and respond() is called instead."""
+        from phalanx.gateway.command_parser import parse_command
+        from phalanx.gateway.slack_bot import _handle_build
+
+        parsed = parse_command("build Add OAuth login")
+        respond = AsyncMock()
+        session = make_session()
+
+        channel = MagicMock()
+        channel.id = "ch-uuid"
+        channel.project_id = "proj-uuid"
+        channel_result = MagicMock()
+        channel_result.scalar_one_or_none.return_value = channel
+        session.execute.return_value = channel_result
+        session.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", "wo-uuid"))
+
+        mock_client = AsyncMock()
+        mock_client.chat_postMessage = AsyncMock(side_effect=Exception("Slack is down"))
+
+        mock_router = MagicMock()
+
+        with (
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.runtime.task_router.TaskRouter", return_value=mock_router),
+            patch("phalanx.queue.celery_app.celery_app", MagicMock()),
+        ):
+            await _handle_build(
+                parsed, user_id="U123", channel_id="C789", respond=respond, client=mock_client
+            )
+
+        # WorkOrder still created and Commander still dispatched
+        session.add.assert_called_once()
+        mock_router.dispatch.assert_called_once()
+
+        # respond() called as fallback
+        respond.assert_awaited_once()
 
     async def test_build_handles_exception_gracefully(self):
         from phalanx.gateway.command_parser import parse_command

@@ -9,6 +9,8 @@ import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 
@@ -129,6 +131,7 @@ class TestPlannerAgent:
         with (
             patch("phalanx.agents.planner.get_db", make_db_context(session)),
             patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -174,6 +177,7 @@ class TestPlannerAgent:
         with (
             patch("phalanx.agents.planner.get_db", make_db_context(session)),
             patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -234,6 +238,7 @@ class TestReviewerAgent:
         with (
             patch("phalanx.agents.reviewer.get_db", make_db_context(session)),
             patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
             patch.object(agent, "_audit", AsyncMock()),
         ):
             result = await agent.execute()
@@ -437,6 +442,7 @@ class TestReleaseAgent:
         with (
             patch("phalanx.agents.release.get_db", make_db_context(session)),
             patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
             patch("phalanx.agents.release.settings") as mock_settings,
             patch.object(agent, "_audit", AsyncMock()),
             patch.object(agent, "_persist_artifact", AsyncMock()),
@@ -465,7 +471,10 @@ class TestReleaseAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(notes))
 
-        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
+        with (
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
+        ):
             result = await agent._generate_release_notes(run, wo, [])
 
         assert result["title"] == "Release Notes: Feature X"
@@ -479,7 +488,10 @@ class TestReleaseAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response("not valid json")
 
-        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
+        with (
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
+        ):
             result = await agent._generate_release_notes(run, wo, [])
 
         assert "title" in result
@@ -559,7 +571,10 @@ class TestCommanderAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response(json.dumps(plan))
 
-        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
+        with (
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
+        ):
             result = await agent._generate_task_plan(wo, "memory context")
 
         assert len(result["tasks"]) == 1
@@ -572,7 +587,10 @@ class TestCommanderAgent:
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_claude_response("not json")
 
-        with patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client):
+        with (
+            patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
+            patch("phalanx.agents.base._claude_cli_path", None),
+        ):
             result = await agent._generate_task_plan(wo, "")
 
         # Fallback: one builder task
@@ -606,5 +624,183 @@ class TestCommanderAgent:
 
         await agent._persist_task_plan(session, plan)
 
-        assert session.add.call_count == 2
+        assert session.add.call_count == 2  # 2 tasks, 0 dependencies (depends_on=[])
+        session.flush.assert_awaited_once()
         session.commit.assert_awaited_once()
+
+    async def test_execute_builds_slack_notifier_from_run_id(self):
+        """
+        SlackNotifier.from_run is called with self.run_id early in execute().
+        We stop the run deliberately after the notifier is built by making
+        _generate_task_plan raise — the notifier post must have already fired.
+        """
+        agent = self._make_agent()
+        session = make_session()
+
+        wo = make_work_order()
+        wo_result = MagicMock()
+        wo_result.scalar_one_or_none.return_value = wo
+
+        # _create_or_load_run needs a run-count scalar
+        run_count_result = MagicMock()
+        run_count_result.scalar_one.return_value = 0
+
+        session.execute.side_effect = [wo_result, run_count_result]
+
+        mock_notifier = AsyncMock()
+        mock_notifier.post = AsyncMock()
+
+        with (
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.agents.commander.SlackNotifier") as mock_notifier_cls,
+            patch.object(agent, "_transition_run", AsyncMock()),
+            patch.object(agent, "_audit", AsyncMock()),
+            patch.object(
+                agent, "_generate_task_plan", AsyncMock(side_effect=Exception("stop-sentinel"))
+            ),
+            patch("phalanx.agents.commander.MemoryReader") as mock_reader_cls,
+            patch("phalanx.agents.commander.MemoryAssembler") as mock_assembler_cls,
+        ):
+            mock_notifier_cls.from_run = AsyncMock(return_value=mock_notifier)
+            mock_reader_cls.return_value.get_standing_facts = AsyncMock(return_value=[])
+            mock_reader_cls.return_value.get_standing_decisions = AsyncMock(return_value=[])
+            mock_assembler_cls.return_value.build = MagicMock(return_value="")
+
+            with pytest.raises(Exception, match="stop-sentinel"):
+                await agent.execute()
+
+        # from_run called with the correct run_id
+        mock_notifier_cls.from_run.assert_awaited_once_with(agent.run_id, session)
+
+        # Planning message posted to the thread
+        mock_notifier.post.assert_awaited_once()
+        planning_text = mock_notifier.post.call_args[0][0]
+        assert "🧠" in planning_text
+        assert wo.title in planning_text
+
+    async def test_execute_posts_run_planned_after_plan_approval(self):
+        """
+        notifier.run_planned() is called after the plan gate is approved,
+        before EXECUTING starts. Tasks loaded from DB are passed to it.
+        """
+        agent = self._make_agent()
+        session = make_session()
+
+        wo = make_work_order()
+        wo_result = MagicMock()
+        wo_result.scalar_one_or_none.return_value = wo
+
+        run_count_result = MagicMock()
+        run_count_result.scalar_one.return_value = 0
+
+        task_plan = {
+            "tasks": [
+                {"sequence_num": 1, "title": "T1", "description": "d", "agent_role": "builder",
+                 "depends_on": [], "files_likely_touched": []},
+            ]
+        }
+
+        # Tasks loaded after approval
+        mock_task = make_task(agent_role="builder")
+        tasks_result = MagicMock()
+        tasks_result.scalars.return_value = [mock_task]
+
+        # execute calls: wo load, run count, then tasks-after-approval SELECT
+        session.execute.side_effect = [wo_result, run_count_result, tasks_result]
+
+        mock_notifier = AsyncMock()
+        mock_notifier.post = AsyncMock()
+        mock_notifier.run_planned = AsyncMock()
+
+        # Stop execute() after run_planned by making _transition_run("AWAITING_PLAN_APPROVAL", "EXECUTING") raise
+        transition_calls = []
+
+        async def _fake_transition(from_s, to_s, **kw):
+            transition_calls.append((from_s, to_s))
+            if from_s == "AWAITING_PLAN_APPROVAL" and to_s == "EXECUTING":
+                raise Exception("stop-sentinel")
+
+        with (
+            patch("phalanx.db.session.get_db", make_db_context(session)),
+            patch("phalanx.agents.commander.SlackNotifier") as mock_notifier_cls,
+            patch.object(agent, "_transition_run", side_effect=_fake_transition),
+            patch.object(agent, "_audit", AsyncMock()),
+            patch.object(agent, "_generate_task_plan", AsyncMock(return_value=task_plan)),
+            patch.object(agent, "_persist_task_plan", AsyncMock()),
+            patch("phalanx.agents.commander.ApprovalGate") as mock_gate_cls,
+            patch("phalanx.agents.commander.MemoryReader") as mock_reader_cls,
+            patch("phalanx.agents.commander.MemoryAssembler") as mock_assembler_cls,
+        ):
+            mock_notifier_cls.from_run = AsyncMock(return_value=mock_notifier)
+            mock_gate_cls.return_value.request_and_wait = AsyncMock()  # approved
+            mock_reader_cls.return_value.get_standing_facts = AsyncMock(return_value=[])
+            mock_reader_cls.return_value.get_standing_decisions = AsyncMock(return_value=[])
+            mock_assembler_cls.return_value.build = MagicMock(return_value="")
+
+            with pytest.raises(Exception, match="stop-sentinel"):
+                await agent.execute()
+
+        # run_planned called after approval with the loaded tasks
+        mock_notifier.run_planned.assert_awaited_once()
+        tasks_arg = mock_notifier.run_planned.call_args[0][0]
+        assert mock_task in tasks_arg
+
+
+class TestBuilderAgentJsonParsing:
+    """Tests for BuilderAgent._parse_json_response — the robust JSON extractor."""
+
+    def _make_agent(self):
+        from phalanx.agents.builder import BuilderAgent
+
+        return BuilderAgent(run_id="r-1", task_id="t-1", agent_id="builder")
+
+    _VALID_PAYLOAD = {
+        "summary": "Added auth module",
+        "commit_message": "feat: add JWT auth",
+        "files": [{"path": "auth.py", "action": "create", "content": "# auth\n"}],
+    }
+
+    def test_plain_json(self):
+        agent = self._make_agent()
+        raw = json.dumps(self._VALID_PAYLOAD)
+        result = agent._parse_json_response(raw)
+        assert result == self._VALID_PAYLOAD
+
+    def test_json_with_markdown_fence(self):
+        agent = self._make_agent()
+        raw = "```json\n" + json.dumps(self._VALID_PAYLOAD) + "\n```"
+        result = agent._parse_json_response(raw)
+        assert result == self._VALID_PAYLOAD
+
+    def test_json_with_plain_fence(self):
+        agent = self._make_agent()
+        raw = "```\n" + json.dumps(self._VALID_PAYLOAD) + "\n```"
+        result = agent._parse_json_response(raw)
+        assert result == self._VALID_PAYLOAD
+
+    def test_json_with_prose_before_and_after(self):
+        agent = self._make_agent()
+        raw = "Sure! Here is the output:\n" + json.dumps(self._VALID_PAYLOAD) + "\nHope that helps."
+        result = agent._parse_json_response(raw)
+        assert result == self._VALID_PAYLOAD
+
+    def test_json_with_braces_in_content(self):
+        """File content containing { } should not confuse the brace scanner."""
+        agent = self._make_agent()
+        payload = {
+            "summary": "Added component",
+            "commit_message": "feat: component",
+            "files": [{"path": "App.tsx", "action": "create", "content": "function App() { return <div />; }"}],
+        }
+        raw = json.dumps(payload)
+        result = agent._parse_json_response(raw)
+        assert result is not None
+        assert result["files"][0]["content"] == "function App() { return <div />; }"
+
+    def test_returns_none_for_empty_string(self):
+        agent = self._make_agent()
+        assert agent._parse_json_response("") is None
+
+    def test_returns_none_for_no_json(self):
+        agent = self._make_agent()
+        assert agent._parse_json_response("No JSON here at all.") is None

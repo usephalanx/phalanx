@@ -28,6 +28,7 @@ from slack_bolt.async_app import AsyncApp
 
 from phalanx.config.settings import get_settings
 from phalanx.gateway.command_parser import HELP_TEXT, CommandType, parse_command
+from phalanx.gateway.health import GatewayHealthServer
 from phalanx.observability.logging import configure_logging
 
 configure_logging()
@@ -42,7 +43,7 @@ def _build_app(token: str) -> AsyncApp:
     # ── /phalanx slash command handler ──────────────────────────────────────────
 
     @_app.command("/phalanx")
-    async def handle_forge_command(ack, command, say, respond):
+    async def handle_forge_command(ack, command, say, respond, client):
         """
         Handle /phalanx slash command.
         Acknowledges immediately (Slack requires < 3s), then processes async.
@@ -67,7 +68,7 @@ def _build_app(token: str) -> AsyncApp:
             return
 
         if parsed.command_type == CommandType.BUILD:
-            await _handle_build(parsed, user_id=user_id, channel_id=channel_id, respond=respond)
+            await _handle_build(parsed, user_id=user_id, channel_id=channel_id, respond=respond, client=client)
             return
 
         if parsed.command_type == CommandType.STATUS:
@@ -104,10 +105,10 @@ def _build_app(token: str) -> AsyncApp:
     return _app
 
 
-async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
+async def _handle_build(parsed, user_id: str, channel_id: str, respond, client=None) -> None:
     """Create a WorkOrder in Postgres and dispatch to Commander."""
     try:
-        from sqlalchemy import select  # noqa: PLC0415
+        from sqlalchemy import select, update  # noqa: PLC0415
 
         from phalanx.db.models import Channel, WorkOrder  # noqa: PLC0415
         from phalanx.db.session import get_db  # noqa: PLC0415
@@ -115,7 +116,7 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
         from phalanx.runtime.task_router import TaskRouter  # noqa: PLC0415
 
         async with get_db() as session:
-            # Resolve or create Channel row for this Slack channel
+            # Resolve Channel row for this Slack channel
             stmt = select(Channel).where(
                 Channel.platform == "slack",
                 Channel.channel_id == channel_id,
@@ -124,8 +125,6 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
             channel = result.scalar_one_or_none()
 
             if channel is None:
-                # Channel not registered — need a project association.
-                # For MVP, we respond with an onboarding prompt.
                 await respond(
                     "⚠️ This Slack channel is not linked to a FORGE project.\n"
                     "Ask your tech lead to run `scripts/seed_team.py` and configure "
@@ -152,30 +151,60 @@ async def _handle_build(parsed, user_id: str, channel_id: str, respond) -> None:
             await session.commit()
             await session.refresh(wo)
 
+            # ── Post acknowledgment and anchor the Slack thread ──────────────
+            # Uses chat_postMessage (not respond/response_url) so we get a real
+            # message ts back — this becomes the thread anchor for all progress
+            # updates posted by Commander and Orchestrator throughout the run.
+            # Stored on WorkOrder BEFORE dispatching Commander so it's always
+            # visible when Commander loads the WorkOrder from DB.
+            thread_ts: str | None = None
+            if client is not None:
+                try:
+                    resp = await client.chat_postMessage(
+                        channel=channel_id,
+                        text=f"🏗️ Got it! Building *{wo.title}* — I'll keep you posted here.",
+                    )
+                    thread_ts = resp.get("ts")
+                except Exception as slack_exc:
+                    log.warning("slack_gateway.ack_post_failed", error=str(slack_exc))
+
+                if thread_ts:
+                    _wo_cols = {c.key for c in WorkOrder.__table__.columns}
+                    if "slack_thread_ts" in _wo_cols:
+                        await session.execute(
+                            update(WorkOrder)
+                            .where(WorkOrder.id == wo.id)
+                            .values(slack_thread_ts=thread_ts)
+                        )
+                        await session.commit()
+                        log.info(
+                            "slack_gateway.thread_ts_stored",
+                            work_order_id=wo.id,
+                            thread_ts=thread_ts,
+                        )
+
         log.info("slack_gateway.work_order_created", work_order_id=wo.id, title=wo.title)
 
-        # Dispatch to Commander queue
+        # Dispatch to Commander queue — always after session close and after
+        # thread_ts is committed so Commander sees it on first WorkOrder load.
         router = TaskRouter(celery_app)
         router.dispatch(
             agent_role="commander",
-            task_id=wo.id,  # work_order_id as task_id for the commander
+            task_id=wo.id,
             run_id=wo.id,
             payload={"work_order_id": wo.id, "project_id": wo.project_id},
         )
 
-        priority_label = {90: "P0", 75: "P1", 50: "P2", 25: "P3", 10: "P4"}.get(
-            parsed.priority, f"priority={parsed.priority}"
-        )
-
-        await respond(
-            f"✅ Work order created ({priority_label}): *{parsed.title}*\n"
-            f"ID: `{wo.id}`\n"
-            f"Commander dispatched. I'll update you here as the run progresses."
-        )
+        # Only fall back to respond() when we have no client or postMessage failed.
+        # When thread_ts is set the channel message already serves as the ack.
+        if not thread_ts:
+            await respond(
+                f"🏗️ Building *{wo.title}* — I'll post updates here as the run progresses."
+            )
 
     except Exception as exc:
         log.exception("slack_gateway.build_failed", error=str(exc))
-        await respond(f"❌ Failed to create work order. The error has been logged.\nError: `{exc}`")
+        await respond("❌ Something went wrong — our team has been notified.")
 
 
 _STATUS_EMOJI: dict[str, str] = {
@@ -554,12 +583,18 @@ async def main() -> None:  # pragma: no cover
 
     app = _build_app(settings.slack_bot_token)
     handler = AsyncSocketModeHandler(app, settings.slack_app_token)
+
+    # Start the HTTP health server (does NOT crash the gateway on failure).
+    health_server = GatewayHealthServer()
+    await health_server.start()
+
     log.info("slack_gateway.starting", socket_mode=True)
 
     loop = asyncio.get_event_loop()
 
     def _shutdown(sig, _frame):
         log.info("slack_gateway.shutdown", signal=sig)
+        loop.create_task(health_server.stop())
         loop.stop()
 
     signal.signal(signal.SIGTERM, _shutdown)

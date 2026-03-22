@@ -40,6 +40,7 @@ from phalanx.config.settings import get_settings
 from phalanx.db.models import Run, Task, TaskDependency
 from phalanx.workflow.approval_gate import ApprovalGate
 from phalanx.workflow.dag import DagNode, DagResolver
+from phalanx.workflow.slack_notifier import SlackNotifier
 from phalanx.workflow.state_machine import RunStatus, validate_transition
 
 if TYPE_CHECKING:
@@ -75,12 +76,16 @@ class WorkflowOrchestrator:
         run_id: str,
         task_router: TaskRouter,
         approval_timeout_hours: int = 24,
+        notifier: "SlackNotifier | None" = None,
     ) -> None:
         self._session = session
         self.run_id = run_id
         self._router = task_router
         self._approval_timeout = approval_timeout_hours * 3600
         self._log = log.bind(run_id=run_id)
+        self._notifier = notifier if notifier is not None else SlackNotifier(
+            channel_id=None, thread_ts=None, slack_token="", enabled=False
+        )
 
     async def execute(self) -> None:
         """
@@ -164,6 +169,7 @@ class WorkflowOrchestrator:
             # ── Fail fast on critical failures; tolerate qa/reviewer ──────
             if newly_failed:
                 fatal = []
+                fatal_ids = []
                 non_fatal = []
                 for fid in newly_failed:
                     t = task_map.get(fid)
@@ -175,14 +181,20 @@ class WorkflowOrchestrator:
                             "orchestrator.dag.non_fatal_failure",
                             task_id=fid, role=role,
                         )
+                        await self._notifier.task_failed(task_map[fid])
                         # Treat as done so DAG can continue
                         newly_done.add(fid)
                     else:
                         fatal.append(detail)
+                        fatal_ids.append(fid)
                 newly_failed -= {fid for fid in newly_failed
                                   if (task_map.get(fid) and
                                       task_map[fid].agent_role in ("qa", "reviewer", "verifier", "integration_wiring"))}
                 if fatal:
+                    for fid in fatal_ids:
+                        t = task_map.get(fid)
+                        if t is not None:
+                            await self._notifier.task_failed(t)
                     raise OrchestratorError(
                         f"DAG task(s) failed: {'; '.join(fatal)}"
                     )
@@ -194,6 +206,8 @@ class WorkflowOrchestrator:
                     total_done=len(completed_ids) + len(newly_done),
                     total=len(nodes),
                 )
+                for tid in newly_done - completed_ids:
+                    await self._notifier.task_completed(task_map[tid])
 
             completed_ids |= newly_done
             in_flight -= newly_done
@@ -206,6 +220,7 @@ class WorkflowOrchestrator:
             .values(status="IN_PROGRESS", started_at=datetime.now(UTC))
         )
         await self._session.commit()
+        await self._notifier.task_started(task)
 
         self._router.dispatch(
             agent_role=task.agent_role,
@@ -284,6 +299,7 @@ class WorkflowOrchestrator:
             .values(status="IN_PROGRESS", started_at=datetime.now(UTC))
         )
         await self._session.commit()
+        await self._notifier.task_started(task)
 
         # Dispatch to agent queue
         self._router.dispatch(
@@ -312,9 +328,11 @@ class WorkflowOrchestrator:
                     task_id=task.id,
                     elapsed_s=elapsed,
                 )
+                await self._notifier.task_completed(refreshed)
                 return
 
             if refreshed.status in _FAILED_STATUSES:
+                await self._notifier.task_failed(refreshed)
                 raise OrchestratorError(
                     f"Task {task.id} ({task.agent_role}) failed: "
                     f"{refreshed.error or 'no error detail'}"
@@ -365,3 +383,10 @@ class WorkflowOrchestrator:
             context_snapshot=context_snapshot,
         )
         await self._transition(RunStatus.AWAITING_SHIP_APPROVAL, RunStatus.READY_TO_MERGE)
+
+        # Post final summary to the Slack thread — load fresh run + tasks
+        run_result = await self._session.execute(select(Run).where(Run.id == self.run_id))
+        run = run_result.scalar_one()
+        tasks_result = await self._session.execute(select(Task).where(Task.run_id == self.run_id))
+        tasks = list(tasks_result.scalars())
+        await self._notifier.run_complete(run, tasks)

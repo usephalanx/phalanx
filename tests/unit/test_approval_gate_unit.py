@@ -176,3 +176,78 @@ class TestSlackNotify:
         with patch("phalanx.config.settings.get_settings", side_effect=Exception("no settings")):
             # Should NOT raise
             await gate._notify_slack(approval, context=None)
+
+    async def test_notify_includes_thread_ts_when_available(self, mock_session):
+        """When WorkOrder.slack_thread_ts is set, approval card is posted in-thread."""
+        from unittest.mock import patch as _patch
+
+        gate = ApprovalGate(session=mock_session, run_id="r1", slack_notify=True)
+        approval = make_approval()
+
+        # DB SELECT returns (channel_id, thread_ts) — simulates a threaded run
+        channel_row = MagicMock()
+        channel_row.one_or_none.return_value = ("C0AJ3DCUS", "1711111111.000100")
+        mock_session.execute.return_value = channel_row
+
+        mock_slack_client = AsyncMock()
+        mock_slack_client.chat_postMessage = AsyncMock(return_value={"ts": "9999.0001"})
+
+        with (
+            _patch("phalanx.workflow.approval_gate.get_settings") as mock_settings,
+            _patch("phalanx.workflow.approval_gate.AsyncWebClient", return_value=mock_slack_client),
+        ):
+            mock_settings.return_value.slack_bot_token = "xoxb-test"
+            await gate._notify_slack(approval, context={"plan_summary": "Build auth"})
+
+        mock_slack_client.chat_postMessage.assert_awaited_once()
+        call_kwargs = mock_slack_client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["channel"] == "C0AJ3DCUS"
+        assert call_kwargs["thread_ts"] == "1711111111.000100"
+
+    async def test_notify_omits_thread_ts_when_null(self, mock_session):
+        """When slack_thread_ts is NULL (old run / non-Slack path), posts to main channel."""
+        from unittest.mock import patch as _patch
+
+        gate = ApprovalGate(session=mock_session, run_id="r1", slack_notify=True)
+        approval = make_approval()
+
+        # DB returns (channel_id, None) — no thread_ts
+        channel_row = MagicMock()
+        channel_row.one_or_none.return_value = ("C0AJ3DCUS", None)
+        mock_session.execute.return_value = channel_row
+
+        mock_slack_client = AsyncMock()
+        mock_slack_client.chat_postMessage = AsyncMock(return_value={"ts": "9999.0001"})
+
+        with (
+            _patch("phalanx.workflow.approval_gate.get_settings") as mock_settings,
+            _patch("phalanx.workflow.approval_gate.AsyncWebClient", return_value=mock_slack_client),
+        ):
+            mock_settings.return_value.slack_bot_token = "xoxb-test"
+            await gate._notify_slack(approval, context=None)
+
+        mock_slack_client.chat_postMessage.assert_awaited_once()
+        call_kwargs = mock_slack_client.chat_postMessage.call_args.kwargs
+        assert "thread_ts" not in call_kwargs
+
+    async def test_notify_skipped_when_no_channel_row(self, mock_session):
+        """If the JOIN returns no row (no Channel linked to run), notify is a no-op."""
+        from unittest.mock import patch as _patch
+
+        gate = ApprovalGate(session=mock_session, run_id="r1", slack_notify=True)
+        approval = make_approval()
+
+        channel_row = MagicMock()
+        channel_row.one_or_none.return_value = None  # no channel registered
+        mock_session.execute.return_value = channel_row
+
+        mock_slack_client = AsyncMock()
+
+        with (
+            _patch("phalanx.workflow.approval_gate.get_settings") as mock_settings,
+            _patch("phalanx.workflow.approval_gate.AsyncWebClient", return_value=mock_slack_client),
+        ):
+            mock_settings.return_value.slack_bot_token = "xoxb-test"
+            await gate._notify_slack(approval, context=None)  # must not raise
+
+        mock_slack_client.chat_postMessage.assert_not_awaited()

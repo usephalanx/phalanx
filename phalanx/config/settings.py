@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     forge_enable_daily_digest: bool = False
     forge_enable_deploy_verify: bool = False
     phalanx_enable_dag_orchestration: bool = False
+    phalanx_enable_prompt_enrichment: bool = True
+    phalanx_enable_slack_threading: bool = False
+
+    # ── Gateway health ─────────────────────────────────────────────────────────
+    gateway_health_port: int = 8100
 
     # ── API ───────────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
