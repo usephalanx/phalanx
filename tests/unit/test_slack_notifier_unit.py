@@ -18,7 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from phalanx.workflow.slack_notifier import SlackNotifier, _NON_FATAL_ROLES
+from phalanx.workflow.slack_notifier import (
+    SlackNotifier,
+    _NON_FATAL_ROLES,
+    _GROUP_ICONS,
+    _DEFAULT_GROUP_ICON,
+    _group_icon,
+    _task_group,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -35,6 +42,7 @@ def _make_notifier(*, channel_id="C123", thread_ts="1711111111.000100", enabled=
 
 def _make_task(
     *,
+    task_id=None,
     seq=1,
     role="builder",
     title="Build Something",
@@ -43,8 +51,10 @@ def _make_task(
     error=None,
     started_at=None,
     completed_at=None,
+    phase_name=None,
 ):
     t = MagicMock()
+    t.id = task_id or f"task-{seq}"
     t.sequence_num = seq
     t.agent_role = role
     t.title = title
@@ -53,6 +63,7 @@ def _make_task(
     t.error = error
     t.started_at = started_at
     t.completed_at = completed_at
+    t.phase_name = phase_name
     return t
 
 
@@ -76,13 +87,33 @@ def _make_run(
 
 
 def _patch_client(post_return_ts="1711111111.000200"):
-    """Patch AsyncWebClient so chat_postMessage returns a fake ts."""
+    """Patch AsyncWebClient so chat_postMessage and chat_update return fake ts values."""
     mock_client = AsyncMock()
     mock_client.chat_postMessage = AsyncMock(return_value={"ts": post_return_ts})
+    mock_client.chat_update = AsyncMock(return_value={"ts": post_return_ts})
     return patch(
         "phalanx.workflow.slack_notifier.AsyncWebClient",
         return_value=mock_client,
     ), mock_client
+
+
+def _make_notifier_with_board(tasks, *, channel_id="C123", thread_ts="1711111111.000100"):
+    """Create an enabled notifier pre-loaded with a board snapshot (simulates after post_progress_board)."""
+    from phalanx.workflow.slack_notifier import _BoardTask, _task_group
+    notifier = _make_notifier(channel_id=channel_id, thread_ts=thread_ts, enabled=True)
+    notifier._progress_ts = "1711111111.board"
+    notifier._board_tasks = [
+        _BoardTask(
+            id=t.id,
+            title=t.title,
+            sequence_num=t.sequence_num,
+            agent_role=t.agent_role,
+            group=_task_group(t.agent_role, getattr(t, "phase_name", None)),
+        )
+        for t in sorted(tasks, key=lambda x: x.sequence_num)
+    ]
+    notifier._task_statuses = {t.id: "PENDING" for t in notifier._board_tasks}
+    return notifier
 
 
 # ── from_run() ────────────────────────────────────────────────────────────────
@@ -276,138 +307,400 @@ class TestRunPlanned:
         assert "1 task " in text  # not "1 tasks"
 
 
-# ── task_started() ────────────────────────────────────────────────────────────
+# ── Progress board helpers ────────────────────────────────────────────────────
+
+
+class TestGroupIcon:
+    def test_known_group_returns_correct_icon(self):
+        assert _group_icon("backend") == "⚙️"
+        assert _group_icon("frontend") == "🖥️"
+        assert _group_icon("database") == "🗄️"
+        assert _group_icon("qa") == "🧪"
+        assert _group_icon("security") == "🔒"
+        assert _group_icon("infrastructure") == "🏗️"
+        assert _group_icon("planning") == "📐"
+
+    def test_case_insensitive(self):
+        assert _group_icon("Backend") == _group_icon("backend")
+        assert _group_icon("FRONTEND") == _group_icon("frontend")
+
+    def test_unknown_group_returns_default(self):
+        assert _group_icon("SomeRandomGroup") == _DEFAULT_GROUP_ICON
+        assert _group_icon("") == _DEFAULT_GROUP_ICON
+
+    def test_all_known_keys_in_group_icons(self):
+        for key in _GROUP_ICONS:
+            assert _group_icon(key) == _GROUP_ICONS[key]
+
+
+class TestTaskGroup:
+    def test_prefers_phase_name_when_present(self):
+        assert _task_group("builder", "Backend API") == "Backend API"
+
+    def test_strips_whitespace_from_phase_name(self):
+        assert _task_group("builder", "  Frontend  ") == "Frontend"
+
+    def test_falls_back_to_role_when_phase_name_none(self):
+        assert _task_group("planner", None) == "Planning"
+        assert _task_group("builder", None) == "Implementation"
+        assert _task_group("qa", None) == "QA"
+
+    def test_falls_back_to_other_for_unknown_role(self):
+        assert _task_group("mystery_agent", None) == "Other"
+
+    def test_empty_phase_name_string_falls_back(self):
+        assert _task_group("builder", "") == "Implementation"
+        assert _task_group("builder", "   ") == "Implementation"
+
+
+# ── post_progress_board() ─────────────────────────────────────────────────────
+
+
+class TestPostProgressBoard:
+    async def test_posts_initial_board_and_stores_ts(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="planner", title="Plan", phase_name="Planning"),
+            _make_task(task_id="t2", seq=2, role="builder", title="Build API", phase_name="Backend API"),
+        ]
+        notifier = _make_notifier()
+        patcher, mock_client = _patch_client(post_return_ts="9999.board")
+
+        with patcher:
+            await notifier.post_progress_board(tasks)
+
+        assert notifier._progress_ts == "9999.board"
+        mock_client.chat_postMessage.assert_called_once()
+
+    async def test_no_op_when_disabled(self):
+        notifier = _make_notifier(enabled=False)
+        tasks = [_make_task(task_id="t1")]
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
+            await notifier.post_progress_board(tasks)
+
+        mock_cls.assert_not_called()
+        assert notifier._progress_ts is None
+
+    async def test_no_op_when_empty_task_list(self):
+        notifier = _make_notifier()
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
+            await notifier.post_progress_board([])
+
+        mock_cls.assert_not_called()
+
+    async def test_all_tasks_start_pending(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="planner"),
+            _make_task(task_id="t2", seq=2, role="builder"),
+        ]
+        notifier = _make_notifier()
+        patcher, _ = _patch_client()
+
+        with patcher:
+            await notifier.post_progress_board(tasks)
+
+        assert notifier._task_statuses == {"t1": "PENDING", "t2": "PENDING"}
+
+    async def test_board_task_snapshots_sorted_by_sequence(self):
+        tasks = [
+            _make_task(task_id="t3", seq=3, role="builder", title="Task C"),
+            _make_task(task_id="t1", seq=1, role="planner", title="Task A"),
+            _make_task(task_id="t2", seq=2, role="reviewer", title="Task B"),
+        ]
+        notifier = _make_notifier()
+        patcher, _ = _patch_client()
+
+        with patcher:
+            await notifier.post_progress_board(tasks)
+
+        seqs = [bt.sequence_num for bt in notifier._board_tasks]
+        assert seqs == [1, 2, 3]
+
+    async def test_posts_blocks_in_initial_call(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier()
+        patcher, mock_client = _patch_client()
+
+        with patcher:
+            await notifier.post_progress_board(tasks)
+
+        call_kwargs = mock_client.chat_postMessage.call_args.kwargs
+        assert "blocks" in call_kwargs
+        blocks = call_kwargs["blocks"]
+        assert any(b.get("type") == "header" for b in blocks)
+
+
+# ── _build_progress_blocks() ──────────────────────────────────────────────────
+
+
+class TestBuildProgressBlocks:
+    def _setup_notifier_with_tasks(self, tasks):
+        return _make_notifier_with_board(tasks)
+
+    def test_header_shows_done_count(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="planner", phase_name="Planning"),
+            _make_task(task_id="t2", seq=2, role="builder", phase_name="Backend"),
+        ]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "COMPLETED"
+
+        blocks = notifier._build_progress_blocks()
+
+        header_text = blocks[0]["text"]["text"]
+        assert "1/2" in header_text
+
+    def test_groups_tasks_by_phase_name(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="builder", title="API", phase_name="Backend"),
+            _make_task(task_id="t2", seq=2, role="builder", title="DB", phase_name="Database"),
+        ]
+        notifier = _make_notifier_with_board(tasks)
+
+        blocks = notifier._build_progress_blocks()
+
+        block_texts = [b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"]
+        assert any("Backend" in t for t in block_texts)
+        assert any("Database" in t for t in block_texts)
+
+    def test_same_phase_tasks_in_same_group(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="builder", title="API", phase_name="Backend"),
+            _make_task(task_id="t2", seq=2, role="builder", title="Auth", phase_name="Backend"),
+        ]
+        notifier = _make_notifier_with_board(tasks)
+
+        blocks = notifier._build_progress_blocks()
+
+        section_blocks = [b for b in blocks if b.get("type") == "section"]
+        assert len(section_blocks) == 1  # both in same Backend group
+        text = section_blocks[0]["text"]["text"]
+        assert "API" in text
+        assert "Auth" in text
+
+    def test_pending_task_shows_empty_box(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        # status is PENDING by default
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "◻" in section_text
+
+    def test_in_progress_task_shows_hourglass(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "IN_PROGRESS"
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "⏳" in section_text
+
+    def test_completed_task_shows_checkmark(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "COMPLETED"
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "✅" in section_text
+
+    def test_failed_task_shows_x(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "FAILED"
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "❌" in section_text
+
+    def test_failed_non_fatal_shows_warning(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="qa", phase_name="QA")]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "FAILED_NON_FATAL"
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "⚠️" in section_text
+
+    def test_group_shows_group_done_count(self):
+        tasks = [
+            _make_task(task_id="t1", seq=1, role="builder", title="A", phase_name="Backend"),
+            _make_task(task_id="t2", seq=2, role="builder", title="B", phase_name="Backend"),
+        ]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._task_statuses["t1"] = "COMPLETED"
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "1/2" in section_text
+
+    def test_group_icon_appears_in_section(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+
+        blocks = notifier._build_progress_blocks()
+
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "⚙️" in section_text  # backend icon
+
+
+# ── task_started/completed/failed (board update path) ────────────────────────
 
 
 class TestTaskStarted:
-    async def test_formats_seq_and_role(self):
-        notifier = _make_notifier()
-        task = _make_task(seq=3, role="builder", title="Build REST API")
-        patcher, mock_client = _patch_client()
+    async def test_updates_status_to_in_progress(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
 
+        patcher, mock_client = _patch_client()
         with patcher:
+            await notifier.task_started(tasks[0])
+
+        assert notifier._task_statuses["t1"] == "IN_PROGRESS"
+        mock_client.chat_update.assert_called_once()
+
+    async def test_no_op_when_disabled(self):
+        notifier = _make_notifier(enabled=False)
+        task = _make_task(task_id="t1")
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
             await notifier.task_started(task)
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "seq=03" in text
-        assert "builder" in text
-        assert "Build REST API" in text
-        assert "⏳" in text
+        mock_cls.assert_not_called()
 
+    async def test_no_op_if_task_not_in_board(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        unknown_task = _make_task(task_id="unknown-id", seq=99, role="builder")
 
-# ── task_completed() ──────────────────────────────────────────────────────────
+        patcher, mock_client = _patch_client()
+        with patcher:
+            await notifier.task_started(unknown_task)
+
+        mock_client.chat_update.assert_not_called()
 
 
 class TestTaskCompleted:
-    async def test_shows_checkmark_and_title(self):
-        notifier = _make_notifier()
-        task = _make_task(seq=2, role="builder", title="Database Models")
-        patcher, mock_client = _patch_client()
+    async def test_updates_status_to_completed(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
 
+        patcher, mock_client = _patch_client()
         with patcher:
+            await notifier.task_completed(tasks[0])
+
+        assert notifier._task_statuses["t1"] == "COMPLETED"
+        mock_client.chat_update.assert_called_once()
+
+    async def test_no_op_when_disabled(self):
+        notifier = _make_notifier(enabled=False)
+        task = _make_task(task_id="t1")
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
             await notifier.task_completed(task)
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "✅" in text
-        assert "seq=02" in text
-        assert "Database Models" in text
-
-    async def test_includes_file_count_when_present(self):
-        notifier = _make_notifier()
-        task = _make_task(
-            seq=2,
-            role="builder",
-            output={"files_written": ["a.py", "b.py", "c.py"]},
-        )
-        patcher, mock_client = _patch_client()
-
-        with patcher:
-            await notifier.task_completed(task)
-
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "3 files" in text
-
-    async def test_no_file_count_when_no_output(self):
-        notifier = _make_notifier()
-        task = _make_task(seq=1, role="planner", output=None)
-        patcher, mock_client = _patch_client()
-
-        with patcher:
-            await notifier.task_completed(task)
-
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "file" not in text
-
-    async def test_includes_elapsed_when_timestamps_present(self):
-        notifier = _make_notifier()
-        started = datetime(2026, 3, 22, 15, 0, 0, tzinfo=UTC)
-        completed = datetime(2026, 3, 22, 15, 2, 30, tzinfo=UTC)  # 2m30s
-        task = _make_task(seq=2, role="builder", started_at=started, completed_at=completed)
-        patcher, mock_client = _patch_client()
-
-        with patcher:
-            await notifier.task_completed(task)
-
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "2m" in text
-
-
-# ── task_failed() ─────────────────────────────────────────────────────────────
+        mock_cls.assert_not_called()
 
 
 class TestTaskFailed:
     @pytest.mark.parametrize("role", sorted(_NON_FATAL_ROLES))
-    async def test_non_fatal_roles_use_warning_emoji(self, role):
-        notifier = _make_notifier()
-        task = _make_task(seq=4, role=role, status="FAILED", error="tests failed")
-        patcher, mock_client = _patch_client()
+    async def test_non_fatal_roles_set_failed_non_fatal_status(self, role):
+        task = _make_task(task_id="t1", seq=1, role=role, phase_name="QA")
+        notifier = _make_notifier_with_board([task])
 
+        patcher, mock_client = _patch_client()
         with patcher:
             await notifier.task_failed(task)
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "⚠️" in text
-        assert "non-fatal" in text
-        assert "❌" not in text
+        assert notifier._task_statuses["t1"] == "FAILED_NON_FATAL"
+        mock_client.chat_update.assert_called_once()
 
-    async def test_fatal_role_uses_x_emoji(self):
-        notifier = _make_notifier()
-        task = _make_task(seq=2, role="builder", status="FAILED", error="syntax error")
+    async def test_fatal_role_sets_failed_status(self):
+        task = _make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")
+        notifier = _make_notifier_with_board([task])
+
         patcher, mock_client = _patch_client()
-
         with patcher:
             await notifier.task_failed(task)
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "❌" in text
-        assert "⚠️" not in text
+        assert notifier._task_statuses["t1"] == "FAILED"
 
-    async def test_fatal_includes_error_snippet(self):
-        notifier = _make_notifier()
-        task = _make_task(
-            seq=2, role="builder", status="FAILED", error="ImportError: no module named 'foo'"
-        )
-        patcher, mock_client = _patch_client()
+    async def test_no_op_when_disabled(self):
+        notifier = _make_notifier(enabled=False)
+        task = _make_task(task_id="t1")
 
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
+            await notifier.task_failed(task)
+
+        mock_cls.assert_not_called()
+
+    async def test_failed_status_reflected_in_board_blocks(self):
+        task = _make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")
+        notifier = _make_notifier_with_board([task])
+
+        patcher, _ = _patch_client()
         with patcher:
             await notifier.task_failed(task)
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "ImportError" in text
+        blocks = notifier._build_progress_blocks()
+        section_text = next(b["text"]["text"] for b in blocks if b.get("type") == "section")
+        assert "❌" in section_text
 
-    async def test_non_fatal_omits_error_snippet(self):
-        """Non-fatal failures don't expose error details (usually test output noise)."""
-        notifier = _make_notifier()
-        task = _make_task(
-            seq=4, role="qa", status="FAILED", error="AssertionError: 1 != 2"
-        )
+
+# ── _update_board() ───────────────────────────────────────────────────────────
+
+
+class TestUpdateBoard:
+    async def test_calls_chat_update_with_correct_ts(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+
         patcher, mock_client = _patch_client()
-
         with patcher:
-            await notifier.task_failed(task)
+            await notifier._update_board()
 
-        text = mock_client.chat_postMessage.call_args.kwargs["text"]
-        assert "AssertionError" not in text
+        call_kwargs = mock_client.chat_update.call_args.kwargs
+        assert call_kwargs["ts"] == "1711111111.board"
+        assert call_kwargs["channel"] == "C123"
+        assert "blocks" in call_kwargs
+
+    async def test_no_op_when_no_progress_ts(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+        notifier._progress_ts = None  # board never posted
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
+            await notifier._update_board()
+
+        mock_cls.assert_not_called()
+
+    async def test_no_op_when_no_board_tasks(self):
+        notifier = _make_notifier()
+        notifier._progress_ts = "9999.board"
+        # _board_tasks is empty (default)
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient") as mock_cls:
+            await notifier._update_board()
+
+        mock_cls.assert_not_called()
+
+    async def test_swallows_chat_update_exception(self):
+        tasks = [_make_task(task_id="t1", seq=1, role="builder", phase_name="Backend")]
+        notifier = _make_notifier_with_board(tasks)
+
+        mock_client = AsyncMock()
+        mock_client.chat_update.side_effect = Exception("Slack down")
+
+        with patch("phalanx.workflow.slack_notifier.AsyncWebClient", return_value=mock_client):
+            await notifier._update_board()  # must not raise
 
 
 # ── run_complete() ────────────────────────────────────────────────────────────

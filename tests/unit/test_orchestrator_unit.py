@@ -4,11 +4,17 @@ Unit tests for forge/workflow/orchestrator.py.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from phalanx.workflow.orchestrator import OrchestratorError, WorkflowOrchestrator
+from phalanx.workflow.orchestrator import (
+    OrchestratorError,
+    WorkflowOrchestrator,
+    _STALE_TASK_TIMEOUT_SECONDS,
+)
 from phalanx.workflow.state_machine import RunStatus
 
 
@@ -375,3 +381,116 @@ class TestSlackNotifierIntegration:
             patch("phalanx.db.session.get_db", self._make_poll_get_db(completed)),
         ):
             await orch._dispatch_and_wait(task)  # must not raise
+
+
+# ── Stale task watchdog ───────────────────────────────────────────────────────
+
+
+def make_task_with_start(
+    task_id="task-1",
+    agent_role="builder",
+    status="IN_PROGRESS",
+    started_at=None,
+    error=None,
+):
+    task = MagicMock()
+    task.id = task_id
+    task.agent_role = agent_role
+    task.status = status
+    task.started_at = started_at
+    task.error = error
+    return task
+
+
+class TestStaleTaskWatchdog:
+    """_poll_in_flight detects and fails tasks stuck IN_PROGRESS past the timeout."""
+
+    def _make_poll_get_db_for_task(self, task):
+        """Return a get_db() mock that yields a session returning `task`."""
+        @asynccontextmanager
+        async def _mock_get_db():
+            poll_session = AsyncMock()
+            result = MagicMock()
+            result.scalar_one.return_value = task
+            poll_session.execute = AsyncMock(return_value=result)
+            poll_session.commit = AsyncMock()
+            yield poll_session
+
+        return _mock_get_db
+
+    async def test_stale_in_progress_task_marked_failed(
+        self, orchestrator
+    ):
+        """A task IN_PROGRESS for > _STALE_TASK_TIMEOUT_SECONDS is marked FAILED."""
+        old_start = datetime.now(UTC) - timedelta(seconds=_STALE_TASK_TIMEOUT_SECONDS + 60)
+        stale_task = make_task_with_start(
+            task_id="stale-task",
+            agent_role="builder",
+            status="IN_PROGRESS",
+            started_at=old_start,
+        )
+
+        with patch("phalanx.db.session.get_db", self._make_poll_get_db_for_task(stale_task)):
+            completed, failed = await orchestrator._poll_in_flight({"stale-task"})
+
+        assert "stale-task" in failed
+        assert "stale-task" not in completed
+
+    async def test_fresh_in_progress_task_not_marked_stale(
+        self, orchestrator
+    ):
+        """A task IN_PROGRESS for less than the timeout is left alone."""
+        fresh_start = datetime.now(UTC) - timedelta(seconds=60)  # 1 minute running
+        fresh_task = make_task_with_start(
+            task_id="fresh-task",
+            agent_role="builder",
+            status="IN_PROGRESS",
+            started_at=fresh_start,
+        )
+
+        with patch("phalanx.db.session.get_db", self._make_poll_get_db_for_task(fresh_task)):
+            completed, failed = await orchestrator._poll_in_flight({"fresh-task"})
+
+        assert "fresh-task" not in failed
+        assert "fresh-task" not in completed
+
+    async def test_in_progress_no_start_time_not_marked_stale(
+        self, orchestrator
+    ):
+        """A task IN_PROGRESS with no started_at is not falsely detected as stale."""
+        task = make_task_with_start(
+            task_id="no-start-task",
+            agent_role="builder",
+            status="IN_PROGRESS",
+            started_at=None,
+        )
+
+        with patch("phalanx.db.session.get_db", self._make_poll_get_db_for_task(task)):
+            completed, failed = await orchestrator._poll_in_flight({"no-start-task"})
+
+        assert "no-start-task" not in failed
+        assert "no-start-task" not in completed
+
+    async def test_completed_task_not_affected_by_watchdog(
+        self, orchestrator
+    ):
+        """COMPLETED tasks are returned as completed, never as failed."""
+        old_start = datetime.now(UTC) - timedelta(seconds=_STALE_TASK_TIMEOUT_SECONDS + 3600)
+        task = make_task_with_start(
+            task_id="done-task",
+            agent_role="builder",
+            status="COMPLETED",
+            started_at=old_start,
+        )
+
+        with patch("phalanx.db.session.get_db", self._make_poll_get_db_for_task(task)):
+            completed, failed = await orchestrator._poll_in_flight({"done-task"})
+
+        assert "done-task" in completed
+        assert "done-task" not in failed
+
+    def test_stale_timeout_constant_value(self):
+        """_STALE_TASK_TIMEOUT_SECONDS must be > builder soft_time_limit (1800s)."""
+        assert _STALE_TASK_TIMEOUT_SECONDS > 1800
+        # And should not be excessively long (< 4h)
+        assert _STALE_TASK_TIMEOUT_SECONDS < 4 * 3600

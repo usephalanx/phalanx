@@ -28,6 +28,7 @@ Usage (in Commander / Orchestrator):
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,85 @@ _NON_FATAL_ROLES = frozenset({"qa", "reviewer", "verifier", "security", "integra
 
 # Showcase GitHub org — used to build the demo link in run_complete.
 _SHOWCASE_REPO = "https://github.com/usephalanx/showcase/tree"
+
+# ── Progress board constants ───────────────────────────────────────────────────
+
+# Map normalised group name → emoji. Unknown groups get _DEFAULT_GROUP_ICON.
+_GROUP_ICONS: dict[str, str] = {
+    "planning": "📐",
+    "architecture": "📐",
+    "backend": "⚙️",
+    "backend api": "⚙️",
+    "api": "⚙️",
+    "database": "🗄️",
+    "db": "🗄️",
+    "frontend": "🖥️",
+    "ui": "🖥️",
+    "mobile": "📱",
+    "mobile ios": "📱",
+    "mobile android": "📱",
+    "infrastructure": "🏗️",
+    "infra": "🏗️",
+    "devops": "🔄",
+    "ci/cd": "🔄",
+    "cicd": "🔄",
+    "qa": "🧪",
+    "testing": "🧪",
+    "tests": "🧪",
+    "security": "🔒",
+    "code review": "👀",
+    "review": "👀",
+    "release": "🚀",
+    "deployment": "🚀",
+}
+_DEFAULT_GROUP_ICON = "📦"
+
+# Per-task status → display icon in the board.
+_STATUS_ICONS: dict[str, str] = {
+    "PENDING": "◻",
+    "IN_PROGRESS": "⏳",
+    "COMPLETED": "✅",
+    "FAILED": "❌",
+    "FAILED_NON_FATAL": "⚠️",
+}
+
+# Fallback group label when task.phase_name is None — derived from agent_role.
+_ROLE_TO_GROUP: dict[str, str] = {
+    "planner": "Planning",
+    "builder": "Implementation",
+    "component_builder": "Frontend",
+    "page_assembler": "Frontend",
+    "reviewer": "Code Review",
+    "qa": "QA",
+    "security": "Security",
+    "release": "Release",
+}
+
+
+def _group_icon(group_name: str) -> str:
+    """Return the emoji for a group name, defaulting to 📦 for unknown groups."""
+    return _GROUP_ICONS.get(group_name.lower().strip(), _DEFAULT_GROUP_ICON)
+
+
+def _task_group(agent_role: str, phase_name: str | None) -> str:
+    """
+    Resolve the display group for a task.
+    Prefers phase_name (set by Claude during planning) and falls back to
+    a role-derived label so old runs / non-enriched paths still work.
+    """
+    if phase_name and phase_name.strip():
+        return phase_name.strip()
+    return _ROLE_TO_GROUP.get(agent_role, "Other")
+
+
+@dataclass
+class _BoardTask:
+    """Immutable snapshot of a task captured at progress-board creation time."""
+    id: str
+    title: str
+    sequence_num: int
+    agent_role: str
+    group: str  # resolved display group (phase_name or derived)
 
 
 class SlackNotifier:
@@ -75,6 +155,11 @@ class SlackNotifier:
             channel_id=channel_id,
             has_thread=thread_ts is not None,
         )
+
+        # Progress board state — populated by post_progress_board()
+        self._progress_ts: str | None = None          # ts of the board message
+        self._board_tasks: list[_BoardTask] = []       # frozen task snapshots
+        self._task_statuses: dict[str, str] = {}       # task_id → status string
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -225,60 +310,141 @@ class SlackNotifier:
             total=total,
         )
 
+    # ── Progress board ────────────────────────────────────────────────────────
+
+    async def post_progress_board(self, tasks: list[Task]) -> None:
+        """
+        Post the live progress board to Slack after plan approval.
+
+        Called once by the orchestrator before task dispatch begins.
+        All subsequent task lifecycle events update this message in-place
+        rather than posting new messages.
+        """
+        if not self._enabled or not tasks:
+            return
+
+        # Build frozen snapshots — we never re-query the DB from the notifier
+        self._board_tasks = [
+            _BoardTask(
+                id=t.id,
+                title=t.title,
+                sequence_num=t.sequence_num,
+                agent_role=t.agent_role,
+                group=_task_group(t.agent_role, getattr(t, "phase_name", None)),
+            )
+            for t in sorted(tasks, key=lambda x: x.sequence_num)
+        ]
+        self._task_statuses = {t.id: "PENDING" for t in self._board_tasks}
+
+        total = len(self._board_tasks)
+        text = f"📋 Build Progress — 0/{total} complete"
+        blocks = self._build_progress_blocks()
+        ts = await self.post(text=text, blocks=blocks)
+        self._progress_ts = ts
+        self._log.info(
+            "slack_notifier.progress_board_posted",
+            task_count=total,
+            has_ts=ts is not None,
+        )
+
+    def _build_progress_blocks(self) -> list[dict]:
+        """Build Block Kit blocks for the current progress board state."""
+        done = sum(1 for s in self._task_statuses.values() if s == "COMPLETED")
+        total = len(self._board_tasks)
+
+        blocks: list[dict] = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"📋 Build Progress  ·  {done}/{total} done",
+                    "emoji": True,
+                },
+            },
+            {"type": "divider"},
+        ]
+
+        # Group tasks — preserve insertion order (sequence_num sorted at snapshot time)
+        groups: dict[str, list[_BoardTask]] = {}
+        for bt in self._board_tasks:
+            groups.setdefault(bt.group, []).append(bt)
+
+        for group_name, group_tasks in groups.items():
+            icon = _group_icon(group_name)
+            group_done = sum(
+                1 for t in group_tasks if self._task_statuses.get(t.id) == "COMPLETED"
+            )
+            group_total = len(group_tasks)
+
+            task_lines = []
+            for bt in group_tasks:
+                status = self._task_statuses.get(bt.id, "PENDING")
+                status_icon = _STATUS_ICONS.get(status, "◻")
+                task_lines.append(f"{status_icon}  {bt.title[:80]}")
+
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"{icon}  *{group_name}*  —  {group_done}/{group_total}\n"
+                            + "\n".join(task_lines)
+                        ),
+                    },
+                }
+            )
+            blocks.append({"type": "divider"})
+
+        return blocks
+
+    async def _update_board(self) -> None:
+        """Rebuild and push an updated progress board to Slack."""
+        if not self._enabled or not self._progress_ts or not self._board_tasks:
+            return
+        done = sum(1 for s in self._task_statuses.values() if s == "COMPLETED")
+        total = len(self._board_tasks)
+        text = f"📋 Build Progress — {done}/{total} complete"
+        blocks = self._build_progress_blocks()
+        try:
+            client = AsyncWebClient(token=self._token)
+            await client.chat_update(
+                channel=self._channel_id,
+                ts=self._progress_ts,
+                text=text,
+                blocks=blocks,
+            )
+        except Exception as exc:
+            self._log.warning("slack_notifier.board_update_failed", error=str(exc))
+
     # ── Task lifecycle events ─────────────────────────────────────────────────
 
     async def task_started(self, task: Task) -> None:
-        """Posted when a task transitions to IN_PROGRESS."""
+        """Update progress board when a task goes IN_PROGRESS."""
         if not self._enabled:
             return
-        await self.post(
-            f"⏳ `seq={task.sequence_num:02}` *{task.agent_role}* — _{task.title[:60]}_"
-        )
+        if task.id in self._task_statuses:
+            self._task_statuses[task.id] = "IN_PROGRESS"
+            await self._update_board()
 
     async def task_completed(self, task: Task) -> None:
-        """Posted when a task reaches COMPLETED."""
+        """Update progress board when a task reaches COMPLETED."""
         if not self._enabled:
             return
-        files = len((task.output or {}).get("files_written", [])) if task.output else 0
-        files_str = f"  [{files} file{'s' if files != 1 else ''}]" if files else ""
-
-        elapsed_str = ""
-        if task.started_at and task.completed_at:
-            s_at = task.started_at
-            c_at = task.completed_at
-            if s_at.tzinfo is None:
-                s_at = s_at.replace(tzinfo=UTC)
-            if c_at.tzinfo is None:
-                c_at = c_at.replace(tzinfo=UTC)
-            secs = int((c_at - s_at).total_seconds())
-            mins, rem = divmod(secs, 60)
-            elapsed_str = f"  {mins}m{rem:02}s" if mins else f"  {rem}s"
-
-        await self.post(
-            f"✅ `seq={task.sequence_num:02}` *{task.agent_role}* — _{task.title[:60]}_"
-            f"{elapsed_str}{files_str}"
-        )
+        if task.id in self._task_statuses:
+            self._task_statuses[task.id] = "COMPLETED"
+            await self._update_board()
 
     async def task_failed(self, task: Task) -> None:
-        """
-        Posted when a task reaches FAILED.
-        Non-fatal roles (qa, reviewer, etc.) use ⚠️ — fatal roles use ❌.
-        """
+        """Update progress board when a task reaches FAILED."""
         if not self._enabled:
             return
-        is_non_fatal = task.agent_role in _NON_FATAL_ROLES
-        icon = "⚠️" if is_non_fatal else "❌"
-        suffix = " _(non-fatal)_" if is_non_fatal else ""
-
-        error_snippet = ""
-        if task.error and not is_non_fatal:
-            trimmed = task.error[:200].replace("\n", " ")
-            error_snippet = f"\n```{trimmed}```"
-
-        await self.post(
-            f"{icon} `seq={task.sequence_num:02}` *{task.agent_role}* FAILED"
-            f"{suffix} — _{task.title[:60]}_{error_snippet}"
-        )
+        if task.id in self._task_statuses:
+            is_non_fatal = task.agent_role in _NON_FATAL_ROLES
+            self._task_statuses[task.id] = (
+                "FAILED_NON_FATAL" if is_non_fatal else "FAILED"
+            )
+            await self._update_board()
 
     # ── Core post primitive ───────────────────────────────────────────────────
 

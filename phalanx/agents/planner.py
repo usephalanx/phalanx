@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 import structlog
 from sqlalchemy import select, update
 
-from phalanx.agents.base import AgentResult, BaseAgent
+from phalanx.agents.base import AgentResult, BaseAgent, mark_task_failed
 from phalanx.db.models import Artifact, Run, Task
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
@@ -151,6 +151,16 @@ Rules:
 - Include a concrete test strategy with specific test function names.
 - Acceptance criteria must be objectively verifiable (no "should work correctly").
 - Complexity: 1 (trivial config change) to 10 (major architectural refactor).
+- Demo credentials: if the work order involves user authentication (login, register, JWT, sessions,
+  passwords), always include a dedicated builder task titled "Seed demo data and write RUNNING.md"
+  that: (a) creates a seed script (seed.py or equivalent) inserting a default demo user with
+  email=demo@phalanx.dev and password=demo1234 using the app's own password hashing library,
+  (b) ensures the seed is idempotent (INSERT OR IGNORE / upsert — safe to run multiple times),
+  (c) calls the seed automatically on app startup so the demo user always exists without manual steps.
+- Running instructions: always include a task for writing RUNNING.md at the repo root with exact
+  Docker-based local setup steps: how to start the app (docker compose up or equivalent), the URL
+  to open, and — if the app has auth — the default demo credentials (demo@phalanx.dev / demo1234)
+  shown clearly. The RUNNING.md must let a non-technical person run the app in under 3 commands.
 
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON object.
 
@@ -259,7 +269,12 @@ def execute_task(  # pragma: no cover
         task_id=task_id,
         agent_id=assigned_agent_id or "planner",
     )
-    result = asyncio.run(agent.execute())
+    try:
+        result = asyncio.run(agent.execute())
+    except Exception as exc:
+        log.exception("planner.celery_task_unhandled", task_id=task_id, run_id=run_id)
+        asyncio.run(mark_task_failed(task_id, str(exc)))
+        raise
 
     if not result.success:
         log.error("planner.task_failed", task_id=task_id, run_id=run_id, error=result.error)

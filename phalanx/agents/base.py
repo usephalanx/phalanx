@@ -6,14 +6,14 @@ inherits from this class. It provides:
 
   1. Structured logging with run_id / task_id / agent_role context
   2. AuditLog write helper — every action logged to Postgres
-  3. Anthropic API client (for planning/reasoning)
+  3. Claude call layer: CLI-first (Max subscription), API fallback
   4. Token budget enforcement (hard limit from guardrails)
   5. Retry wrapper with exponential backoff (tenacity)
   6. Abstract `execute()` — subclasses implement this
 
 Design decisions (evidence in EXECUTION_PLAN.md §B):
-  AD-001: Builder uses Claude Code SDK subprocess for code; all other agents
-          use Anthropic API directly (claude-opus-4-6 by default).
+  AD-001: _call_claude() tries Claude Code CLI subprocess first (uses Max
+          subscription — zero API credit burn), falls back to Anthropic API.
   AD-004: All fault tolerance via Celery task_acks_late + task_reject_on_worker_lost.
           BaseAgent adds tenacity retries for the Anthropic API call layer.
   AP-003: Agents ALWAYS re-raise exceptions after logging — never swallow them.
@@ -23,12 +23,23 @@ Design decisions (evidence in EXECUTION_PLAN.md §B):
 from __future__ import annotations
 
 import abc
+import glob
+import json
+import os
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 import tenacity
-from anthropic import Anthropic, APITimeoutError, RateLimitError
+from anthropic import (
+    Anthropic,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 
 from phalanx.config.settings import get_settings
 
@@ -42,6 +53,43 @@ settings = get_settings()
 # Anthropic client — shared across all agent instances in the process
 _anthropic_client: Anthropic | None = None
 
+# Claude CLI binary — resolved once at import time
+_CLAUDE_CLI_SEARCH_PATHS = [
+    # Standard PATH install (npm i -g @anthropic-ai/claude-code)
+    "claude",
+    # VS Code extension binaries (macOS)
+    os.path.expanduser(
+        "~/.vscode/extensions/anthropic.claude-code-2.1.81-darwin-arm64/resources/native-binary/claude"
+    ),
+    os.path.expanduser(
+        "~/.vscode/extensions/anthropic.claude-code-2.1.79-darwin-arm64/resources/native-binary/claude"
+    ),
+]
+
+
+def _find_claude_cli() -> str | None:
+    """Return path to the claude CLI binary, or None if not found."""
+    # Check PATH first
+    found = shutil.which("claude")
+    if found:
+        return found
+    # Check known fixed paths
+    for path in _CLAUDE_CLI_SEARCH_PATHS[1:]:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    # Glob for any installed VS Code extension version
+    pattern = os.path.expanduser(
+        "~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude"
+    )
+    matches = sorted(glob.glob(pattern), reverse=True)  # latest version first
+    for match in matches:
+        if os.access(match, os.X_OK):
+            return match
+    return None
+
+
+_claude_cli_path: str | None = _find_claude_cli()
+
 
 def get_anthropic_client() -> Anthropic:
     global _anthropic_client
@@ -54,12 +102,16 @@ def get_anthropic_client() -> Anthropic:
 
 
 # Retry policy for Anthropic API calls:
-#   - Retries on rate limits and transient network errors
+#   - Retries on rate limits, timeouts, transient 5xx errors, and connection drops
 #   - Does NOT retry on auth errors (will loop forever)
+#   - InternalServerError: Anthropic HTTP 500/529 — transient, safe to retry
+#   - APIConnectionError: network-level drops — safe to retry
 _ANTHROPIC_RETRY = tenacity.retry(
     wait=tenacity.wait_exponential(multiplier=2, min=2, max=60),
     stop=tenacity.stop_after_attempt(settings.anthropic_max_retries),
-    retry=tenacity.retry_if_exception_type((APITimeoutError, RateLimitError)),
+    retry=tenacity.retry_if_exception_type(
+        (APITimeoutError, RateLimitError, InternalServerError, APIConnectionError)
+    ),
     reraise=True,
 )
 
@@ -138,8 +190,7 @@ class BaseAgent(abc.ABC):
                 f"agent={self.agent_id} run={self.run_id}"
             )
 
-    @_ANTHROPIC_RETRY
-    def _call_claude(
+    def _call_claude_cli(
         self,
         messages: list[dict],
         system: str = "",
@@ -147,14 +198,99 @@ class BaseAgent(abc.ABC):
         max_tokens: int = 4096,
     ) -> str:
         """
-        Call Anthropic API with retry and token tracking.
+        Call Claude via the Claude Code CLI subprocess.
+
+        Uses your Max/Pro subscription — zero API credit cost.
         Returns the assistant's text response.
 
-        Uses tenacity retry wrapper on RateLimitError / APITimeoutError.
-        Auth errors (APIError) propagate immediately.
+        Raises RuntimeError on any failure so _call_claude() can fall back
+        to the Anthropic API.
         """
-        self._check_budget(max_tokens)
+        if not _claude_cli_path:
+            raise RuntimeError("Claude CLI binary not found")
 
+        # Flatten messages into a single prompt string.
+        # For multi-turn, prefix each role so Claude sees the conversation.
+        if len(messages) == 1 and messages[0].get("role") == "user":
+            prompt = messages[0]["content"]
+        else:
+            parts = []
+            for m in messages:
+                role = m.get("role", "user").upper()
+                content = m.get("content", "")
+                parts.append(f"{role}: {content}")
+            prompt = "\n\n".join(parts)
+
+        cmd = [
+            _claude_cli_path, "-p",
+            "--output-format", "json",
+            "--model", model or settings.anthropic_model_default,
+            "--no-session-persistence",  # each call is independent
+            "--dangerously-skip-permissions",  # non-interactive, no file tools
+        ]
+        if system:
+            cmd += ["--system-prompt", system]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 min hard timeout per call
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Claude CLI timed out after 300s") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Claude CLI subprocess error: {exc}") from exc
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Claude CLI exit {result.returncode}: {result.stderr[:200]}"
+            )
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Claude CLI returned non-JSON: {result.stdout[:200]}") from exc
+
+        if data.get("is_error") or data.get("subtype") != "success":
+            raise RuntimeError(f"Claude CLI error response: {data.get('result','')[:200]}")
+
+        # Track tokens — CLI reports input + output + cache tokens
+        usage = data.get("usage", {})
+        tokens_used = (
+            usage.get("input_tokens", 0)
+            + usage.get("output_tokens", 0)
+            + usage.get("cache_creation_input_tokens", 0)
+        )
+        self._tokens_used += tokens_used
+
+        self._log.debug(
+            "agent.claude_call",
+            via="cli",
+            model=list(data.get("modelUsage", {}).keys()),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            total_tokens=tokens_used,
+            budget_remaining=self.token_budget - self._tokens_used,
+        )
+
+        return data.get("result", "")
+
+    @_ANTHROPIC_RETRY
+    def _call_claude_api(
+        self,
+        messages: list[dict],
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int = 4096,
+    ) -> str:
+        """
+        Call Anthropic API directly (fallback path).
+        Uses API credits. Only called when CLI is unavailable or fails.
+        """
         response = get_anthropic_client().messages.create(
             model=model or settings.anthropic_model_default,
             max_tokens=max_tokens,
@@ -167,6 +303,7 @@ class BaseAgent(abc.ABC):
 
         self._log.debug(
             "agent.claude_call",
+            via="api",
             model=response.model,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
@@ -175,6 +312,37 @@ class BaseAgent(abc.ABC):
         )
 
         return response.content[0].text
+
+    def _call_claude(
+        self,
+        messages: list[dict],
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int = 4096,
+    ) -> str:
+        """
+        Call Claude: CLI-first (Max subscription), API fallback.
+
+        1. Tries Claude Code CLI subprocess — uses your Max subscription,
+           zero API credit cost.
+        2. Falls back to Anthropic API on any CLI failure (binary not found,
+           auth error, timeout, bad output).
+
+        Returns the assistant's text response.
+        """
+        self._check_budget(max_tokens)
+
+        if _claude_cli_path:
+            try:
+                return self._call_claude_cli(messages, system, model, max_tokens)
+            except Exception as exc:
+                self._log.warning(
+                    "agent.claude_cli_failed_fallback_to_api",
+                    error=str(exc),
+                )
+
+        # Fallback: Anthropic API
+        return self._call_claude_api(messages, system, model, max_tokens)
 
     async def _audit(
         self,
@@ -258,4 +426,89 @@ class BaseAgent(abc.ABC):
             "agent.run_transition",
             from_status=from_status,
             to_status=to_status,
+        )
+
+
+# ── Module-level failure helpers (used by Celery task wrappers) ───────────────
+#
+# When a Celery worker dies or raises an unhandled exception, the DB task/run
+# remains IN_PROGRESS forever — the orchestrator polls DB, not Celery state.
+# These helpers mark the DB record FAILED so the orchestrator fails fast.
+
+
+async def mark_task_failed(task_id: str, error: str) -> None:
+    """
+    Mark a Task FAILED in DB. Called from Celery execute_task wrappers when
+    agent.execute() raises an unhandled exception.
+
+    Non-fatal: if the DB write itself fails, logs a warning and returns — the
+    stale-task watchdog in the orchestrator will catch it eventually.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from phalanx.db.models import Task  # noqa: PLC0415
+    from phalanx.db.session import get_db  # noqa: PLC0415
+
+    try:
+        async with get_db() as session:
+            await session.execute(
+                update(Task)
+                .where(Task.id == task_id)
+                .values(
+                    status="FAILED",
+                    error=error[:2000],  # guard against enormous tracebacks
+                    failure_count=Task.failure_count + 1,
+                    completed_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+        log.error("agent.task_marked_failed", task_id=task_id, error=error[:200])
+    except Exception as db_exc:
+        log.warning(
+            "agent.mark_task_failed_db_error",
+            task_id=task_id,
+            original_error=error[:200],
+            db_error=str(db_exc),
+        )
+
+
+async def mark_run_failed(run_id: str, error: str) -> None:
+    """
+    Mark a Run FAILED in DB. Called from commander's execute_run wrapper when
+    agent.execute() raises an unhandled exception.
+
+    Attempts a state-machine-safe transition from any IN_PROGRESS-compatible
+    state; falls back to a raw UPDATE if the transition is invalid (e.g., Run
+    was already FAILED by inner code).
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from phalanx.db.models import Run  # noqa: PLC0415
+    from phalanx.db.session import get_db  # noqa: PLC0415
+
+    try:
+        async with get_db() as session:
+            # Raw update — safest when we don't know current state
+            result = await session.execute(
+                update(Run)
+                .where(Run.id == run_id, Run.status.notin_(["COMPLETED", "FAILED", "CANCELLED"]))
+                .values(
+                    status="FAILED",
+                    error_message=error[:2000],
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+            if result.rowcount:
+                log.error("agent.run_marked_failed", run_id=run_id, error=error[:200])
+    except Exception as db_exc:
+        log.warning(
+            "agent.mark_run_failed_db_error",
+            run_id=run_id,
+            original_error=error[:200],
+            db_error=str(db_exc),
         )

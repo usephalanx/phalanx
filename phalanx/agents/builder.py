@@ -31,7 +31,7 @@ from typing import Any
 import structlog
 from sqlalchemy import select, update
 
-from phalanx.agents.base import AgentResult, BaseAgent
+from phalanx.agents.base import AgentResult, BaseAgent, get_anthropic_client, mark_task_failed
 from phalanx.config.settings import get_settings
 from phalanx.db.models import Artifact, Run, Task
 from phalanx.db.session import get_db
@@ -41,12 +41,51 @@ log = structlog.get_logger(__name__)
 
 settings = get_settings()
 
-# Token budget for code generation — large enough for multi-file Next.js output
-_BUILD_MAX_TOKENS = 16000
+# ─────────────────────────────────────────────────────────────────────────────
+# TOKEN BUDGET — DO NOT CHANGE WITHOUT STRONG EVIDENCE
+# ─────────────────────────────────────────────────────────────────────────────
+# The Anthropic SDK raises ValueError("Streaming is required for operations
+# that may take longer than 10 minutes") for non-streaming calls when:
+#
+#   estimated_time = 3600 * max_tokens / 128_000
+#   if estimated_time > 600:  → raises ValueError
+#
+# This means the hard ceiling for non-streaming is:
+#   max_tokens ≤ 21,333  (600 * 128_000 / 3600)
+#
+# History of changes (so you understand why we landed here):
+#   32,000 → BROKEN: estimated 900s → SDK raises ValueError
+#    8,192 → Worked but truncated long Xcode .pbxproj outputs (fell back to output.txt)
+#   16,000 → Was the safe baseline (estimated 450s), but real Kanban sims showed that
+#            production-quality FastAPI route files + Pydantic schemas + tests exceed
+#            16K tokens even with lean input context (~6K tokens input). CRUD routes
+#            with 6 endpoints, auth integration, error handling, and 10+ test cases
+#            are legitimately verbose — this is NOT a task-design problem.
+#   20,000 → Current: estimated 562.5s (3600*20000/128000) — safely under 600s limit.
+#            Verified: 562.5 < 600. Fixes truncation for complex route+schema+test tasks.
+#            Real simulation confirmed no ValueError at this value.
+#
+# WHY THE BUILDER STILL FALLS BACK TO output.txt (for pathological cases):
+#   When Claude generates Xcode .pbxproj files or similar machine-generated blobs,
+#   the output exceeds even 20K tokens. The fix for THOSE cases is task design
+#   (scaffold with README + commands instead of generating the file). This value
+#   change addresses legitimate production code that was hitting the 16K ceiling.
+#
+# BEFORE CHANGING THIS VALUE, verify:
+#   1. New value passes: 3600 * NEW_VALUE / 128_000 ≤ 600
+#   2. Real builder simulation completes without ValueError
+#   3. Integration tests still pass at 70%+ coverage
+# ─────────────────────────────────────────────────────────────────────────────
+_BUILD_MAX_TOKENS = 20000
+# Streaming has no SDK time-limit check — safe to use higher ceiling.
+# claude-opus-4-6 supports up to 32,768 output tokens.
+_STREAM_MAX_TOKENS = 32000
 # Max bytes to read from any single existing file (avoid token overflow)
-_MAX_FILE_READ_BYTES = 12_000
+_MAX_FILE_READ_BYTES = 4_000
 # Max total bytes of existing file context to send to Claude
-_MAX_CONTEXT_BYTES = 40_000
+# Kept at 16K to leave room for output: with 16K input cap, Claude has ~12K tokens
+# for actual code output (vs ~4K when context was 40K and input ballooned to 12K tokens).
+_MAX_CONTEXT_BYTES = 16_000
 
 
 class BuilderAgent(BaseAgent):
@@ -210,6 +249,15 @@ class BuilderAgent(BaseAgent):
             git_dir = workspace / ".git"
             if git_dir.exists():
                 repo = Repo(str(workspace))
+                # Abort any stale rebase left by a crashed parallel builder
+                rebase_merge = workspace / ".git" / "rebase-merge"
+                rebase_apply = workspace / ".git" / "rebase-apply"
+                if rebase_merge.exists() or rebase_apply.exists():
+                    try:
+                        repo.git.rebase("--abort")
+                        self._log.warning("builder.git.stale_rebase_aborted", workspace=str(workspace))
+                    except Exception:
+                        pass
                 repo.remotes.origin.fetch()
                 self._log.info("builder.git.fetched", workspace=str(workspace))
             else:
@@ -221,6 +269,14 @@ class BuilderAgent(BaseAgent):
                 repo.git.checkout(branch)
             except Exception:
                 repo.git.checkout("-b", branch)
+
+            # Pull latest from remote so parallel builders start from the same base
+            try:
+                repo.git.pull("--rebase", "origin", branch)
+                self._log.info("builder.git.pulled", branch=branch)
+            except Exception:
+                # Branch may not exist on remote yet — that's fine
+                pass
 
             self._log.info("builder.git.branch_ready", branch=branch)
 
@@ -298,40 +354,30 @@ class BuilderAgent(BaseAgent):
 
     # ── Code generation ───────────────────────────────────────────────────────
 
-    async def _generate_changes(
-        self,
-        task: Task,
-        plan: dict,
-        existing_files: dict[str, str],
-        workspace: Path,
-    ) -> dict[str, Any]:
-        """Call Claude to generate complete file contents."""
+    # ── System prompts by agent role ──────────────────────────────────────────
 
-        # Build file context string (truncated)
-        file_context = ""
-        if existing_files:
-            parts = []
-            for path, content in existing_files.items():
-                parts.append(f"--- {path} ---\n{content}")
-            file_context = "\n\n".join(parts)[:_MAX_CONTEXT_BYTES]
-
-        plan_text = (
-            json.dumps(plan, indent=2)[:4000]
-            if plan
-            else "No explicit plan — use task description."
-        )
-
-        system = """\
-You are an expert software engineer in FORGE, an AI team operating system.
-Your role: implement the code changes described in the task and plan.
+    _SYSTEM_DEFAULT = """\
+You are implementing a phase of a carefully planned software project in FORGE.
+Your role: deliver the code changes described in the task with production quality.
 
 Rules:
-- Write complete file contents (not partial diffs or snippets).
+- Write COMPLETE file contents — not partial diffs or snippets.
 - Follow existing code style exactly (indentation, naming, patterns).
 - Every new function/class must have a docstring.
 - Implement tests for new functionality (test_*.py files in tests/).
-- Use type annotations throughout (Python 3.12 style).
+- Use type annotations throughout.
 - Never hardcode credentials or secrets.
+- Every deliverable listed in the task description MUST be implemented.
+
+NEVER generate auto-generated or tooling-produced files. These are always too large,
+always wrong when hand-written, and must come from the project's own toolchain instead.
+For any of these, write a SETUP.md with the exact commands to run:
+- iOS/macOS:  *.pbxproj, *.xcworkspace, *.xcscheme, Podfile.lock, DerivedData/
+- Android:    gradlew, gradlew.bat, gradle-wrapper.jar, *.iml
+- JS/TS:      package-lock.json, yarn.lock, pnpm-lock.yaml, node_modules/
+- Python:     poetry.lock, Pipfile.lock, *.egg-info/, __pycache__/, .venv/
+- Flutter:    pubspec.lock, .flutter-tool/, .dart_tool/
+- Any:        .git/ internals, *.lock files, binary files, build/ dist/ output dirs
 
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
 
@@ -347,45 +393,313 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
   ]
 }"""
 
+    _SYSTEM_COMPONENT_BUILDER = """\
+You are a React component specialist in FORGE. Your job: build ONE atomic, reusable
+UI component. This component will be imported by a page assembler in a later task.
+
+Rules:
+- Output EXACTLY 2 files: the component (.tsx) and its test (.test.tsx). No more.
+- The component receives ALL data via props — no direct API calls, no routing logic.
+- Export a single named component as the default export.
+- Props must be fully typed with a TypeScript interface defined in the same file.
+- Keep the component under 150 lines of TSX (excluding tests).
+- Tests use Vitest + React Testing Library. Cover: renders without crashing, key props.
+- Never hardcode strings that belong in props.
+- Follow existing code style from the context files provided.
+
+NEVER generate: package.json, vite.config.ts, tsconfig.json, package-lock.json,
+node_modules/, or any config/tooling file. Only the component and its test.
+
+Return ONLY valid JSON — no markdown fences.
+
+{
+  "summary": "one sentence: what component was built and its purpose",
+  "commit_message": "feat: concise commit message (< 72 chars)",
+  "files": [
+    {
+      "path": "frontend/src/components/ComponentName.tsx",
+      "action": "create",
+      "content": "complete component file"
+    },
+    {
+      "path": "frontend/src/components/ComponentName.test.tsx",
+      "action": "create",
+      "content": "complete test file"
+    }
+  ]
+}"""
+
+    _SYSTEM_PAGE_ASSEMBLER = """\
+You are a React page assembler in FORGE. Your job: compose existing components into
+a complete page. The components you need already exist — import them, wire up state,
+connect to the API layer. Do NOT rewrite component logic that already exists.
+
+Rules:
+- Output EXACTLY 1 file: the page component (.tsx). Tests are a separate task.
+- Import components from their existing paths (provided in the context).
+- Handle page-level concerns only: data fetching (useEffect/React Query), routing
+  (useNavigate/useParams), and wiring props from API data to components.
+- Keep the page under 200 lines. If it grows beyond that, extract to a new component task.
+- Use the existing API service modules (provided in context) — don't write raw fetch calls.
+- Never duplicate component logic that already exists in the imported components.
+
+NEVER generate: package.json, tsconfig.json, test files, or component files.
+Only the single page file.
+
+Return ONLY valid JSON — no markdown fences.
+
+{
+  "summary": "one sentence: what page was assembled and what it does",
+  "commit_message": "feat: concise commit message (< 72 chars)",
+  "files": [
+    {
+      "path": "frontend/src/pages/PageName.tsx",
+      "action": "create",
+      "content": "complete page file"
+    }
+  ]
+}"""
+
+    def _get_system_prompt(self, task: Task) -> str:
+        """Select system prompt based on agent_role."""
+        role = getattr(task, "agent_role", "builder")
+        role_block = ""
+        if getattr(task, "role_context", None):
+            role_block = f"{task.role_context}\n\n"
+        if role == "component_builder":
+            return role_block + self._SYSTEM_COMPONENT_BUILDER
+        if role == "page_assembler":
+            return role_block + self._SYSTEM_PAGE_ASSEMBLER
+        return role_block + self._SYSTEM_DEFAULT
+
+    async def _generate_changes(
+        self,
+        task: Task,
+        plan: dict,
+        existing_files: dict[str, str],
+        workspace: Path,
+    ) -> dict[str, Any]:
+        """Dispatch to streaming or blocking based on feature flag."""
+        if settings.forge_streaming_builder:
+            return await self._generate_changes_streaming(task, plan, existing_files, workspace)
+        return await self._generate_changes_blocking(task, plan, existing_files, workspace)
+
+    def _build_prompt(
+        self,
+        task: Task,
+        plan: dict,
+        existing_files: dict[str, str],
+    ) -> tuple[str, list[dict]]:
+        """Build the system prompt and messages list shared by both generation paths."""
+        file_context = ""
+        if existing_files:
+            parts = [f"--- {path} ---\n{content}" for path, content in existing_files.items()]
+            file_context = "\n\n".join(parts)[:_MAX_CONTEXT_BYTES]
+
+        plan_text = (
+            json.dumps(plan, indent=2)[:4000]
+            if plan
+            else "No explicit plan — use task description."
+        )
+
+        system = self._get_system_prompt(task)
         messages = [
             {
                 "role": "user",
                 "content": (
                     f"Task: {task.title}\n\n"
-                    f"Description: {task.description}\n\n"
+                    f"Description:\n{task.description}\n\n"
                     f"Implementation Plan:\n{plan_text}\n\n"
                     + (
                         f"Existing code context:\n{file_context}\n\n"
                         if file_context
-                        else "No existing files found — create from scratch.\n\n"
+                        else "No existing files — create everything from scratch.\n\n"
                     )
-                    + "Implement the required changes. Write complete, production-ready code."
+                    + "Implement ALL deliverables. Write complete, production-ready code."
                 ),
             }
         ]
+        return system, messages
 
+    async def _generate_changes_blocking(
+        self,
+        task: Task,
+        plan: dict,
+        existing_files: dict[str, str],
+        workspace: Path,
+    ) -> dict[str, Any]:
+        """Blocking path: single API call, parse entire JSON response."""
+        system, messages = self._build_prompt(task, plan, existing_files)
         raw = self._call_claude(messages=messages, system=system, max_tokens=_BUILD_MAX_TOKENS)
 
-        try:
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            return json.loads(raw[start:end])
-        except (json.JSONDecodeError, ValueError):
-            self._log.error("builder.json_parse_failed", raw_len=len(raw))
-            # Return the raw text as a single README-style file so work isn't lost
-            return {
-                "summary": "Code generation completed (raw output stored)",
-                "commit_message": f"feat: {task.title[:60]}",
-                "files": [
-                    {
-                        "path": "forge/_generated/output.txt",
-                        "action": "create",
-                        "content": raw,
-                    }
-                ],
-            }
+        parsed = self._parse_json_response(raw)
+        if parsed is not None:
+            return parsed
+
+        self._log.error("builder.json_parse_failed", raw_len=len(raw))
+        return {
+            "summary": "Code generation completed (raw output stored)",
+            "commit_message": f"feat: {task.title[:60]}",
+            "files": [
+                {
+                    "path": "forge/_generated/output.txt",
+                    "action": "create",
+                    "content": raw,
+                }
+            ],
+        }
+
+    async def _generate_changes_streaming(
+        self,
+        task: Task,
+        plan: dict,
+        existing_files: dict[str, str],
+        workspace: Path,
+    ) -> dict[str, Any]:
+        """
+        Streaming path — writes each file as Claude generates it.
+
+        Benefits over blocking:
+        - No 20K output token ceiling (streaming has no SDK time limit)
+        - Files written to disk immediately as each completes
+        - Partial recovery: files already written survive a mid-stream error
+        """
+        from phalanx.agents.streaming_parser import StreamingJsonFileParser  # noqa: PLC0415
+
+        system, messages = self._build_prompt(task, plan, existing_files)
+        parser = StreamingJsonFileParser()
+        files_written: list[str] = []
+        collected_files: list[dict] = []
+
+        client = get_anthropic_client()
+        with client.messages.stream(
+            model=settings.anthropic_model_default,
+            max_tokens=_STREAM_MAX_TOKENS,
+            system=system,
+            messages=messages,
+        ) as stream:
+            for text_chunk in stream.text_stream:
+                for file_obj in parser.feed(text_chunk):
+                    path = self._apply_single_file(workspace, file_obj)
+                    if path:
+                        files_written.append(path)
+                        collected_files.append(file_obj)
+                        self._log.debug(
+                            "builder.streaming.file_written",
+                            path=path,
+                            total=len(files_written),
+                        )
+
+            usage = stream.get_final_message().usage
+            tokens = usage.input_tokens + usage.output_tokens
+            self._tokens_used += tokens
+            self._log.debug(
+                "agent.claude_call",
+                via="api_stream",
+                model=settings.anthropic_model_default,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=tokens,
+                budget_remaining=self.token_budget - self._tokens_used,
+            )
+
+        return {
+            "summary": parser.summary or f"Streaming build: {task.title}",
+            "commit_message": parser.commit_message or f"feat: {task.title[:60]}",
+            "files": collected_files,
+        }
+
+    def _parse_json_response(self, raw: str) -> dict | None:
+        """
+        Robustly extract the JSON object from Claude's response.
+
+        Handles:
+        - Markdown fences (```json ... ```)
+        - Extra prose before/after the JSON
+        - Responses that open with { directly
+        """
+        text = raw.strip()
+
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            lines = text.split("\n")
+            # Drop the first fence line (```json or ```) and the last if it's also a fence
+            inner_lines = lines[1:]
+            if inner_lines and inner_lines[-1].strip() == "```":
+                inner_lines = inner_lines[:-1]
+            text = "\n".join(inner_lines).strip()
+
+        # Find the outermost JSON object by scanning for matching braces.
+        # Try each { position in order — prose before the real JSON may contain
+        # {}-like patterns (e.g. "{status: 'ok'}") that look like JSON starts
+        # but fail to parse. Advancing past each failed attempt finds the real object.
+        search_from = 0
+        while True:
+            start = text.find("{", search_from)
+            if start == -1:
+                return None
+
+            depth = 0
+            in_string = False
+            escape_next = False
+            end = -1
+
+            for i, ch in enumerate(text[start:], start):
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == "\\" and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+
+            if end == -1:
+                # Truncated — fall back to rfind heuristic from current start
+                end = text.rfind("}") + 1
+
+            if end <= start:
+                search_from = start + 1
+                continue
+
+            try:
+                return json.loads(text[start:end])
+            except (json.JSONDecodeError, ValueError):
+                # This { was not the start of the real JSON object — try next one
+                search_from = start + 1
+                continue
 
     # ── File application ──────────────────────────────────────────────────────
+
+    def _apply_single_file(self, workspace: Path, file_spec: dict) -> str | None:
+        """Write a single file spec to disk. Returns relative path or None on skip."""
+        rel_path = file_spec.get("path", "")
+        action = file_spec.get("action", "create")
+        content = file_spec.get("content", "")
+
+        if not rel_path:
+            return None
+
+        full_path = workspace / rel_path
+        if action == "delete":
+            if full_path.exists():
+                full_path.unlink()
+            return f"DELETE:{rel_path}"
+        else:
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            self._log.debug("builder.file_written", path=rel_path)
+            return rel_path
 
     def _apply_changes(self, workspace: Path, changes: dict) -> list[str]:
         """Write file contents to disk. Returns list of relative paths written."""
@@ -452,13 +766,29 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON.
             sha = commit.hexsha[:8]
             self._log.info("builder.git.committed", sha=sha, branch=branch)
 
-            # Push if remote configured
+            # Push if remote configured; rebase + retry once on non-fast-forward
             if settings.github_token and repo.remotes:
                 try:
                     repo.git.push("origin", branch, "--set-upstream")
                     self._log.info("builder.git.pushed", branch=branch)
                 except Exception as push_exc:
-                    self._log.warning("builder.git.push_failed", error=str(push_exc))
+                    self._log.warning("builder.git.push_failed_retrying", error=str(push_exc))
+                    try:
+                        repo.remotes.origin.fetch()
+                        repo.git.rebase(f"origin/{branch}")
+                        # SHA changes after rebase — read the new one
+                        sha = repo.head.commit.hexsha[:8]
+                        repo.git.push("origin", branch, "--set-upstream")
+                        self._log.info("builder.git.pushed_after_rebase", branch=branch, sha=sha)
+                    except Exception as rebase_exc:
+                        self._log.warning(
+                            "builder.git.push_conflict_unresolvable",
+                            error=str(rebase_exc),
+                        )
+                        try:
+                            repo.git.rebase("--abort")
+                        except Exception:
+                            pass
 
             return {"branch": branch, "sha": sha, "message": commit_message.split("\n")[0]}
 
@@ -519,7 +849,12 @@ def execute_task(  # pragma: no cover
         task_id=task_id,
         agent_id=assigned_agent_id or "builder",
     )
-    result = asyncio.run(agent.execute())
+    try:
+        result = asyncio.run(agent.execute())
+    except Exception as exc:
+        log.exception("builder.celery_task_unhandled", task_id=task_id, run_id=run_id)
+        asyncio.run(mark_task_failed(task_id, str(exc)))
+        raise
 
     if not result.success:
         log.error("builder.task_failed", task_id=task_id, run_id=run_id, error=result.error)

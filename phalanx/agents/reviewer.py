@@ -32,7 +32,7 @@ from pathlib import Path
 import structlog
 from sqlalchemy import select, update
 
-from phalanx.agents.base import AgentResult, BaseAgent
+from phalanx.agents.base import AgentResult, BaseAgent, mark_task_failed
 from phalanx.config.settings import get_settings
 from phalanx.db.models import Artifact, Run, Task
 from phalanx.db.session import get_db
@@ -305,7 +305,12 @@ def execute_task(  # pragma: no cover
         task_id=task_id,
         agent_id=assigned_agent_id or "reviewer",
     )
-    result = asyncio.run(agent.execute())
+    try:
+        result = asyncio.run(agent.execute())
+    except Exception as exc:
+        log.exception("reviewer.celery_task_unhandled", task_id=task_id, run_id=run_id)
+        asyncio.run(mark_task_failed(task_id, str(exc)))
+        raise
 
     if not result.success:
         log.error("reviewer.task_failed", task_id=task_id, run_id=run_id, error=result.error)

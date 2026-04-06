@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 import structlog
 from sqlalchemy import select
 
-from phalanx.agents.base import AgentResult, BaseAgent
+from phalanx.agents.base import AgentResult, BaseAgent, mark_run_failed
 from phalanx.config.loader import ConfigLoader
 from phalanx.db.models import Run, Task, TaskDependency, WorkOrder
 from phalanx.memory.assembler import MemoryAssembler
@@ -329,13 +329,57 @@ Your job is to decompose a work order into an ordered list of tasks for differen
 
 {memory_block}
 
-Agents available: planner, builder, reviewer, qa, security, release
+Agents available: planner, builder, component_builder, page_assembler, reviewer, qa, security, release
 Rules:
 - Each task has exactly ONE agent_role owner
 - Tasks must be ordered by sequence_num (dependency order)
-- builder tasks always precede reviewer/qa tasks
+- builder/component_builder/page_assembler tasks always precede reviewer/qa tasks
 - Include a test task (qa agent_role) after every implementation task
 - Output ONLY valid JSON — no markdown, no explanation
+
+Complexity and splitting rules:
+- Every builder task MUST have estimated_complexity of 1 or 2 (never >= 3)
+- If a piece of work would naturally be complexity >= 3, split it into multiple builder tasks
+  each targeting complexity 1-2 (maximum 3 files per task — strictly enforced)
+- A complexity-1 task is a single file or config change
+- A complexity-2 task is one router file + its schema file (no tests — tests are a separate task)
+- Never bundle router + schema + tests together in a single builder task — always split tests out
+
+Frontend agent roles (React/Vite/TypeScript apps):
+- Use component_builder for every reusable UI component (Button, Card, Modal, BoardColumn, etc.)
+  Each component_builder task produces EXACTLY 2 files: ComponentName.tsx + ComponentName.test.tsx
+- Use page_assembler for every page that composes components (LoginPage, BoardPage, etc.)
+  Each page_assembler task produces EXACTLY 1 file: PageName.tsx (no tests in the same task)
+- Use builder for non-component frontend files: package.json, vite.config.ts, tsconfig.json,
+  index.html, main.tsx, AuthContext.tsx, API service modules, global styles
+- component_builder tasks for shared atoms (Button, Input, etc.) have NO dependencies on each
+  other — they all depend only on the frontend setup task and run in parallel
+- page_assembler depends on all component_builder tasks whose components it imports
+
+DAG and parallelism rules:
+- depends_on is a list of sequence_num integers (not titles or IDs)
+- Only add a dependency when a task genuinely needs files produced by a prior task
+- Independent work streams (backend chain vs frontend chain) must NOT depend on each other
+- Example correct pattern for a full-stack app with component_builder / page_assembler:
+    seq=1   planner           depends_on=[]       (architecture plan)
+    seq=2   builder           depends_on=[1]      (backend models)
+    seq=3   builder           depends_on=[2]      (backend auth routes)
+    seq=4   builder           depends_on=[3]      (backend CRUD routes)
+    seq=5   builder           depends_on=[1]      (frontend: package.json + vite config)
+    seq=6   builder           depends_on=[5]      (frontend: AuthContext + API services)
+    seq=7   component_builder depends_on=[5]      (Button.tsx — parallel atom)
+    seq=8   component_builder depends_on=[5]      (Input.tsx — parallel atom)
+    seq=9   component_builder depends_on=[7,8]    (AuthForm.tsx — uses Button + Input)
+    seq=10  page_assembler    depends_on=[6,9]    (LoginPage.tsx — assembles AuthForm)
+    seq=11  page_assembler    depends_on=[6,9]    (RegisterPage.tsx — assembles AuthForm)
+    seq=12  component_builder depends_on=[5]      (BoardColumn.tsx — parallel atom)
+    seq=13  component_builder depends_on=[12]     (KanbanCard.tsx — uses Column)
+    seq=14  page_assembler    depends_on=[6,12,13] (BoardPage.tsx — assembles board)
+    seq=15  builder           depends_on=[4,14]   (seed + RUNNING.md — needs both chains)
+    seq=16  qa                depends_on=[15]
+    seq=17  security          depends_on=[15]
+    seq=18  reviewer          depends_on=[16,17]
+    seq=19  release           depends_on=[18]
 
 JSON format:
 {{
@@ -344,13 +388,21 @@ JSON format:
       "sequence_num": 1,
       "title": "...",
       "description": "...",
-      "agent_role": "planner|builder|reviewer|qa|security|release",
+      "agent_role": "planner|builder|component_builder|page_assembler|reviewer|qa|security|release",
+      "phase_name": "Backend API",
       "depends_on": [],
       "files_likely_touched": [],
-      "estimated_complexity": 3
+      "estimated_complexity": 2
     }}
   ]
-}}"""
+}}
+
+phase_name rules:
+- A short, human-friendly group label shown in the Slack progress board
+- Use the SAME label for all related tasks so they appear together (e.g. all backend tasks share "Backend API")
+- Good examples: "Planning", "Backend API", "Database", "Frontend", "Mobile iOS", "Infrastructure", "CI/CD", "QA", "Security", "Code Review", "Release"
+- Match the label to the work: a React component task → "Frontend", a FastAPI route task → "Backend API", a migration task → "Database"
+- Keep it short (1-3 words), title-case"""
 
         messages = [
             {
@@ -414,7 +466,8 @@ JSON format:
             if "phase_id" in _task_cols:
                 task.phase_id = t.get("_phase_id")
             if "phase_name" in _task_cols:
-                task.phase_name = t.get("_phase_name")
+                # Claude path sets "phase_name"; enricher path sets "_phase_name"
+                task.phase_name = t.get("phase_name") or t.get("_phase_name")
             if "role_context" in _task_cols:
                 task.role_context = t.get("_role_context")
             session.add(task)
@@ -475,7 +528,14 @@ def execute_run(
         project_id=project_id,
     )
 
-    result = asyncio.run(agent.execute())
+    try:
+        result = asyncio.run(agent.execute())
+    except Exception as exc:
+        # Unhandled exception — state machine may not have written FAILED yet.
+        # Force-fail the Run so it doesn't stay IN_PROGRESS forever.
+        log.exception("commander.celery_task_unhandled", run_id=run_id)
+        asyncio.run(mark_run_failed(run_id, str(exc)))
+        raise
 
     if not result.success:
         # Celery will retry if we raise — but commander failure is usually

@@ -56,6 +56,12 @@ _COMPLETED_STATUSES = frozenset({"COMPLETED"})
 _FAILED_STATUSES = frozenset({"FAILED", "CANCELLED"})
 _BLOCKED_STATUSES = frozenset({"BLOCKED", "ESCALATING", "NEEDS_CLARIFICATION"})
 
+# Safety net: mark a task FAILED if it stays IN_PROGRESS beyond this many
+# seconds. This catches tasks whose Celery worker was SIGKILL'd (OOM, node
+# restart) where SoftTimeLimitExceeded never fires.
+# Value: builder soft_time_limit=1800s + 15min grace = 2700s.
+_STALE_TASK_TIMEOUT_SECONDS = 2700
+
 
 class OrchestratorError(RuntimeError):
     """Raised when the orchestrator cannot proceed."""
@@ -99,6 +105,9 @@ class WorkflowOrchestrator:
         tasks = await self._load_tasks()
         if not tasks:
             raise OrchestratorError(f"Run {self.run_id} has no tasks to execute")
+
+        # Post live progress board — updates in-place as tasks progress
+        await self._notifier.post_progress_board(tasks)
 
         settings = get_settings()
         if settings.phalanx_enable_dag_orchestration:
@@ -237,11 +246,17 @@ class WorkflowOrchestrator:
 
         Returns:
             (completed_ids, failed_ids) — both are subsets of task_ids.
+
+        Side effect: tasks that have been IN_PROGRESS beyond
+        _STALE_TASK_TIMEOUT_SECONDS are marked FAILED in DB (stale-task
+        watchdog — catches workers killed by SIGKILL/OOM where the Celery
+        soft_time_limit handler never fires).
         """
         from phalanx.db.session import get_db  # noqa: PLC0415
 
         completed: set[str] = set()
         failed: set[str] = set()
+        now = datetime.now(UTC)
 
         async with get_db() as poll_session:
             for tid in task_ids:
@@ -258,6 +273,33 @@ class WorkflowOrchestrator:
                         task_id=tid,
                         status=refreshed.status,
                     )
+                elif refreshed.status == "IN_PROGRESS" and refreshed.started_at:
+                    # Stale-task watchdog: task has been running too long
+                    elapsed = (now - refreshed.started_at).total_seconds()
+                    if elapsed > _STALE_TASK_TIMEOUT_SECONDS:
+                        stale_error = (
+                            f"Task exceeded stale timeout "
+                            f"({elapsed:.0f}s > {_STALE_TASK_TIMEOUT_SECONDS}s). "
+                            f"Worker likely killed (OOM/SIGKILL) without updating DB."
+                        )
+                        self._log.error(
+                            "orchestrator.stale_task_detected",
+                            task_id=tid,
+                            agent_role=refreshed.agent_role,
+                            elapsed_seconds=int(elapsed),
+                        )
+                        await poll_session.execute(
+                            update(Task)
+                            .where(Task.id == tid, Task.status == "IN_PROGRESS")
+                            .values(
+                                status="FAILED",
+                                error=stale_error,
+                                failure_count=Task.failure_count + 1,
+                                completed_at=now,
+                            )
+                        )
+                        await poll_session.commit()
+                        failed.add(tid)
 
         return completed, failed
 
