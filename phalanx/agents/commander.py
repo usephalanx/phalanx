@@ -22,6 +22,7 @@ Celery task entry point: forge.agents.commander.execute_run
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 import structlog
@@ -29,6 +30,7 @@ from sqlalchemy import select
 
 from phalanx.agents.base import AgentResult, BaseAgent, mark_run_failed
 from phalanx.config.loader import ConfigLoader
+from phalanx.config.settings import get_settings
 from phalanx.db.models import Run, Task, TaskDependency, WorkOrder
 from phalanx.memory.assembler import MemoryAssembler
 from phalanx.memory.reader import MemoryReader
@@ -46,6 +48,52 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
+
+
+def _make_demo_slug(title: str) -> str:
+    """Convert a WorkOrder title to a URL-safe slug (max 60 chars)."""
+    slug = title.lower()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"[\s-]+", "-", slug).strip("-")
+    return slug[:60]
+
+
+def _inject_sre_task(task_plan: dict) -> dict:
+    """
+    Append an SRE demo-deploy task after the last release task in the plan.
+
+    The SRE task gets sequence_num = max(sequence_num) + 1 and depends on
+    the release task (if present) so it always runs last.
+    """
+    tasks = task_plan.get("tasks", [])
+    if not tasks:
+        return task_plan
+
+    max_seq = max(t.get("sequence_num", 1) for t in tasks)
+
+    # Find the last release task to depend on
+    release_seqs = [
+        t.get("sequence_num", 1)
+        for t in tasks
+        if t.get("agent_role") == "release"
+    ]
+    depends_on = release_seqs if release_seqs else [max_seq]
+
+    sre_task = {
+        "sequence_num": max_seq + 1,
+        "title": "Deploy Demo",
+        "description": (
+            "Build a Docker image from the generated code, start the container on "
+            "the demos network, wire nginx routing, and verify the demo URL is live."
+        ),
+        "agent_role": "sre",
+        "phase_name": "Deploy",
+        "depends_on": depends_on,
+        "files_likely_touched": ["Dockerfile"],
+        "estimated_complexity": 1,
+    }
+
+    return {"tasks": [*tasks, sre_task]}
 
 
 class CommanderAgent(BaseAgent):
@@ -84,6 +132,9 @@ class CommanderAgent(BaseAgent):
                     output={},
                     error=f"WorkOrder {self.work_order_id} not found",
                 )
+            # Capture plain strings immediately — after commit() ORM objects expire
+            # and accessing their attrs triggers a lazy reload that fails in async context.
+            wo_title = str(wo.title)
 
             # ── Phase 1: INTAKE → RESEARCHING ─────────────────────────────────
             await self._create_or_load_run(session, wo)
@@ -108,6 +159,11 @@ class CommanderAgent(BaseAgent):
             await self._transition_run("RESEARCHING", "PLANNING")
 
             task_plan = await self._generate_task_plan(wo, memory_block)
+
+            # Inject SRE demo-deploy task after release when enabled
+            settings = get_settings()
+            if settings.phalanx_enable_demo_deploy:
+                task_plan = _inject_sre_task(task_plan)
 
             # Write tasks to Postgres
             await self._persist_task_plan(session, task_plan)
@@ -161,6 +217,16 @@ class CommanderAgent(BaseAgent):
 
             # ── Phase 5: AWAITING_PLAN_APPROVAL → EXECUTING ───────────────────
             await self._transition_run("AWAITING_PLAN_APPROVAL", "EXECUTING")
+
+            # Dispatch SRE infra prep in parallel with the builder chain.
+            # pre-pulls Docker base images + ensures demos-net while builders work.
+            if settings.phalanx_enable_demo_deploy:
+                prep_slug = _make_demo_slug(wo_title)
+                celery_app.send_task(
+                    "phalanx.agents.sre.prep_infra",
+                    kwargs={"run_id": self.run_id, "slug": prep_slug},
+                )
+                self._log.info("commander.sre_prep_dispatched", slug=prep_slug)
 
             router = TaskRouter(celery_app)
             orch = WorkflowOrchestrator(
@@ -236,6 +302,13 @@ class CommanderAgent(BaseAgent):
             run_number=existing_count + 1,
             status="INTAKE",
         )
+
+        # Set demo_slug if demo deploy is enabled (used by SRE task later)
+        settings = get_settings()
+        if settings.phalanx_enable_demo_deploy:
+            run.demo_slug = _make_demo_slug(wo.title)
+            self._log.info("commander.demo_slug_assigned", slug=run.demo_slug)
+
         session.add(run)
         await session.commit()
         return run
