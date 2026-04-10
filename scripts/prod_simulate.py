@@ -349,13 +349,41 @@ async def run_simulation(title: str, description: str) -> None:
     else:
         ok("Pipeline reached READY_TO_MERGE — build succeeded!")
 
+    # ── SRE demo URL check ────────────────────────────────────────────────────
+    demo_url = run.deploy_url if run else None
+    demo_reachable: bool | None = None
+    if demo_url:
+        import urllib.request
+        step("SRE DEMO CHECK")
+        try:
+            req = urllib.request.Request(demo_url, method="GET")
+            req.add_header("User-Agent", "phalanx-sim/1.0")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                demo_reachable = resp.status < 400
+            if demo_reachable:
+                ok(f"Demo reachable: {demo_url}  (HTTP {resp.status})")
+            else:
+                fail(f"Demo returned HTTP {resp.status}: {demo_url}")
+        except Exception as exc:
+            fail(f"Demo unreachable: {demo_url}  ({exc})")
+            demo_reachable = False
+        sep()
+    else:
+        step("SRE DEMO CHECK")
+        info("No deploy_url on run — SRE did not complete successfully or demo deploy is disabled")
+        sep()
+
     # Final Slack summary
     status_icon = "🚀" if success else ("⚠️" if completed >= total - 1 else "💥")
+    demo_line = ""
+    if demo_url:
+        demo_line = f"\n*Demo:* {'✅ ' + demo_url if demo_reachable else '❌ unreachable — ' + demo_url}"
     summary_text = (
         f"{status_icon} *FORGE Simulation Complete* — `{title}`\n"
         f"*Status:* {run_status}  |  *Tasks:* {completed}/{total}  |  *Files:* {files_written}  |  *Time:* {mins_total}m {secs_total}s\n"
         + (f"*Breaking stage:* `{breaking_stage}`" if breaking_stage else
            ("✅ All critical stages passed!" if success else "⚠️ Only QA/Security failed (non-fatal)"))
+        + demo_line
     )
     await slack_post(slack, SLACK_CHANNEL, summary_text)
 

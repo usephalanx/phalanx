@@ -103,14 +103,14 @@ services:
           cpus: "1.0"
           memory: 512M
 
-  # ── Celery Worker (all queues consolidated for MVP) ───────────────────────
+  # ── Celery Worker (all queues except sre) ────────────────────────────────
   phalanx-worker:
     image: phalanx-worker:latest
     <<: *forge-base
     command: >
       celery -A phalanx.queue.celery_app worker
       --loglevel=warning
-      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills,sre,ci_fixer
+      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills,ci_fixer
       --concurrency=4
       --max-tasks-per-child=100
     environment:
@@ -120,7 +120,6 @@ services:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
       - ./skill-registry:/app/skill-registry:ro
-      - /var/run/docker.sock:/var/run/docker.sock  # SRE agent needs Docker daemon access
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,7 +138,49 @@ services:
           cpus: "1.0"
           memory: 512M
 
-  # ── Nginx — Landing page + reverse proxy ──────────────────────────────────
+  # ── SRE Worker (isolated — Docker socket access for demo deployments) ─────
+  # Separate from phalanx-worker so Docker access is scoped only here.
+  # Runs as root so it can reach /var/run/docker.sock (gid=999 on this host).
+  # Also on demos-net so it can inspect container IPs after starting them.
+  phalanx-sre-worker:
+    image: phalanx-worker:latest
+    <<: *forge-base
+    command: >
+      celery -A phalanx.queue.celery_app worker
+      --loglevel=warning
+      --queues=sre
+      --concurrency=2
+      --max-tasks-per-child=10
+    user: root
+    environment:
+      PHALANX_WORKER: "1"   # forces NullPool — required in all Celery workers
+      OPENAI_MODEL_REASONING: "gpt-4.1"
+    volumes:
+      - forge-repos:/tmp/forge-repos
+      - ./configs:/app/configs:ro
+      - ./skill-registry:/app/skill-registry:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # required: SRE builds + starts demo containers
+    networks:
+      - forge-net
+      - demos-net   # required: SRE inspects container IPs after docker run
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A phalanx.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 2>&1 | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G   # image builds need more headroom than regular agents
+
+  # ── Nginx — Landing page + reverse proxy + demo subdomain ────────────────
   nginx:
     image: nginx:alpine
     <<: *forge-base
@@ -148,8 +189,12 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/nginx.demos.conf:/etc/nginx/conf.d/demos.conf:ro  # demo.usephalanx.com server block
       - ./site:/usr/share/nginx/html:ro
       - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - forge-net
+      - demos-net   # must be on demos-net to proxy_pass to demo containers by IP
     depends_on:
       phalanx-api:
         condition: service_healthy
@@ -190,3 +235,8 @@ volumes:
 networks:
   forge-net:
     driver: bridge
+  demos-net:
+    driver: bridge
+    # Demo containers are started directly by the SRE agent (not via compose),
+    # so they are connected to this network at runtime via docker run --network.
+    # nginx and phalanx-sre-worker must be on this network to reach them.

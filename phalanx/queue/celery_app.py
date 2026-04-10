@@ -22,6 +22,9 @@ celery_app = Celery(
         "phalanx.agents.integration_wiring",
         "phalanx.agents.security",
         "phalanx.agents.release",
+        "phalanx.agents.sre",
+        "phalanx.agents.ci_fixer",
+        "phalanx.workflow.advance_run",
         "phalanx.maintenance.tasks",
         "phalanx.memory.tasks",
         "phalanx.skills.ingestion.tasks",
@@ -55,6 +58,8 @@ celery_app.config_from_object(
             "release": {"exchange": "release", "routing_key": "release"},
             "ingestion": {"exchange": "ingestion", "routing_key": "ingestion"},
             "skill_drills": {"exchange": "skill_drills", "routing_key": "skill_drills"},
+            "ci_fixer": {"exchange": "ci_fixer", "routing_key": "ci_fixer"},
+            "sre": {"exchange": "sre", "routing_key": "sre"},
         },
         "task_default_queue": "default",
         # Task routing (agent role → queue)
@@ -66,6 +71,8 @@ celery_app.config_from_object(
             "phalanx.agents.qa.*": {"queue": "qa"},
             "phalanx.agents.security.*": {"queue": "security"},
             "phalanx.agents.release.*": {"queue": "release"},
+            "phalanx.agents.sre.*": {"queue": "sre"},
+            "phalanx.agents.ci_fixer.*": {"queue": "ci_fixer"},
             "phalanx.skills.ingestion.*": {"queue": "ingestion"},
             "phalanx.skills.drills.*": {"queue": "skill_drills"},
         },
@@ -76,7 +83,7 @@ celery_app.config_from_object(
         "beat_schedule": {
             "check-blocked-runs": {
                 "task": "phalanx.maintenance.tasks.check_blocked_runs",
-                "schedule": 1800,  # every 30 minutes
+                "schedule": 300,  # every 5 minutes — orphan watchdog
             },
             "decay-memory-relevance": {
                 "task": "phalanx.memory.tasks.decay_relevance",
@@ -111,6 +118,9 @@ celery_app.autodiscover_tasks(
         "phalanx.agents.integration_wiring",
         "phalanx.agents.security",
         "phalanx.agents.release",
+        "phalanx.agents.sre",
+        "phalanx.agents.ci_fixer",
+        "phalanx.workflow",
         "phalanx.maintenance",
         "phalanx.memory",
         "phalanx.skills.ingestion",
