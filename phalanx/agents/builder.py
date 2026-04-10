@@ -115,6 +115,9 @@ class BuilderAgent(BaseAgent):
         # Read relevant existing files for context
         existing_files = self._read_existing_files(workspace, task)
 
+        # Pre-flight: enrich vague task descriptions using the planner plan
+        task = await self._enrich_if_vague(task, plan)
+
         # Generate code changes
         changes = await self._generate_changes(task, plan, existing_files, workspace)
 
@@ -368,6 +371,33 @@ Rules:
 - Use type annotations throughout.
 - Never hardcode credentials or secrets.
 - Every deliverable listed in the task description MUST be implemented.
+- SCOPE DISCIPLINE: Implement ONLY what the task description explicitly asks for.
+  Do NOT add extra endpoints, models, services, or features not mentioned in the task.
+  If the task says "single /health endpoint", build exactly one endpoint.
+  Extra scope causes test failures downstream — it is a bug, not a feature.
+- TEST FILES RULE: Do NOT write test files (test_*.py, *.test.ts, *.spec.ts) unless
+  the task title explicitly says "test suite" or "write tests". Tests are written by a
+  dedicated final builder task that sees the complete workspace. Writing tests in
+  source tasks creates conflicting, incomplete test files that fail at QA.
+
+RUNNING.md rule — TEAM_BRIEF section:
+When writing or updating RUNNING.md, you MUST include a ## TEAM_BRIEF section.
+This is shared team context read by QA, Reviewer, and Security agents.
+Fill it in based on the actual stack you are building:
+
+## TEAM_BRIEF
+stack: <e.g. "Python/FastAPI", "TypeScript/React+Vite", "Go/gin", "Node/Express", "HTML/CSS/JS">
+test_runner: <exact command, e.g. "pytest tests/", "npm test", "go test ./...">
+lint_tool: <exact command, e.g. "ruff check .", "eslint .", "none">
+coverage_tool: <e.g. "pytest-cov", "vitest --coverage", "go test -cover", "none">
+coverage_threshold: <integer 0-100; use 0 for pure static/HTML/frontend-only apps>
+coverage_applies: <true or false; false for pure HTML/CSS/static sites with no testable logic>
+
+Examples by stack:
+- Python/FastAPI:          test_runner: pytest tests/  lint_tool: ruff check .  coverage_tool: pytest-cov  coverage_threshold: 70  coverage_applies: true
+- TypeScript/React+Vite:   test_runner: pytest tests/  lint_tool: none  coverage_tool: none  coverage_threshold: 0  coverage_applies: false
+- Pure HTML/CSS/JS:        test_runner: pytest tests/  lint_tool: none  coverage_tool: none  coverage_threshold: 0  coverage_applies: false
+- Go:                      test_runner: go test ./...  lint_tool: go vet ./...  coverage_tool: go test -cover  coverage_threshold: 70  coverage_applies: true
 
 NEVER generate auto-generated or tooling-produced files. These are always too large,
 always wrong when hand-written, and must come from the project's own toolchain instead.
@@ -471,6 +501,139 @@ Return ONLY valid JSON — no markdown fences.
         if role == "page_assembler":
             return role_block + self._SYSTEM_PAGE_ASSEMBLER
         return role_block + self._SYSTEM_DEFAULT
+
+    async def _enrich_if_vague(self, task: Task, plan: dict) -> Task:
+        """
+        Pre-flight vague-check before the main Claude call.
+
+        Step 1 — ask GPT-4.1 whether the task description is specific enough
+                  for a code-writing agent to implement without guessing.
+        Step 2 — if vague, ask GPT-4.1 to produce an enriched description
+                  grounded in the planner's plan (files, steps, approach).
+
+        Returns the task unchanged if not vague, or with description replaced
+        by the enriched version. One round, in-process, no DB writes.
+        """
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        _VAGUE_CHECK_SYSTEM = """\
+You are a pre-flight checker for a code-writing AI agent.
+
+Given a task title and description, decide whether the description is specific
+enough for a code writer to implement without making technology or design choices.
+
+A description is VAGUE if it:
+- Does not mention the stack, framework, or language
+- Uses vague terms like "simple", "basic", "nice", "modern" without specifics
+- Leaves key technical decisions (file structure, API shape, state management) undefined
+- Is a single sentence with no file paths, function names, or concrete requirements
+
+A description is SPECIFIC enough if it mentions framework, file paths or components
+to create, or concrete acceptance criteria.
+
+Return ONLY valid JSON:
+{"is_vague": true, "reason": "one sentence why"}
+or
+{"is_vague": false, "reason": ""}
+"""
+
+        _ENRICHMENT_SYSTEM = """\
+You are a task clarifier for a code-writing AI agent.
+
+A builder agent has a vague task description. You have access to the planner's
+detailed implementation plan. Use the plan to produce a concrete, enriched
+description that eliminates ambiguity.
+
+Rules:
+- Keep the original intent intact — do not add scope
+- Use exact file paths, framework names, and component names from the plan
+- The enriched description should be 3-6 sentences: what to build, which files,
+  which framework/language, and what the acceptance criteria are
+- Do NOT invent anything not in the plan
+
+Return ONLY valid JSON:
+{"enriched_description": "..."}
+"""
+
+        try:
+            loop = _asyncio.get_event_loop()
+
+            # Step 1: vague-check
+            vague_messages = [{"role": "user", "content": (
+                f"Task title: {task.title}\n\n"
+                f"Task description: {task.description}"
+            )}]
+            vague_raw = await loop.run_in_executor(
+                None,
+                lambda: self._call_openai(
+                    messages=vague_messages,
+                    system=_VAGUE_CHECK_SYSTEM,
+                    max_tokens=256,
+                ),
+            )
+
+            import json as _json  # noqa: PLC0415
+            try:
+                vague_result = _json.loads(vague_raw)
+            except _json.JSONDecodeError:
+                # If parse fails, treat as not vague — don't block the build
+                return task
+
+            if not vague_result.get("is_vague"):
+                self._log.debug("builder.vague_check.specific", title=task.title)
+                return task
+
+            self._log.info(
+                "builder.vague_check.vague",
+                title=task.title,
+                reason=vague_result.get("reason", ""),
+            )
+
+            # Step 2: enrich using the planner plan
+            import json as _json2  # noqa: PLC0415, F811
+            plan_summary = _json2.dumps({
+                "approach": plan.get("approach", ""),
+                "files": plan.get("files", [])[:10],
+                "implementation_steps": plan.get("implementation_steps", [])[:8],
+                "acceptance_criteria": plan.get("acceptance_criteria", []),
+            }, indent=2)[:3000]
+
+            enrich_messages = [{"role": "user", "content": (
+                f"Task title: {task.title}\n\n"
+                f"Original description: {task.description}\n\n"
+                f"Planner's implementation plan:\n{plan_summary}\n\n"
+                f"Vague check reason: {vague_result.get('reason', '')}\n\n"
+                "Produce an enriched, concrete description."
+            )}]
+            enrich_raw = await loop.run_in_executor(
+                None,
+                lambda: self._call_openai(
+                    messages=enrich_messages,
+                    system=_ENRICHMENT_SYSTEM,
+                    max_tokens=512,
+                ),
+            )
+
+            try:
+                enrich_result = _json.loads(enrich_raw)
+                enriched = enrich_result.get("enriched_description", "").strip()
+            except _json.JSONDecodeError:
+                enriched = ""
+
+            if enriched:
+                self._log.info(
+                    "builder.description_enriched",
+                    original_len=len(task.description),
+                    enriched_len=len(enriched),
+                )
+                # Mutate in-memory only — no DB write
+                task.description = enriched
+
+        except Exception as exc:
+            # Never block the build over enrichment failure
+            self._log.warning("builder.vague_check.error", error=str(exc))
+
+        return task
 
     async def _generate_changes(
         self,

@@ -344,6 +344,41 @@ class BaseAgent(abc.ABC):
         # Fallback: Anthropic API
         return self._call_claude_api(messages, system, model, max_tokens)
 
+    def _call_openai(
+        self,
+        messages: list[dict],
+        system: str = "",
+        max_tokens: int = 4096,
+        as_text: bool = False,
+    ) -> str:
+        """
+        Call OpenAI reasoning model (gpt-5.4-pro by default).
+
+        Used by reasoning agents: Commander, Planner, QA test plan,
+        Reviewer, Release. Builder always uses _call_claude — never this.
+
+        Returns raw text string (caller parses JSON if needed).
+        """
+        from phalanx.agents.openai_client import OpenAIClient  # noqa: PLC0415
+        from phalanx.config.settings import get_settings  # noqa: PLC0415
+
+        settings = get_settings()
+        client = OpenAIClient(model=settings.openai_model_reasoning)
+
+        str_messages = [
+            {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
+            for m in messages
+        ]
+
+        if as_text:
+            return client.call_text(messages=str_messages, system=system, max_tokens=max_tokens)
+
+        result = client.call(messages=str_messages, system=system, max_tokens=max_tokens)
+        # call() returns a parsed dict — re-serialize to string so callers can
+        # do their own json.loads() / find("{") pattern consistently
+        import json as _json  # noqa: PLC0415
+        return _json.dumps(result)
+
     async def _audit(
         self,
         event_type: str,

@@ -41,6 +41,7 @@ from phalanx.workflow.approval_gate import (
     ApprovalRejectedError,
     ApprovalTimeoutError,
 )
+from phalanx.workflow.advance_run import advance_run as advance_run_task
 from phalanx.workflow.orchestrator import WorkflowOrchestrator
 from phalanx.workflow.slack_notifier import SlackNotifier
 
@@ -228,35 +229,91 @@ class CommanderAgent(BaseAgent):
                 )
                 self._log.info("commander.sre_prep_dispatched", slug=prep_slug)
 
-            router = TaskRouter(celery_app)
+            # ── Phase 5 (continued): dispatch advance_run + post progress board ──
+            # Load the persisted tasks for the Slack progress board.
+            tasks_for_board_result = await session.execute(
+                select(Task).where(Task.run_id == self.run_id).order_by(Task.sequence_num)
+            )
+            tasks_for_board = list(tasks_for_board_result.scalars())
+            await notifier.post_progress_board(tasks_for_board)
+
+            # Kick off the stateless advance_run loop — it drives all agent tasks
+            # to completion and re-schedules itself after each step.  Commander
+            # no longer holds a long-running loop; it simply watches the DB until
+            # the run reaches VERIFYING (or FAILED).
+            advance_run_task.apply_async(
+                kwargs={"run_id": self.run_id},
+                queue="commander",
+            )
+            self._log.info("commander.advance_run_dispatched", run_id=self.run_id)
+
+        # ── Poll until advance_run drives us to VERIFYING or FAILED ──────────
+        # Re-open sessions in a tight loop (NullPool — no connection hoarding).
+        from phalanx.db.session import get_db as _get_db  # noqa: PLC0415
+
+        _poll_interval = 15
+        _max_wait = 7200  # 2 hours
+        elapsed = 0
+        final_status = None
+        while elapsed < _max_wait:
+            import asyncio as _asyncio  # noqa: PLC0415
+            await _asyncio.sleep(_poll_interval)
+            elapsed += _poll_interval
+
+            async with _get_db() as poll_session:
+                run_result = await poll_session.execute(
+                    select(Run).where(Run.id == self.run_id)
+                )
+                run_snapshot = run_result.scalar_one()
+                final_status = run_snapshot.status
+
+            if final_status in ("VERIFYING", "AWAITING_SHIP_APPROVAL", "READY_TO_MERGE",
+                                "SHIPPED", "MERGED", "FAILED", "CANCELLED"):
+                break
+
+            self._log.debug(
+                "commander.waiting_for_verifying",
+                status=final_status,
+                elapsed_s=elapsed,
+            )
+
+        if final_status in ("FAILED", "CANCELLED"):
+            error_msg = f"Run reached {final_status} during execution"
+            self._log.error("commander.execution_failed", status=final_status)
+            return AgentResult(
+                success=False,
+                output={},
+                error=error_msg,
+                tokens_used=self._tokens_used,
+            )
+
+        if final_status not in ("VERIFYING", "AWAITING_SHIP_APPROVAL"):
+            # Timed out or unexpected status
+            await self._transition_run(
+                "EXECUTING",
+                "FAILED",
+                error_message=f"Commander timed out waiting for VERIFYING after {elapsed}s",
+                error_context={"phase": "execution"},
+            )
+            return AgentResult(
+                success=False,
+                output={},
+                error="Execution timed out",
+                tokens_used=self._tokens_used,
+            )
+
+        # ── Phase 6: VERIFYING → AWAITING_SHIP_APPROVAL ───────────────────
+        if final_status == "VERIFYING":
+            await self._transition_run("VERIFYING", "AWAITING_SHIP_APPROVAL")
+
+        async with _get_db() as ship_session:
             orch = WorkflowOrchestrator(
-                session=session,
+                session=ship_session,
                 run_id=self.run_id,
-                task_router=router,
+                task_router=TaskRouter(celery_app),
                 approval_timeout_hours=self._loader.workflow.workflow.approval_timeout_hours,
                 notifier=notifier,
             )
-
-            try:
-                await orch.execute()  # drives all tasks → VERIFYING
-            except Exception as exc:
-                self._log.exception("commander.execution_failed", error=str(exc))
-                await self._transition_run(
-                    "EXECUTING",
-                    "FAILED",
-                    error_message=str(exc),
-                    error_context={"phase": "execution"},
-                )
-                return AgentResult(
-                    success=False,
-                    output={},
-                    error=str(exc),
-                    tokens_used=self._tokens_used,
-                )
-
-            # ── Phase 6: VERIFYING → AWAITING_SHIP_APPROVAL ───────────────────
-            await self._transition_run("VERIFYING", "AWAITING_SHIP_APPROVAL")
-
             try:
                 await orch.request_ship_approval(
                     context_snapshot={"task_count": len(task_plan.get("tasks", []))}
@@ -402,11 +459,11 @@ Your job is to decompose a work order into an ordered list of tasks for differen
 
 {memory_block}
 
-Agents available: planner, builder, component_builder, page_assembler, reviewer, qa, security, release
+Agents available: planner, builder, reviewer, qa, security, release
 Rules:
 - Each task has exactly ONE agent_role owner
 - Tasks must be ordered by sequence_num (dependency order)
-- builder/component_builder/page_assembler tasks always precede reviewer/qa tasks
+- builder tasks always precede reviewer/qa tasks
 - Include a test task (qa agent_role) after every implementation task
 - Output ONLY valid JSON — no markdown, no explanation
 
@@ -415,44 +472,42 @@ Complexity and splitting rules:
 - If a piece of work would naturally be complexity >= 3, split it into multiple builder tasks
   each targeting complexity 1-2 (maximum 3 files per task — strictly enforced)
 - A complexity-1 task is a single file or config change
-- A complexity-2 task is one router file + its schema file (no tests — tests are a separate task)
-- Never bundle router + schema + tests together in a single builder task — always split tests out
+- A complexity-2 task is one file + its companion (e.g. route + schema, component + styles)
+- Never bundle implementation + tests together in a single builder task — always split tests out
+- TEST SUITE RULE: The builder task immediately before the qa task MUST be a dedicated
+  "Write complete test suite" builder task. This task runs after ALL source code is written,
+  sees the full workspace, and writes the ONE authoritative test suite for the whole app.
+  No other builder task should write test files (test_*.py or *.test.ts). Tests belong only
+  in this final dedicated task. This prevents test accumulation and conflicting test files
+  across multiple builder tasks.
 
-Frontend agent roles (React/Vite/TypeScript apps):
-- Use component_builder for every reusable UI component (Button, Card, Modal, BoardColumn, etc.)
-  Each component_builder task produces EXACTLY 2 files: ComponentName.tsx + ComponentName.test.tsx
-- Use page_assembler for every page that composes components (LoginPage, BoardPage, etc.)
-  Each page_assembler task produces EXACTLY 1 file: PageName.tsx (no tests in the same task)
-- Use builder for non-component frontend files: package.json, vite.config.ts, tsconfig.json,
-  index.html, main.tsx, AuthContext.tsx, API service modules, global styles
-- component_builder tasks for shared atoms (Button, Input, etc.) have NO dependencies on each
-  other — they all depend only on the frontend setup task and run in parallel
-- page_assembler depends on all component_builder tasks whose components it imports
+Frontend splitting rules (React/Vite/TypeScript apps):
+- Use builder for ALL frontend work — setup files, components, pages, styles
+- Split frontend work the same way as backend: one focused builder task per 1-2 files
+- Shared atoms (Button, Input, etc.) get their own builder tasks with no cross-dependencies
+- Pages that assemble components depend on the atom tasks they import
+- Setup task (package.json + vite.config) always comes first; components depend on it
 
 DAG and parallelism rules:
 - depends_on is a list of sequence_num integers (not titles or IDs)
 - Only add a dependency when a task genuinely needs files produced by a prior task
 - Independent work streams (backend chain vs frontend chain) must NOT depend on each other
-- Example correct pattern for a full-stack app with component_builder / page_assembler:
-    seq=1   planner           depends_on=[]       (architecture plan)
-    seq=2   builder           depends_on=[1]      (backend models)
-    seq=3   builder           depends_on=[2]      (backend auth routes)
-    seq=4   builder           depends_on=[3]      (backend CRUD routes)
-    seq=5   builder           depends_on=[1]      (frontend: package.json + vite config)
-    seq=6   builder           depends_on=[5]      (frontend: AuthContext + API services)
-    seq=7   component_builder depends_on=[5]      (Button.tsx — parallel atom)
-    seq=8   component_builder depends_on=[5]      (Input.tsx — parallel atom)
-    seq=9   component_builder depends_on=[7,8]    (AuthForm.tsx — uses Button + Input)
-    seq=10  page_assembler    depends_on=[6,9]    (LoginPage.tsx — assembles AuthForm)
-    seq=11  page_assembler    depends_on=[6,9]    (RegisterPage.tsx — assembles AuthForm)
-    seq=12  component_builder depends_on=[5]      (BoardColumn.tsx — parallel atom)
-    seq=13  component_builder depends_on=[12]     (KanbanCard.tsx — uses Column)
-    seq=14  page_assembler    depends_on=[6,12,13] (BoardPage.tsx — assembles board)
-    seq=15  builder           depends_on=[4,14]   (seed + RUNNING.md — needs both chains)
-    seq=16  qa                depends_on=[15]
-    seq=17  security          depends_on=[15]
-    seq=18  reviewer          depends_on=[16,17]
-    seq=19  release           depends_on=[18]
+- Example correct pattern for a full-stack app:
+    seq=1   planner  depends_on=[]       (architecture plan)
+    seq=2   builder  depends_on=[1]      (backend models)
+    seq=3   builder  depends_on=[2]      (backend auth routes)
+    seq=4   builder  depends_on=[3]      (backend CRUD routes)
+    seq=5   builder  depends_on=[1]      (frontend: package.json + vite config)
+    seq=6   builder  depends_on=[5]      (frontend: AuthContext + API services)
+    seq=7   builder  depends_on=[5]      (Button.tsx — parallel atom)
+    seq=8   builder  depends_on=[5]      (Input.tsx — parallel atom)
+    seq=9   builder  depends_on=[7,8]    (AuthForm.tsx — uses Button + Input)
+    seq=10  builder  depends_on=[6,9]    (LoginPage.tsx — assembles AuthForm)
+    seq=11  builder  depends_on=[4,10]   (seed + RUNNING.md — needs both chains)
+    seq=12  qa       depends_on=[11]
+    seq=13  security depends_on=[11]
+    seq=14  reviewer depends_on=[12,13]
+    seq=15  release  depends_on=[14]
 
 JSON format:
 {{
@@ -461,7 +516,7 @@ JSON format:
       "sequence_num": 1,
       "title": "...",
       "description": "...",
-      "agent_role": "planner|builder|component_builder|page_assembler|reviewer|qa|security|release",
+      "agent_role": "planner|builder|reviewer|qa|security|release",
       "phase_name": "Backend API",
       "depends_on": [],
       "files_likely_touched": [],
@@ -488,10 +543,10 @@ phase_name rules:
             }
         ]
 
-        response_text = self._call_claude(
+        response_text = self._call_openai(
             messages=messages,
             system=system,
-            max_tokens=8192,  # Increased from 4096 to prevent JSON truncation
+            max_tokens=8192,
         )
 
         try:

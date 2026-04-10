@@ -238,7 +238,7 @@ Return ONLY valid JSON — no markdown fences.
             }
         ]
 
-        raw = self._call_claude(messages=messages, system=system, max_tokens=_REVIEW_MAX_TOKENS)
+        raw = self._call_openai(messages=messages, system=system, max_tokens=_REVIEW_MAX_TOKENS)
 
         try:
             start = raw.find("{")

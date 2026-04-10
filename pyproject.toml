@@ -27,6 +27,7 @@ dependencies = [
 
     # AI
     "anthropic>=0.40.0",
+    "openai>=1.0.0",
 
     # Slack
     "slack-bolt>=1.21.0",
@@ -54,6 +55,7 @@ dependencies = [
     "opentelemetry-exporter-otlp>=1.28.0",
 
     # Utilities
+    "docker>=7.0.0",
     "httpx>=0.28.0",
     "tenacity>=9.0.0",
     "python-jose[cryptography]>=3.3.0",

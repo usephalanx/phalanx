@@ -161,6 +161,25 @@ Rules:
   Docker-based local setup steps: how to start the app (docker compose up or equivalent), the URL
   to open, and — if the app has auth — the default demo credentials (demo@phalanx.dev / demo1234)
   shown clearly. The RUNNING.md must let a non-technical person run the app in under 3 commands.
+- TEAM_BRIEF: RUNNING.md MUST include a machine-readable TEAM_BRIEF section that every agent
+  (builder, QA, reviewer, security) reads before acting. This is shared team context.
+  The TEAM_BRIEF section must look exactly like this (fill in the correct values):
+
+  ## TEAM_BRIEF
+  stack: <language(s) and frameworks, e.g. "Python/FastAPI", "TypeScript/React+Vite", "Go/gin", "Node/Express">
+  test_runner: <exact command to run tests, e.g. "pytest tests/", "npm test", "go test ./...", "cargo test">
+  lint_tool: <exact lint command, e.g. "ruff check .", "eslint .", "golangci-lint run", "none">
+  coverage_tool: <how coverage is collected, e.g. "pytest-cov", "vitest --coverage", "go test -cover", "none">
+  coverage_threshold: <integer 0-100, e.g. 70 for Python, 0 for pure frontend/HTML/static>
+  coverage_applies: <true or false — false for pure frontend/static/HTML apps with no source logic to measure>
+
+  Rules for TEAM_BRIEF values:
+  - Pure HTML/CSS/JS static sites: coverage_applies=false, coverage_threshold=0
+  - React/Vue/Svelte apps (Vite/webpack): test_runner="npm test", coverage_tool="vitest --coverage" or "jest --coverage", coverage_applies=false if no logic, true if has business logic
+  - Python/FastAPI/Flask/Django: test_runner="pytest tests/", coverage_tool="pytest-cov", coverage_applies=true
+  - Go: test_runner="go test ./...", coverage_tool="go test -cover", coverage_applies=true
+  - Node/Express: test_runner="npm test", coverage_tool="jest --coverage", coverage_applies=true
+  - CLI tools (Python): test_runner="pytest tests/", coverage_tool="pytest-cov", coverage_applies=true
 
 Return ONLY valid JSON — no markdown fences, no explanation outside the JSON object.
 
@@ -202,7 +221,7 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON o
             }
         ]
 
-        raw = self._call_claude(messages=messages, system=system, max_tokens=_PLAN_MAX_TOKENS)
+        raw = self._call_openai(messages=messages, system=system, max_tokens=_PLAN_MAX_TOKENS)
 
         try:
             start = raw.find("{")

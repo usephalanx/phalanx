@@ -201,7 +201,7 @@ Keep steps to 3 commands or fewer."""
             }
         ]
 
-        raw = self._call_claude(messages=messages, system=system, max_tokens=_NOTES_MAX_TOKENS)
+        raw = self._call_openai(messages=messages, system=system, max_tokens=_NOTES_MAX_TOKENS)
 
         try:
             start = raw.find("{")

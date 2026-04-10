@@ -110,15 +110,17 @@ services:
     command: >
       celery -A phalanx.queue.celery_app worker
       --loglevel=warning
-      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills
+      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills,sre,ci_fixer
       --concurrency=4
       --max-tasks-per-child=100
     environment:
       PHALANX_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
+      OPENAI_MODEL_REASONING: "gpt-4.1"  # reasoning agents: Commander, Planner, QA, Reviewer, Release
     volumes:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
       - ./skill-registry:/app/skill-registry:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # SRE agent needs Docker daemon access
     depends_on:
       postgres:
         condition: service_healthy
