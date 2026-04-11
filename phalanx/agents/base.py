@@ -344,40 +344,90 @@ class BaseAgent(abc.ABC):
         # Fallback: Anthropic API
         return self._call_claude_api(messages, system, model, max_tokens)
 
-    def _call_openai(
+    # ── Soul layer ────────────────────────────────────────────────────────────
+
+    def _reflect(
         self,
-        messages: list[dict],
-        system: str = "",
-        max_tokens: int = 4096,
-        as_text: bool = False,
+        task_description: str,
+        context: str = "",
+        soul: str = "",
     ) -> str:
         """
-        Call OpenAI reasoning model (gpt-5.4-pro by default).
+        Pre-task reflection. Ask the agent to think through risks, ambiguities,
+        and verification steps before acting.
 
-        Used by reasoning agents: Commander, Planner, QA test plan,
-        Reviewer, Release. Builder always uses _call_claude — never this.
-
-        Returns raw text string (caller parses JSON if needed).
+        Returns the reflection text, or empty string on failure (non-fatal).
         """
-        from phalanx.agents.openai_client import OpenAIClient  # noqa: PLC0415
-        from phalanx.config.settings import get_settings  # noqa: PLC0415
+        from phalanx.agents.soul import get_reflection_prompt, get_soul  # noqa: PLC0415
 
-        settings = get_settings()
-        client = OpenAIClient(model=settings.openai_model_reasoning)
+        soul_text = soul or get_soul(self.AGENT_ROLE)
+        prompt_template = get_reflection_prompt(self.AGENT_ROLE)
+        if not prompt_template:
+            return ""
 
-        str_messages = [
-            {"role": str(m.get("role", "user")), "content": str(m.get("content", ""))}
-            for m in messages
-        ]
+        context_section = f"CONTEXT:\n{context}" if context else ""
+        prompt = prompt_template.format(
+            task_description=task_description,
+            context_section=context_section,
+            # Role-specific template vars — pass defaults; subclasses can override
+            work_order_title=task_description,
+            work_order_description=context,
+            builder_summary=context,
+            files_written="",
+            epics_summary=task_description,
+            app_type="",
+        )
+        try:
+            return self._call_claude(
+                messages=[{"role": "user", "content": prompt}],
+                system=soul_text,
+                max_tokens=1024,
+            )
+        except Exception as exc:
+            self._log.warning("agent.reflect_failed", error=str(exc))
+            return ""
 
-        if as_text:
-            return client.call_text(messages=str_messages, system=system, max_tokens=max_tokens)
+    async def _trace(
+        self,
+        trace_type: str,
+        content: str,
+        context: dict | None = None,
+    ) -> None:
+        """
+        Persist a soul-layer reasoning trace to the agent_traces table.
+        Non-fatal — logs warning on failure (AP-003 exception: traces must
+        not abort core logic).
 
-        result = client.call(messages=str_messages, system=system, max_tokens=max_tokens)
-        # call() returns a parsed dict — re-serialize to string so callers can
-        # do their own json.loads() / find("{") pattern consistently
-        import json as _json  # noqa: PLC0415
-        return _json.dumps(result)
+        trace_type: reflection | decision | uncertainty | disagreement |
+                    self_check | handoff
+        """
+        if not content:
+            return
+        # Cap content to 10 000 chars to prevent bloated rows
+        content = content[:10_000]
+        try:
+            from phalanx.db.models import AgentTrace  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            async with get_db() as session:
+                trace = AgentTrace(
+                    run_id=self.run_id,
+                    task_id=self.task_id,
+                    agent_role=self.AGENT_ROLE,
+                    agent_id=self.agent_id,
+                    trace_type=trace_type,
+                    content=content,
+                    context=context or {},
+                    tokens_used=self._tokens_used,
+                )
+                session.add(trace)
+                await session.commit()
+        except Exception as exc:
+            self._log.warning(
+                "agent.trace_failed",
+                trace_type=trace_type,
+                error=str(exc),
+            )
 
     async def _audit(
         self,

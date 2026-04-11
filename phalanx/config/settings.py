@@ -46,9 +46,6 @@ class Settings(BaseSettings):
     # ── AI — OpenAI ───────────────────────────────────────────────────────────
     openai_api_key: str = Field(default="", description="OpenAI API key")
     openai_model_default: str = "gpt-4o"
-    # Reasoning model: used by Commander, Planner, QA, Reviewer, Release.
-    # Builder stays on Claude Opus — never change that here.
-    openai_model_reasoning: str = "gpt-4.1"
 
     # ── AI — Grok (xAI) ───────────────────────────────────────────────────────
     grok_api_key: str = Field(default="", description="xAI Grok API key")
@@ -80,18 +77,6 @@ class Settings(BaseSettings):
     git_author_name: str = "FORGE"
     git_author_email: str = "forge-bot@acme.com"
 
-    # ── SRE / Demo deployment ─────────────────────────────────────────────────
-    # Base URL for live demos (no trailing slash)
-    demo_base_url: str = "https://demo.usephalanx.com"
-    # Docker network demo containers are started on (must match compose network name)
-    demo_docker_network: str = "phalanx-prod_demos-net"
-    # Name of the nginx container that serves demo.usephalanx.com
-    demo_nginx_container: str = "phalanx-prod-nginx-1"
-    # Max concurrently running demo containers (LRU eviction when exceeded)
-    demo_max_running: int = 5
-    # Directory inside the nginx container where per-demo conf files are written
-    demo_nginx_conf_dir: str = "/etc/nginx/conf.d/demos"
-
     # ── Feature flags ─────────────────────────────────────────────────────────
     forge_enable_pgvector: bool = True
     forge_enable_discord: bool = False
@@ -102,6 +87,8 @@ class Settings(BaseSettings):
     phalanx_enable_prompt_enrichment: bool = True
     phalanx_enable_slack_threading: bool = False
     phalanx_enable_demo_deploy: bool = True
+    # ── CI Webhooks ───────────────────────────────────────────────────────────
+    buildkite_webhook_token: str = ""
     # Phase 2: streaming builder — set FORGE_STREAMING_BUILDER=1 to enable.
     # Eliminates the 20K output token ceiling by writing each file as Claude
     # generates it. Safe to enable once validated in simulation.

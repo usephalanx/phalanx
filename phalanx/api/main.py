@@ -9,7 +9,11 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from phalanx.api.routes.ci_webhooks import router as ci_webhooks_router
+from phalanx.api.routes.demos import router as demos_router
 from phalanx.api.routes.runs import router as runs_router
+from phalanx.api.routes.traces import portal_router as traces_portal_router
+from phalanx.api.routes.traces import router as traces_router
 from phalanx.api.routes.work_orders import router as work_orders_router
 from phalanx.config.settings import get_settings
 from phalanx.observability.logging import configure_logging
@@ -77,6 +81,10 @@ async def api_key_middleware(request: Request, call_next):
 # ── Routes ───────────────────────────────────────────────────────────────────
 app.include_router(work_orders_router, prefix="/v1")
 app.include_router(runs_router, prefix="/v1")
+app.include_router(traces_router, prefix="/v1")
+app.include_router(traces_portal_router)
+app.include_router(ci_webhooks_router, prefix="/webhook")
+app.include_router(demos_router, prefix="/v1")
 
 
 @app.get("/health")

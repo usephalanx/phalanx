@@ -435,6 +435,127 @@ class Interrupt(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT TRACES
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AgentTrace(Base):
+    """
+    Soul-layer reasoning trace. Captures reflections, decisions, uncertainty,
+    disagreements, self-checks, and handoff notes emitted by agents.
+    Read-only after insert — never updated or deleted.
+    """
+
+    __tablename__ = "agent_traces"
+    __table_args__ = (
+        Index("idx_agent_traces_run", "run_id", "created_at"),
+        Index("idx_agent_traces_task", "task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36))
+    agent_role: Mapped[str] = mapped_column(String(100), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    trace_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # reflection | decision | uncertainty | disagreement | self_check | handoff
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    tokens_used: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+    run: Mapped[Run] = relationship()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CI FIXER
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class CIIntegration(Base):
+    """CI provider integration config per repo."""
+
+    __tablename__ = "ci_integrations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    allowed_authors: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    ci_api_key_enc: Mapped[str | None] = mapped_column(Text)   # encrypted at rest
+    github_token: Mapped[str | None] = mapped_column(Text)     # repo-scoped PAT
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CIFixRun(Base):
+    """One CI fix attempt triggered by a webhook failure."""
+
+    __tablename__ = "ci_fix_runs"
+    __table_args__ = (
+        Index("idx_ci_fix_runs_integration", "integration_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    integration_id: Mapped[str] = mapped_column(ForeignKey("ci_integrations.id"), nullable=False)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    branch: Mapped[str | None] = mapped_column(String(255))
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    commit_sha: Mapped[str | None] = mapped_column(String(40))
+    ci_provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    # github | buildkite | circleci | jenkins
+    ci_build_id: Mapped[str | None] = mapped_column(String(100))
+    build_url: Mapped[str | None] = mapped_column(Text)
+    failed_jobs: Mapped[list] = mapped_column(JSONB, default=list)
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_category: Mapped[str | None] = mapped_column(String(50))
+    # test_failure | lint_error | type_error | build_error | dependency_error | unknown
+    status: Mapped[str] = mapped_column(String(50), default="PENDING")
+    # PENDING | ANALYZING | FIXING | PR_OPENED | MERGED | FAILED | SKIPPED
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    fix_commit_sha: Mapped[str | None] = mapped_column(String(40))
+    fix_pr_url: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEMO PORTAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Demo(Base):
+    """A deployed demo app managed by the SRE agent."""
+
+    __tablename__ = "demos"
+    __table_args__ = (
+        UniqueConstraint("slug"),
+        Index("idx_demos_run", "run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    app_type: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(50), default="building")
+    # building | live | stopped | failed
+    demo_url: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    built_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+    run: Mapped[Run] = relationship()
+
+
 class MemoryFact(Base):
     """
     Durable project knowledge. Versioned, deduplicated, confidence-scored.
