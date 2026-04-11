@@ -608,7 +608,7 @@ phase_name rules:
             }
         ]
 
-        response_text = self._call_openai(
+        response_text = self._call_claude(
             messages=messages,
             system=system,
             max_tokens=8192,

@@ -151,23 +151,46 @@ def parse_command(text: str) -> ParsedCommand:
 
     if verb == "fix":
         # Formats:
+        #   fix <repo>#<pr_number>   e.g. "fix acme/backend#42"
         #   fix <repo> <pr_number>   e.g. "fix acme/backend 42"
         #   fix <repo> <branch>      e.g. "fix acme/api fix/auth-bug"
         fix_parts = rest.split() if rest else []
-        if not fix_parts or "/" not in fix_parts[0]:
+        if not fix_parts:
             return ParsedCommand(
                 command_type=CommandType.FIX,
                 raw_text=raw_text,
                 parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
             )
-        fix_repo = fix_parts[0]
+        # Support "owner/repo#pr_number" shorthand
+        first_part = fix_parts[0]
         fix_pr_number: int | None = None
         fix_branch: str | None = None
-        if len(fix_parts) > 1:
+        if "#" in first_part:
+            repo_part, pr_part = first_part.split("#", 1)
+            if "/" not in repo_part:
+                return ParsedCommand(
+                    command_type=CommandType.FIX,
+                    raw_text=raw_text,
+                    parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
+                )
+            fix_repo = repo_part
             try:
-                fix_pr_number = int(fix_parts[1])
+                fix_pr_number = int(pr_part)
             except ValueError:
-                fix_branch = fix_parts[1]
+                fix_branch = pr_part
+        else:
+            if "/" not in first_part:
+                return ParsedCommand(
+                    command_type=CommandType.FIX,
+                    raw_text=raw_text,
+                    parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
+                )
+            fix_repo = first_part
+            if len(fix_parts) > 1:
+                try:
+                    fix_pr_number = int(fix_parts[1])
+                except ValueError:
+                    fix_branch = fix_parts[1]
         return ParsedCommand(
             command_type=CommandType.FIX,
             raw_text=raw_text,

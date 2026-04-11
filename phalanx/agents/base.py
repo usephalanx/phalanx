@@ -428,6 +428,262 @@ class BaseAgent(abc.ABC):
                 trace_type=trace_type,
                 error=str(exc),
             )
+        # SOUL-008: escalate uncertainty and disagreement to Slack
+        if trace_type in ("uncertainty", "disagreement"):
+            await self._escalate_trace_to_slack(trace_type, content)
+
+    async def _escalate_trace_to_slack(self, trace_type: str, content: str) -> None:
+        """
+        SOUL-008: Post uncertainty/disagreement traces to Slack for human review.
+        Non-fatal — never raises.
+        """
+        try:
+            from phalanx.workflow.slack_notifier import SlackNotifier  # noqa: PLC0415
+
+            notifier = await SlackNotifier.from_run(self.run_id)
+            msg = (
+                f":warning: *{trace_type.title()}* from *{self.AGENT_ROLE}* agent:\n"
+                f"{content[:500]}"
+            )
+            await notifier.post(msg)
+        except Exception as exc:
+            self._log.warning("agent.slack_escalate_failed", trace_type=trace_type, error=str(exc))
+
+    def _decide(
+        self,
+        decision: str,
+        chosen: str,
+        alternatives: list[str] | None = None,
+        rationale: str = "",
+    ) -> None:
+        """
+        Log a structured decision for observability.
+        Non-fatal — only logs. Use _trace('decision', ...) to persist to DB.
+        """
+        self._log.info(
+            "agent.decision",
+            decision=decision,
+            chosen=chosen,
+            alternatives=alternatives or [],
+            rationale=rationale,
+        )
+
+    async def _load_episode_memory(self) -> list[dict]:
+        """
+        Load this run's prior agent traces as episode memory (oldest-first).
+        Returns [] on any error (non-fatal).
+        """
+        try:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from phalanx.db.models import AgentTrace  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            async with get_db() as session:
+                stmt = (
+                    select(AgentTrace)
+                    .where(AgentTrace.run_id == self.run_id)
+                    .order_by(AgentTrace.created_at.desc())
+                    .limit(20)
+                )
+                result = await session.execute(stmt)
+                traces = list(result.scalars())
+
+            # Reverse to oldest-first
+            traces = list(reversed(traces))
+            return [
+                {
+                    "trace_type": t.trace_type,
+                    "agent_role": t.agent_role,
+                    "content": t.content[:800],
+                    "task_id": t.task_id,
+                }
+                for t in traces
+            ]
+        except Exception as exc:
+            self._log.warning("agent.load_episode_memory_failed", error=str(exc))
+            return []
+
+    def _call_claude_with_thinking(
+        self,
+        messages: list[dict],
+        system: str = "",
+        budget_tokens: int = 8_000,
+        max_tokens: int = 16_000,
+    ) -> tuple[str, str]:
+        """
+        Call Claude with extended thinking enabled.
+        Returns (text, thinking_text). thinking_text is '' if no thinking block.
+        Raises RuntimeError if token budget exceeded before the call.
+        """
+        self._check_budget(max_tokens)
+        client = get_anthropic_client()
+        all_messages = list(messages)
+
+        kwargs: dict = {
+            "model": settings.anthropic_model_default,
+            "max_tokens": max_tokens,
+            "messages": all_messages,
+            "thinking": {"type": "enabled", "budget_tokens": budget_tokens},
+        }
+        if system:
+            kwargs["system"] = system
+
+        response = client.messages.create(**kwargs)
+        self._tokens_used += (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
+
+        text = ""
+        thinking = ""
+        for block in response.content:
+            if block.type == "thinking":
+                thinking = block.thinking
+            elif block.type == "text":
+                text = block.text
+
+        return text, thinking
+
+    async def _load_cross_run_memory(self, project_id: str) -> list[dict]:
+        """
+        Load cross-run learned patterns (MemoryFacts) for the project.
+        Returns [] on error (non-fatal).
+        """
+        try:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from phalanx.db.models import MemoryFact  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            async with get_db() as session:
+                stmt = (
+                    select(MemoryFact)
+                    .where(MemoryFact.project_id == project_id)
+                    .order_by(MemoryFact.created_at.desc())
+                    .limit(10)
+                )
+                result = await session.execute(stmt)
+                facts = list(result.scalars())
+
+            return [
+                {
+                    "title": f.title,
+                    "body": f.body,
+                    "fact_type": f.fact_type,
+                    "confidence": f.confidence,
+                }
+                for f in facts
+            ]
+        except Exception as exc:
+            self._log.warning("agent.load_cross_run_memory_failed", error=str(exc))
+            return []
+
+    async def _write_cross_run_pattern(
+        self,
+        project_id: str,
+        title: str,
+        body: str,
+        fact_type: str = "review_pattern",
+        confidence: float = 0.7,
+    ) -> None:
+        """
+        Persist a cross-run learned pattern as a MemoryFact.
+        Non-fatal — logs warning on failure.
+        """
+        try:
+            from phalanx.db.models import MemoryFact  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            async with get_db() as session:
+                fact = MemoryFact(
+                    project_id=project_id,
+                    title=title,
+                    body=body,
+                    fact_type=fact_type,
+                    confidence=confidence,
+                )
+                session.add(fact)
+                await session.commit()
+        except Exception as exc:
+            self._log.warning("agent.write_cross_run_pattern_failed", error=str(exc))
+
+    async def _write_complexity_calibration(
+        self,
+        task_title: str,
+        estimated_complexity: int,
+        tokens_used: int,
+        project_id: str,
+    ) -> None:
+        """
+        Record actual token spend vs estimated complexity for future calibration.
+        burn_ratio = tokens_used / (estimated_complexity * 1000)
+        Non-fatal — logs warning on failure.
+        """
+        try:
+            import json as _json  # noqa: PLC0415
+
+            from phalanx.db.models import MemoryFact  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            expected_tokens = estimated_complexity * 1000
+            burn_ratio = round(tokens_used / expected_tokens, 4) if expected_tokens else 1.0
+            body = _json.dumps(
+                {
+                    "estimated_complexity": estimated_complexity,
+                    "tokens_used": tokens_used,
+                    "expected_tokens": expected_tokens,
+                    "burn_ratio": burn_ratio,
+                    "run_id": self.run_id,
+                }
+            )
+
+            async with get_db() as session:
+                fact = MemoryFact(
+                    project_id=project_id,
+                    title=f"Complexity calibration: {task_title[:100]}",
+                    body=body,
+                    fact_type="complexity_calibration",
+                    confidence=0.9,
+                )
+                session.add(fact)
+                await session.commit()
+        except Exception as exc:
+            self._log.warning("agent.write_complexity_calibration_failed", error=str(exc))
+
+    async def _load_complexity_calibration(self, project_id: str) -> list[dict]:
+        """
+        Load prior complexity calibration facts for the project.
+        Returns [] on error (non-fatal).
+        """
+        try:
+            import json as _json  # noqa: PLC0415
+
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from phalanx.db.models import MemoryFact  # noqa: PLC0415
+            from phalanx.db.session import get_db  # noqa: PLC0415
+
+            async with get_db() as session:
+                stmt = (
+                    select(MemoryFact)
+                    .where(
+                        MemoryFact.project_id == project_id,
+                        MemoryFact.fact_type == "complexity_calibration",
+                    )
+                    .order_by(MemoryFact.created_at.desc())
+                    .limit(20)
+                )
+                result = await session.execute(stmt)
+                facts = list(result.scalars())
+
+            out = []
+            for f in facts:
+                try:
+                    out.append(_json.loads(f.body))
+                except Exception:
+                    pass
+            return out
+        except Exception as exc:
+            self._log.warning("agent.load_complexity_calibration_failed", error=str(exc))
+            return []
 
     async def _audit(
         self,

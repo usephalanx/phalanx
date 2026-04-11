@@ -251,6 +251,22 @@ async def test_health_returns_503_on_db_timeout(aiohttp_app: web.Application) ->
 
 
 @pytest.mark.asyncio
+async def test_cleanup_runner_swallows_exception() -> None:
+    """_cleanup_runner does not raise even if runner.cleanup() errors."""
+    with patch("phalanx.gateway.health.get_settings") as mock_settings:
+        mock_settings.return_value = MagicMock(gateway_health_port=0)
+        server = GatewayHealthServer(port=0)
+
+    await server.start()
+    # Patch AppRunner.cleanup at class level to raise
+    from aiohttp.web_runner import AppRunner
+    with patch.object(AppRunner, "cleanup", new=AsyncMock(side_effect=RuntimeError("cleanup failed"))):
+        # Should not raise — exception is swallowed
+        await server.stop()
+    assert server._runner is None
+
+
+@pytest.mark.asyncio
 async def test_health_uses_fresh_get_db_context(aiohttp_app: web.Application) -> None:
     """Each /health request opens a fresh get_db() context (NullPool invariant)."""
     call_count = 0

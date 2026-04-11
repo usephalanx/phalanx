@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from phalanx.api.routes.ci_integrations import router as ci_integrations_router
 from phalanx.api.routes.ci_webhooks import router as ci_webhooks_router
 from phalanx.api.routes.demos import router as demos_router
 from phalanx.api.routes.runs import router as runs_router
@@ -85,6 +86,7 @@ app.include_router(traces_router, prefix="/v1")
 app.include_router(traces_portal_router)
 app.include_router(ci_webhooks_router, prefix="/webhook")
 app.include_router(demos_router, prefix="/v1")
+app.include_router(ci_integrations_router, prefix="/v1")
 
 
 @app.get("/health")
@@ -122,6 +124,12 @@ async def health():
         checks["status"] = "degraded"
 
     return checks
+
+
+@app.get("/healthz")
+async def healthz():
+    """Lightweight liveness probe — no DB or Redis check required."""
+    return {"status": "ok"}
 
 
 @app.get("/")
