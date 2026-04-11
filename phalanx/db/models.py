@@ -168,6 +168,8 @@ class Run(Base):
     pr_url: Mapped[str | None] = mapped_column(Text)
     pr_number: Mapped[int | None] = mapped_column(Integer)
     deploy_url: Mapped[str | None] = mapped_column(Text)
+    demo_slug: Mapped[str | None] = mapped_column(String(100))
+    workspace_path: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     error_context: Mapped[dict | None] = mapped_column(JSONB)
     paused_by_interrupt_id: Mapped[str | None] = mapped_column(String(100))
@@ -706,6 +708,86 @@ class SkillDrillResult(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 # ONBOARDING
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEMOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Demo(Base):
+    """Tracks a Dockerized demo deployment per Run."""
+
+    __tablename__ = "demos"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    app_type: Mapped[str | None] = mapped_column(String(50))
+    image_name: Mapped[str | None] = mapped_column(String(255))
+    container_id: Mapped[str | None] = mapped_column(String(100))
+    container_name: Mapped[str | None] = mapped_column(String(150))
+    internal_port: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="BUILDING")
+    demo_url: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    built_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CI FIXER
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class CIIntegration(Base):
+    """Per-repo CI integration config. One row per repo opted in to autonomous CI fixing."""
+
+    __tablename__ = "ci_integrations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    ci_provider: Mapped[str] = mapped_column(String(50), nullable=False, default="github_actions")
+    github_token: Mapped[str | None] = mapped_column(Text)
+    github_installation_id: Mapped[int | None] = mapped_column(BigInteger)
+    ci_api_key_enc: Mapped[str | None] = mapped_column(Text)
+    auto_commit: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    max_attempts: Mapped[int] = mapped_column(Integer, default=2)
+    allowed_authors: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    """If non-empty, only trigger fixes for PRs authored by these GitHub logins."""
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIFixRun(Base):
+    """One row per CI fix attempt. Created by webhook ingest; updated by CIFixerAgent."""
+
+    __tablename__ = "ci_fix_runs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    integration_id: Mapped[str] = mapped_column(ForeignKey("ci_integrations.id"), nullable=False)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    ci_provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    ci_build_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    build_url: Mapped[str | None] = mapped_column(Text)
+    failed_jobs: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_category: Mapped[str | None] = mapped_column(String(30))
+    fix_commit_sha: Mapped[str | None] = mapped_column(String(40))
+    fix_pr_number: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    error: Mapped[str | None] = mapped_column(Text)
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
 class OnboardingRun(Base):

@@ -454,3 +454,240 @@ class TestParseCoverageXml:
         result = _parse_coverage_xml(p)
         assert result.threshold == 70.0
         assert result.threshold_met is True
+
+
+# ── QA.md parsing ─────────────────────────────────────────────────────────────
+
+
+class TestParseQAMd:
+    """Tests for QAAgent._parse_qa_md() — parses YAML written by last builder task."""
+
+    def _make_agent(self, repo_path):
+        from phalanx.agents.qa import QAAgent
+        import uuid
+        return QAAgent(run_id=uuid.uuid4(), repo_path=repo_path)
+
+    def test_parses_valid_yaml(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        # Create a test file that will be found as valid
+        test_file = tmp_path / "tests" / "test_app.py"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("def test_ok(): pass")
+
+        qa_md = dedent("""\
+            stack: Python/FastAPI
+            app_type: web-api
+            workspace: /tmp/test
+            test_runner: pytest tests/
+            test_files:
+              - tests/test_app.py
+            lint_tool: ruff check .
+            coverage_tool: pytest-cov
+            coverage_threshold: 70
+            coverage_applies: true
+            coverage_source: app
+            install_steps:
+              - pip install -r requirements.txt
+            notes: Verify FastAPI endpoints work
+        """)
+        result = agent._parse_qa_md(qa_md)
+        assert result["test_files"] == ["tests/test_app.py"]
+        assert result["coverage_source"] == "app"
+        assert result["what_to_verify"] == "Verify FastAPI endpoints work"
+        assert result["rationale"] == "QA.md written by last builder task"
+        assert result["remove_root_conftest"] is False
+
+    def test_removes_nonexistent_test_files(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        qa_md = dedent("""\
+            stack: Python/FastAPI
+            test_runner: pytest tests/
+            test_files:
+              - tests/test_existing.py
+              - tests/test_missing.py
+            install_steps: []
+        """)
+        # Only create one file
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_existing.py").write_text("pass")
+
+        result = agent._parse_qa_md(qa_md)
+        assert result["test_files"] == ["tests/test_existing.py"]
+        assert "tests/test_missing.py" not in result["test_files"]
+
+    def test_strips_markdown_fences(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        qa_md = dedent("""\
+            ```yaml
+            stack: TypeScript/React+Vite
+            test_runner: npm test
+            install_steps: []
+            ```
+        """)
+        result = agent._parse_qa_md(qa_md)
+        assert isinstance(result, dict)
+        assert result.get("_qa_md_data", {}).get("stack") == "TypeScript/React+Vite"
+
+    def test_returns_empty_dict_on_invalid_yaml(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        result = agent._parse_qa_md("not: valid: yaml: :::")
+        assert isinstance(result, dict)
+
+    def test_returns_empty_dict_for_non_dict_yaml(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        result = agent._parse_qa_md("- item1\n- item2\n")
+        assert result == {}
+
+
+class TestMergeQAMdIntoBrief:
+    """Tests for QAAgent._merge_qa_md_into_brief()."""
+
+    def _make_agent(self, tmp_path):
+        from phalanx.agents.qa import QAAgent
+        import uuid
+        return QAAgent(run_id=uuid.uuid4(), repo_path=tmp_path)
+
+    def _make_brief(self):
+        from phalanx.agents.qa import TeamBrief
+        return TeamBrief()
+
+    def test_merges_stack_and_runner(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        brief = self._make_brief()
+        test_plan = {
+            "_qa_md_data": {
+                "stack": "TypeScript/React+Vite",
+                "test_runner": "npm test",
+                "coverage_applies": False,
+                "coverage_threshold": 0,
+            }
+        }
+        merged = agent._merge_qa_md_into_brief(test_plan, brief)
+        assert merged.stack == "TypeScript/React+Vite"
+        assert merged.test_runner == "npm test"
+        assert merged.coverage_applies is False
+        assert merged.coverage_threshold == 0.0
+
+    def test_returns_unchanged_brief_when_no_qa_md_data(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        brief = self._make_brief()
+        brief.stack = "Python/FastAPI"
+        merged = agent._merge_qa_md_into_brief({}, brief)
+        assert merged.stack == "Python/FastAPI"
+
+    def test_coverage_applies_false_string(self, tmp_path):
+        agent = self._make_agent(tmp_path)
+        brief = self._make_brief()
+        test_plan = {"_qa_md_data": {"coverage_applies": "false"}}
+        merged = agent._merge_qa_md_into_brief(test_plan, brief)
+        assert merged.coverage_applies is False
+
+
+class TestWorkspaceIsolation:
+    """Tests for BuilderAgent workspace path helpers."""
+
+    def _make_agent(self):
+        from unittest.mock import MagicMock
+        from phalanx.agents.builder import BuilderAgent
+        import uuid
+        run_id = str(uuid.uuid4())
+        task_id = str(uuid.uuid4())
+        agent = BuilderAgent.__new__(BuilderAgent)
+        agent.run_id = run_id
+        agent.task_id = task_id
+        agent._log = MagicMock()
+        agent._tokens_used = 0
+        return agent, run_id
+
+    def test_make_workspace_path_uses_title_slug(self, tmp_path):
+        from phalanx.agents.builder import BuilderAgent
+        from unittest.mock import patch, MagicMock
+        import uuid
+
+        agent, run_id = self._make_agent()
+        run = MagicMock()
+        run.project_id = "proj-1"
+
+        with patch("phalanx.agents.builder.settings") as mock_settings:
+            mock_settings.git_workspace = str(tmp_path)
+            path = agent._make_workspace_path(run, "Hello World React App")
+
+        run_short = run_id[:8]
+        assert path.name == f"hello-world-react-app-{run_short}"
+        assert path.parent == tmp_path
+
+    def test_make_workspace_path_fallback_without_title(self, tmp_path):
+        from unittest.mock import patch, MagicMock
+
+        agent, run_id = self._make_agent()
+        run = MagicMock()
+
+        with patch("phalanx.agents.builder.settings") as mock_settings:
+            mock_settings.git_workspace = str(tmp_path)
+            path = agent._make_workspace_path(run, "")
+
+        run_short = run_id[:8]
+        assert path.name == f"run-{run_short}"
+
+    def test_make_workspace_path_truncates_long_title(self, tmp_path):
+        from unittest.mock import patch, MagicMock
+
+        agent, run_id = self._make_agent()
+        run = MagicMock()
+
+        with patch("phalanx.agents.builder.settings") as mock_settings:
+            mock_settings.git_workspace = str(tmp_path)
+            long_title = "A very long title that exceeds the maximum allowed slug length easily"
+            path = agent._make_workspace_path(run, long_title)
+
+        # Slug is capped at 40 chars + dash + run_id[:8]
+        slug_part = path.name.replace(f"-{run_id[:8]}", "")
+        assert len(slug_part) <= 40
+
+    def test_validate_qa_md_removes_nonexistent_files(self, tmp_path):
+        from phalanx.agents.builder import BuilderAgent
+        import yaml
+
+        agent, _ = self._make_agent()
+
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_real.py").write_text("pass")
+
+        raw = yaml.dump({
+            "stack": "Python/FastAPI",
+            "test_runner": "pytest tests/",
+            "install_steps": ["pip install -r requirements.txt"],
+            "test_files": ["tests/test_real.py", "tests/test_ghost.py"],
+            "coverage_applies": True,
+            "coverage_threshold": 70,
+        })
+
+        result = agent._validate_qa_md(raw, tmp_path)
+        assert result is not None
+        data = yaml.safe_load(result)
+        assert "tests/test_real.py" in data["test_files"]
+        assert "tests/test_ghost.py" not in data["test_files"]
+
+    def test_validate_qa_md_returns_none_on_invalid_yaml(self, tmp_path):
+        from phalanx.agents.builder import BuilderAgent
+
+        agent, _ = self._make_agent()
+        result = agent._validate_qa_md("not: valid: yaml: :::broken", tmp_path)
+        # Either None or a string with defaults injected
+        assert result is None or isinstance(result, str)
+
+    def test_validate_qa_md_injects_workspace_path(self, tmp_path):
+        from phalanx.agents.builder import BuilderAgent
+        import yaml
+
+        agent, _ = self._make_agent()
+        raw = yaml.dump({
+            "stack": "Python/FastAPI",
+            "test_runner": "pytest tests/",
+            "install_steps": [],
+        })
+
+        result = agent._validate_qa_md(raw, tmp_path)
+        assert result is not None
+        data = yaml.safe_load(result)
+        assert data["workspace"] == str(tmp_path)

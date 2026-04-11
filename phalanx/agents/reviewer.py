@@ -68,8 +68,12 @@ class ReviewerAgent(BaseAgent):
             run = await self._load_run(session)
             builder_output = await self._load_builder_output(session, task.sequence_num)
 
-        # Read changed files from workspace
-        workspace = Path(settings.git_workspace) / run.project_id / self.run_id
+        # Workspace: read from run.workspace_path (set by builder); fall back to legacy path
+        workspace = (
+            Path(run.workspace_path)
+            if run.workspace_path
+            else Path(settings.git_workspace) / run.project_id / self.run_id
+        )
         code_context = self._read_changed_files(workspace, builder_output)
 
         # Run the review

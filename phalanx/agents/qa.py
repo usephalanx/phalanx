@@ -416,20 +416,37 @@ class QAAgent:
         # 3. Install dependencies based on stack
         await self._install_dependencies(team_brief)
 
-        # 4. Ask Claude for a test plan (now aware of TEAM_BRIEF)
-        test_plan = await self._build_test_plan(context)
-        self._log.info(
-            "qa_agent.test_plan",
-            what_to_verify=test_plan.get("what_to_verify", ""),
-            test_files=test_plan.get("test_files", []),
-            remove_root_conftest=test_plan.get("remove_root_conftest", False),
-        )
+        # 4. Build test plan — prefer QA.md (written by last builder) over LLM scan
+        qa_md = context.get("qa_md", "")
+        if qa_md:
+            test_plan = self._parse_qa_md(qa_md)
+            self._log.info(
+                "qa_agent.test_plan.from_qa_md",
+                what_to_verify=test_plan.get("notes", ""),
+                test_files=test_plan.get("test_files", []),
+            )
+        else:
+            test_plan = await self._build_test_plan(context)
+            self._log.info(
+                "qa_agent.test_plan.from_llm",
+                what_to_verify=test_plan.get("what_to_verify", ""),
+                test_files=test_plan.get("test_files", []),
+                remove_root_conftest=test_plan.get("remove_root_conftest", False),
+            )
 
-        # 5. Clean broken conftest if Claude flagged it
+        # 5. Clean broken conftest if flagged
         if test_plan.get("remove_root_conftest"):
             self._remove_root_conftest()
 
         # 6. Apply the test plan using TEAM_BRIEF skills
+        # If QA.md was used, team_brief may be incomplete — patch it from QA.md fields
+        if qa_md:
+            team_brief = self._merge_qa_md_into_brief(test_plan, team_brief)
+            # Run install_steps from QA.md before applying test plan
+            qa_md_data = test_plan.get("_qa_md_data", {})
+            if qa_md_data:
+                await self._run_qa_md_install_steps(qa_md_data)
+
         self._apply_test_plan(test_plan, context, team_brief)
 
         # 7. Run tests + lint concurrently (skill-based tools from TEAM_BRIEF)
@@ -509,6 +526,7 @@ class QAAgent:
             "arch_md": "",
             "conftest_content": "",
             "existing_test_files": [],
+            "qa_md": "",
         }
 
         is_git = (self.repo_path / ".git").exists()
@@ -533,6 +551,9 @@ class QAAgent:
         context["readme_md"] = self._read_doc("README.md", 2000)
         context["arch_md"] = self._read_doc("ARCHITECTURE.md", 2000)
         context["conftest_content"] = self._read_doc("conftest.py", 1000)
+        context["qa_md"] = self._read_doc("QA.md", 3000)
+        if context["qa_md"]:
+            self._log.info("qa_agent.qa_md.found", path=str(self.repo_path / "QA.md"))
 
         # All test files currently in the repo (on this branch)
         test_files: list[str] = []
@@ -560,6 +581,113 @@ class QAAgent:
             return path.read_text(errors="replace")[:max_chars]
         except OSError:
             return ""
+
+    def _parse_qa_md(self, qa_md: str) -> dict:
+        """
+        Parse QA.md (YAML) written by the last builder task.
+        Returns a test_plan dict compatible with the rest of the evaluate() flow.
+        Falls back to {} on parse failure.
+        """
+        try:
+            import yaml  # noqa: PLC0415
+        except ImportError:
+            self._log.warning("qa_agent.qa_md.yaml_missing")
+            return {}
+
+        # Strip markdown fences if present
+        text = qa_md.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            inner = lines[1:]
+            if inner and inner[-1].strip().startswith("```"):
+                inner = inner[:-1]
+            text = "\n".join(inner).strip()
+
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            self._log.warning("qa_agent.qa_md.parse_failed", error=str(e))
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        # Validate test_files — only keep those that exist
+        test_files = data.get("test_files") or []
+        valid_files = [f for f in test_files if (self.repo_path / f).exists()]
+        if len(valid_files) < len(test_files):
+            removed = set(test_files) - set(valid_files)
+            self._log.info("qa_agent.qa_md.removed_nonexistent", files=list(removed))
+
+        return {
+            "test_files": valid_files,
+            "coverage_source": data.get("coverage_source"),
+            "what_to_verify": data.get("notes", ""),
+            "rationale": "QA.md written by last builder task",
+            "remove_root_conftest": False,
+            # Pass through QA.md fields for team_brief merging
+            "_qa_md_data": data,
+        }
+
+    def _merge_qa_md_into_brief(self, test_plan: dict, team_brief: TeamBrief) -> TeamBrief:
+        """
+        Patch TeamBrief with fields from QA.md so _apply_test_plan uses the right runner.
+        QA.md fields take precedence over RUNNING.md TEAM_BRIEF for the test runner.
+        """
+        data = test_plan.get("_qa_md_data", {})
+        if not data:
+            return team_brief
+
+        if data.get("stack"):
+            team_brief.stack = data["stack"]
+        if data.get("test_runner"):
+            team_brief.test_runner = data["test_runner"]
+        if data.get("lint_tool"):
+            team_brief.lint_tool = data["lint_tool"]
+        if data.get("coverage_tool"):
+            team_brief.coverage_tool = data["coverage_tool"]
+        if data.get("coverage_threshold") is not None:
+            try:
+                team_brief.coverage_threshold = float(data["coverage_threshold"])
+            except (TypeError, ValueError):
+                pass
+        if data.get("coverage_applies") is not None:
+            val = str(data["coverage_applies"]).lower()
+            team_brief.coverage_applies = val not in ("false", "no", "0")
+
+        # Also run install_steps from QA.md (non-blocking, best-effort)
+        install_steps = data.get("install_steps") or []
+        if install_steps:
+            self._log.info("qa_agent.qa_md.install_steps", count=len(install_steps))
+
+        self._log.info(
+            "qa_agent.team_brief.merged_from_qa_md",
+            stack=team_brief.stack,
+            test_runner=team_brief.test_runner,
+            coverage_applies=team_brief.coverage_applies,
+        )
+        return team_brief
+
+    async def _run_qa_md_install_steps(self, data: dict) -> None:
+        """Run install_steps from QA.md before tests. Best-effort — failures are logged."""
+        install_steps = data.get("install_steps") or []
+        for step in install_steps:
+            if not step or not step.strip():
+                continue
+            parts = step.strip().split()
+            if not parts:
+                continue
+            self._log.info("qa_agent.qa_md.install_step", cmd=step)
+            try:
+                rc, _, stderr = await _run(parts, cwd=self.repo_path)
+                if rc != 0:
+                    self._log.warning("qa_agent.qa_md.install_step_failed", cmd=step, stderr=stderr[:200])
+                else:
+                    self._log.info("qa_agent.qa_md.install_step_ok", cmd=step)
+            except FileNotFoundError:
+                self._log.warning("qa_agent.qa_md.install_step_missing_binary", cmd=step)
+            except Exception as exc:
+                self._log.warning("qa_agent.qa_md.install_step_error", cmd=step, error=str(exc))
 
     # ------------------------------------------------------------------
     # Step 3 — LLM test plan
@@ -1265,31 +1393,12 @@ def execute_task(  # pragma: no cover
             work_order = wo_result.scalar_one_or_none()
             work_order_title = work_order.title if work_order else ""
 
-        # Resolve workspace from last builder task output
-        builder_workspace: str | None = None
-        async with get_db() as session:
-            from sqlalchemy import and_  # noqa: PLC0415
-
-            builder_result = await session.execute(
-                select(Task)
-                .where(
-                    and_(
-                        Task.run_id == run_id,
-                        Task.agent_role.in_(["builder", "component_builder", "page_assembler"]),
-                        Task.status == "COMPLETED",
-                    )
-                )
-                .order_by(Task.sequence_num.desc())
-                .limit(1)
-            )
-            last_builder = builder_result.scalar_one_or_none()
-            if last_builder and isinstance(last_builder.output, dict):
-                builder_workspace = last_builder.output.get("workspace")
-
-        if builder_workspace:
-            workspace = Path(builder_workspace)
-        else:
-            workspace = Path(_settings.git_workspace) / run.project_id / run_id
+        # Workspace: read from run.workspace_path (set by builder); fall back to legacy path
+        workspace = (
+            Path(run.workspace_path)
+            if run.workspace_path
+            else Path(_settings.git_workspace) / run.project_id / run_id
+        )
 
         agent = QAAgent(
             run_id=run.id,

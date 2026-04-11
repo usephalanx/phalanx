@@ -108,9 +108,28 @@ class BuilderAgent(BaseAgent):
             run = await self._load_run(session)
             plan = await self._load_planner_plan(session, task.sequence_num)
 
-        # Set up workspace
-        workspace = self._workspace_path(run)
-        await self._ensure_workspace(workspace, run)
+            # Determine workspace using work order title for human-readable slug
+            from phalanx.db.models import WorkOrder  # noqa: PLC0415
+            wo_result = await session.execute(
+                select(WorkOrder).where(WorkOrder.id == run.work_order_id)
+            )
+            work_order = wo_result.scalar_one_or_none()
+            work_order_title = work_order.title if work_order else ""
+
+            # Is this the first builder task in the run? (fresh clone)
+            is_first = await self._is_first_builder_task(session, task.sequence_num)
+            # Is this the last builder task in the run? (write QA.md)
+            is_last = await self._is_last_builder_task(session, task.sequence_num)
+
+        # Set up workspace — flat path keyed by app slug + run_id[:8]
+        workspace = self._make_workspace_path(run, work_order_title)
+        branch = f"phalanx/{str(self.run_id)[:8]}"
+        if work_order_title:
+            import re  # noqa: PLC0415
+            title_slug = re.sub(r"[^a-z0-9]+", "-", work_order_title.lower()).strip("-")[:30]
+            branch = f"phalanx/{title_slug}-{str(self.run_id)[:8]}"
+
+        await self._ensure_workspace(workspace, run, branch=branch, is_first=is_first)
 
         # Read relevant existing files for context
         existing_files = self._read_existing_files(workspace, task)
@@ -124,8 +143,15 @@ class BuilderAgent(BaseAgent):
         # Apply changes to disk
         files_written = self._apply_changes(workspace, changes)
 
+        # Last builder task: generate + validate QA.md before commit
+        if is_last:
+            qa_md_path = await self._write_qa_md(workspace, task, plan, files_written)
+            if qa_md_path:
+                files_written.append("QA.md")
+                self._log.info("builder.qa_md.written", path=str(qa_md_path))
+
         # Commit (git if available, else record locally)
-        commit_info = await self._commit_changes(workspace, task, run, files_written)
+        commit_info = await self._commit_changes(workspace, task, run, files_written, branch=branch)
 
         output = {
             "workspace": str(workspace),
@@ -133,19 +159,22 @@ class BuilderAgent(BaseAgent):
             "commit": commit_info,
             "plan_used": bool(plan),
             "summary": changes.get("summary", ""),
+            "is_first_builder": is_first,
+            "is_last_builder": is_last,
         }
 
         async with get_db() as session:
-            run_ref = await self._load_run(session)
-
-            # Update Run.active_branch if commit produced a branch
+            # Update Run.active_branch and workspace_path
+            update_vals: dict = {"updated_at": datetime.now(UTC)}
             if commit_info.get("branch"):
-                await session.execute(
-                    update(Run)
-                    .where(Run.id == self.run_id)
-                    .values(active_branch=commit_info["branch"], updated_at=datetime.now(UTC))
-                )
+                update_vals["active_branch"] = commit_info["branch"]
+            # Always write workspace_path — every agent reads it from Run
+            update_vals["workspace_path"] = str(workspace)
+            await session.execute(
+                update(Run).where(Run.id == self.run_id).values(**update_vals)
+            )
 
+            run_ref = await self._load_run(session)
             # Persist diff artifact
             await self._persist_artifact(session, output, run_ref.project_id, changes)
 
@@ -174,6 +203,8 @@ class BuilderAgent(BaseAgent):
             "builder.execute.done",
             files_written=len(files_written),
             tokens_used=self._tokens_used,
+            is_first=is_first,
+            is_last=is_last,
         )
         return AgentResult(success=True, output=output, tokens_used=self._tokens_used)
 
@@ -203,33 +234,86 @@ class BuilderAgent(BaseAgent):
         task = result.scalar_one_or_none()
         return task.output or {} if task else {}
 
+    async def _is_first_builder_task(self, session, current_seq: int) -> bool:
+        """True if no earlier builder task exists in this run (first task gets fresh clone)."""
+        result = await session.execute(
+            select(Task).where(
+                Task.run_id == self.run_id,
+                Task.agent_role.in_(["builder", "component_builder", "page_assembler"]),
+                Task.sequence_num < current_seq,
+            ).limit(1)
+        )
+        return result.scalar_one_or_none() is None
+
+    async def _is_last_builder_task(self, session, current_seq: int) -> bool:
+        """True if no later builder task exists in this run (last task writes QA.md)."""
+        result = await session.execute(
+            select(Task).where(
+                Task.run_id == self.run_id,
+                Task.agent_role.in_(["builder", "component_builder", "page_assembler"]),
+                Task.sequence_num > current_seq,
+            ).limit(1)
+        )
+        return result.scalar_one_or_none() is None
+
     # ── Workspace helpers ─────────────────────────────────────────────────────
 
-    def _workspace_path(self, run: Run, branch_name: str | None = None) -> Path:
+    def _workspace_path(self, run: Run) -> Path:
+        """
+        Flat, human-readable, run-isolated workspace path.
+        Format: /tmp/forge-repos/{app-slug}-{run_id[:8]}/
+        All builder tasks for the same run share this directory.
+        """
+        import re  # noqa: PLC0415
         base = Path(settings.git_workspace)
-        run_dir = base / run.project_id / self.run_id
-        if branch_name:
-            # Isolate each epic in its own subdir; replace / with _ for safety
-            slug = branch_name.replace("/", "_")
-            return run_dir / slug
-        return run_dir
+        # Derive app slug from run_id (run title not available here; use run_id prefix)
+        # The full slug is set in execute() using the work order title
+        run_short = str(self.run_id)[:8]
+        return base / f"run-{run_short}"
 
-    async def _ensure_workspace(self, workspace: Path, run: Run, branch: str | None = None) -> None:
+    def _make_workspace_path(self, run: Run, work_order_title: str = "") -> Path:
         """
-        Set up the workspace directory. If GitHub is configured and project has
-        a repo_url, clone/update. Otherwise create a local directory.
+        Build the isolated workspace path using the work order title as app slug.
+        Format: /tmp/forge-repos/{app-slug}-{run_id[:8]}/
         """
+        import re  # noqa: PLC0415
+        base = Path(settings.git_workspace)
+        run_short = str(self.run_id)[:8]
+        if work_order_title:
+            slug = re.sub(r"[^a-z0-9]+", "-", work_order_title.lower()).strip("-")[:40]
+            dir_name = f"{slug}-{run_short}"
+        else:
+            dir_name = f"run-{run_short}"
+        return base / dir_name
+
+    async def _ensure_workspace(self, workspace: Path, run: Run, branch: str | None = None, is_first: bool = False) -> None:
+        """
+        Set up the workspace directory.
+        - First builder task in the run: always fresh clone (no reuse).
+        - Subsequent builders: reuse the existing directory (incremental commits).
+        If GitHub is configured and project has a repo_url, clone. Otherwise local dir.
+        """
+        resolved_branch = branch or run.active_branch or f"phalanx/{str(self.run_id)[:8]}"
+
+        if is_first and workspace.exists():
+            # Wipe stale workspace from a previous run that used the same path
+            import shutil  # noqa: PLC0415
+            shutil.rmtree(workspace, ignore_errors=True)
+            self._log.info("builder.workspace.wiped_for_fresh_clone", path=str(workspace))
+
         workspace.mkdir(parents=True, exist_ok=True)
 
-        resolved_branch = branch or run.active_branch or f"phalanx/run-{self.run_id[:8]}"
-
         if settings.github_token:
-            await self._setup_git_workspace(workspace, run, resolved_branch)
+            await self._setup_git_workspace(workspace, run, resolved_branch, force_clone=is_first)
         else:
             self._log.info("builder.workspace.local", path=str(workspace))
 
-    async def _setup_git_workspace(self, workspace: Path, run: Run, branch: str) -> None:
-        """Clone or update the repo, then checkout/create the working branch."""
+    async def _setup_git_workspace(self, workspace: Path, run: Run, branch: str, force_clone: bool = False) -> None:
+        """
+        Clone or update the repo, then checkout/create the working branch.
+        force_clone=True (first builder task): always clone fresh from origin/main.
+        force_clone=False (subsequent tasks): fetch + checkout branch to continue work.
+        """
         try:
             from git import Repo  # noqa: PLC0415
 
@@ -250,9 +334,13 @@ class BuilderAgent(BaseAgent):
             auth_url = repo_url.replace("https://", f"https://{settings.github_token}@")
 
             git_dir = workspace / ".git"
-            if git_dir.exists():
+            if force_clone or not git_dir.exists():
+                # First builder task: always clone fresh from origin/main (depth=1 for speed)
+                repo = Repo.clone_from(auth_url, str(workspace), depth=1)
+                self._log.info("builder.git.cloned_fresh", url=repo_url, branch="main")
+            else:
                 repo = Repo(str(workspace))
-                # Abort any stale rebase left by a crashed parallel builder
+                # Abort any stale rebase left by a crashed prior builder task
                 rebase_merge = workspace / ".git" / "rebase-merge"
                 rebase_apply = workspace / ".git" / "rebase-apply"
                 if rebase_merge.exists() or rebase_apply.exists():
@@ -263,25 +351,20 @@ class BuilderAgent(BaseAgent):
                         pass
                 repo.remotes.origin.fetch()
                 self._log.info("builder.git.fetched", workspace=str(workspace))
-            else:
-                repo = Repo.clone_from(auth_url, str(workspace))
-                self._log.info("builder.git.cloned", url=repo_url)
 
             # Checkout or create the working branch
             try:
                 repo.git.checkout(branch)
+                # Pull latest if branch already exists on remote
+                try:
+                    repo.git.pull("--rebase", "origin", branch)
+                    self._log.info("builder.git.pulled", branch=branch)
+                except Exception:
+                    pass  # Branch may not exist on remote yet — fine on first task
             except Exception:
                 repo.git.checkout("-b", branch)
 
-            # Pull latest from remote so parallel builders start from the same base
-            try:
-                repo.git.pull("--rebase", "origin", branch)
-                self._log.info("builder.git.pulled", branch=branch)
-            except Exception:
-                # Branch may not exist on remote yet — that's fine
-                pass
-
-            self._log.info("builder.git.branch_ready", branch=branch)
+            self._log.info("builder.git.branch_ready", branch=branch, workspace=str(workspace))
 
         except ImportError:
             self._log.warning("builder.git.gitpython_missing")
@@ -888,6 +971,170 @@ Return ONLY valid JSON:
                 self._log.debug("builder.file_written", path=rel_path)
 
         return written
+
+    # ── QA.md generation ─────────────────────────────────────────────────────
+
+    _QA_MD_SYSTEM = """\
+You are a senior QA engineer writing a QA.md file (JSON/YAML format) for an AI-powered QA agent.
+
+Given a completed workspace, produce a precise, deterministic QA recipe that the
+QA agent will follow exactly. The QA agent runs in a Docker container — use
+absolute paths where needed and always specify how to install deps first.
+
+## QA.md schema (return ONLY this YAML — no markdown fences, no commentary):
+
+stack: <e.g. Python/FastAPI, TypeScript/React+Vite, Go/gin, Node/Express, HTML/CSS/JS>
+app_type: <web-api | spa | full-stack | static | cli | library>
+workspace: <absolute path to the workspace root>
+test_runner: <exact command to run tests, e.g. "pytest tests/" or "npx vitest run" or "go test ./...">
+test_files:
+  - <relative path from workspace root>
+lint_tool: <exact command or "none">
+coverage_tool: <pytest-cov | vitest --coverage | go test -cover | none>
+coverage_threshold: <integer 0-100>
+coverage_applies: <true | false>
+coverage_source: <package/module to measure, e.g. "app" or null for non-Python>
+install_steps:
+  - <exact shell command 1>
+  - <exact shell command 2>
+notes: <one sentence about what to verify>
+
+Rules:
+- Only list test files that EXIST in the workspace (given the file list).
+- For React/Vite/TypeScript: install_steps MUST include "npm install" AND
+  "npm install --save-dev @testing-library/jest-dom @testing-library/react @testing-library/user-event jsdom vitest @vitest/coverage-v8"
+  to ensure all test peer deps are present.
+- For Python: install_steps must include "pip install -r requirements.txt" (and dev deps if they exist).
+- coverage_applies: false for React/Vite/TypeScript/static apps.
+- coverage_threshold: 0 when coverage_applies is false.
+- Never invent file paths — only list files from the provided workspace file list.
+"""
+
+    async def _write_qa_md(
+        self,
+        workspace: Path,
+        task: "Task",
+        plan: dict,
+        files_written: list[str],
+    ) -> Path | None:
+        """
+        Last builder task only: GPT generates QA.md, we validate it, write to workspace.
+        Returns the path to QA.md on success, None on failure (non-blocking).
+        """
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        try:
+            # Collect all files in workspace for context
+            all_files: list[str] = []
+            for p in sorted(workspace.rglob("*")):
+                if p.is_file() and ".git" not in str(p) and "node_modules" not in str(p):
+                    try:
+                        all_files.append(str(p.relative_to(workspace)))
+                    except ValueError:
+                        pass
+
+            # Also read RUNNING.md if it exists for stack hints
+            running_md = ""
+            running_md_path = workspace / "RUNNING.md"
+            if running_md_path.exists():
+                running_md = running_md_path.read_text(errors="replace")[:3000]
+
+            user_msg = (
+                f"Workspace root: {workspace}\n\n"
+                f"Task just completed: {task.title}\n"
+                f"Task description: {(task.description or '')[:600]}\n\n"
+                f"RUNNING.md:\n{running_md or '(not found)'}\n\n"
+                f"All files in workspace:\n"
+                + "\n".join(all_files[:150])
+                + f"\n\nFiles written in this final task:\n"
+                + "\n".join(files_written[:50])
+                + "\n\nProduce the QA.md YAML now."
+            )
+
+            messages = [{"role": "user", "content": user_msg}]
+            loop = _asyncio.get_event_loop()
+            raw = await loop.run_in_executor(
+                None,
+                lambda: self._call_openai(
+                    messages=messages,
+                    system=self._QA_MD_SYSTEM,
+                    max_tokens=1024,
+                ),
+            )
+
+            # Validate the QA.md content
+            validated = self._validate_qa_md(raw, workspace)
+            if validated is None:
+                self._log.warning("builder.qa_md.validation_failed", raw=raw[:300])
+                return None
+
+            qa_md_path = workspace / "QA.md"
+            qa_md_path.write_text(validated, encoding="utf-8")
+            self._log.info("builder.qa_md.generated", path=str(qa_md_path), size=len(validated))
+            return qa_md_path
+
+        except Exception as exc:
+            self._log.warning("builder.qa_md.generation_failed", error=str(exc))
+            return None
+
+    def _validate_qa_md(self, raw: str, workspace: Path) -> str | None:
+        """
+        Validate the GPT-generated QA.md:
+        1. Must parse as YAML with required keys
+        2. test_files must exist in workspace (remove non-existent)
+        3. install_steps must be a list
+        Returns cleaned YAML string or None if fatally invalid.
+        """
+        try:
+            import yaml  # noqa: PLC0415
+        except ImportError:
+            # pyyaml not available — write raw (best effort)
+            return raw.strip()
+
+        # Strip markdown fences if GPT wrapped in ```yaml
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            inner = lines[1:]
+            if inner and inner[-1].strip().startswith("```"):
+                inner = inner[:-1]
+            text = "\n".join(inner).strip()
+
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            self._log.warning("builder.qa_md.yaml_parse_failed", error=str(e))
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Required keys
+        required = {"stack", "test_runner", "install_steps"}
+        if not required.issubset(data.keys()):
+            missing = required - set(data.keys())
+            self._log.warning("builder.qa_md.missing_keys", missing=list(missing))
+            # Inject defaults rather than failing
+            data.setdefault("stack", "unknown")
+            data.setdefault("test_runner", "pytest tests/")
+            data.setdefault("install_steps", [])
+
+        # Validate test_files — only keep files that actually exist
+        test_files = data.get("test_files") or []
+        valid_test_files = [f for f in test_files if (workspace / f).exists()]
+        data["test_files"] = valid_test_files
+        if len(valid_test_files) < len(test_files):
+            removed = set(test_files) - set(valid_test_files)
+            self._log.info("builder.qa_md.removed_nonexistent_tests", removed=list(removed))
+
+        # Ensure install_steps is a list
+        if not isinstance(data.get("install_steps"), list):
+            data["install_steps"] = []
+
+        # Inject absolute workspace path
+        data["workspace"] = str(workspace)
+
+        return yaml.dump(data, default_flow_style=False, allow_unicode=True)
 
     # ── Git commit ────────────────────────────────────────────────────────────
 

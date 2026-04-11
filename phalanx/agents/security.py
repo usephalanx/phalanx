@@ -58,7 +58,12 @@ class SecurityAgent(BaseAgent):
                 return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
 
-        workspace = Path(settings.git_workspace) / run.project_id / self.run_id
+        # Workspace: read from run.workspace_path (set by builder); fall back to legacy path
+        workspace = (
+            Path(run.workspace_path)
+            if run.workspace_path
+            else Path(settings.git_workspace) / run.project_id / self.run_id
+        )
 
         # Run security pipeline
         scan_result = await self._run_security_pipeline(workspace, run)
