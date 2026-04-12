@@ -26,6 +26,7 @@ _PATTERNS: list[tuple[str, list[str]]] = [
             r"prettier.*error",
             r"Found \d+ error",
             r"error\[E\d+\]",  # ruff error codes
+            r"\b[EWF]\d{3,4}\b",  # ruff/flake8: F401, E501, W291 etc.
             r"W\d{4}",  # pylint warning codes
             r"Trailing whitespace",
             r"Missing newline at end of file",
@@ -118,7 +119,8 @@ def extract_failing_files(log_text: str) -> list[str]:
     patterns = [
         r"FAILED\s+([\w/\.\-]+\.py)",  # pytest
         r"FAIL\s+([\w/\.\-]+\.[jt]sx?)",  # jest
-        r"([\w/\.\-]+\.py):\d+:\s+error",  # mypy/ruff
+        r"([\w/\.\-]+\.py):\d+:\d+:\s+[A-Z]\d+",  # ruff: path:line:col: CODE
+        r"([\w/\.\-]+\.py):\d+:\s+error",  # mypy: path:line: error
         r"([\w/\.\-]+\.[jt]sx?)[\(:]\d+",  # tsc/eslint
         r"error in ([\w/\.\-]+\.\w+)",
     ]
