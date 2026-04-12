@@ -9,9 +9,11 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from phalanx import __version__
 from phalanx.api.routes.ci_integrations import router as ci_integrations_router
 from phalanx.api.routes.ci_webhooks import router as ci_webhooks_router
 from phalanx.api.routes.demos import router as demos_router
+from phalanx.api.routes.health import router as health_router
 from phalanx.api.routes.runs import router as runs_router
 from phalanx.api.routes.traces import portal_router as traces_portal_router
 from phalanx.api.routes.traces import router as traces_router
@@ -27,7 +29,7 @@ settings = get_settings()
 app = FastAPI(
     title="FORGE API",
     description="AI Team Operating System",
-    version="0.1.0",
+    version=__version__,
     docs_url="/docs" if not settings.is_production else None,
     redoc_url="/redoc" if not settings.is_production else None,
 )
@@ -60,7 +62,7 @@ async def api_key_middleware(request: Request, call_next):
         return await call_next(request)
 
     # Health check is always public — used by Docker healthcheck
-    if request.url.path == "/health":
+    if request.url.path in ("/health", "/healthz"):
         return await call_next(request)
 
     api_key = request.headers.get("X-API-Key", "")
@@ -87,49 +89,7 @@ app.include_router(traces_portal_router)
 app.include_router(ci_webhooks_router, prefix="/webhook")
 app.include_router(demos_router, prefix="/v1")
 app.include_router(ci_integrations_router, prefix="/v1")
-
-
-@app.get("/health")
-async def health():
-    """
-    Health check with optional DB and Redis connectivity.
-    Returns degraded status (200) if dependencies are unavailable,
-    so Docker doesn't restart the container for transient failures.
-    """
-    checks: dict = {"status": "ok", "version": "0.1.0", "service": "forge-api"}
-
-    # DB check
-    try:
-        from sqlalchemy import text  # noqa: PLC0415
-
-        from phalanx.db.session import engine as db_engine  # noqa: PLC0415
-
-        async with db_engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        checks["db"] = "ok"
-    except Exception as exc:
-        checks["db"] = f"degraded: {exc}"
-        checks["status"] = "degraded"
-
-    # Redis check
-    try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
-
-        r = aioredis.from_url(settings.redis_url, socket_connect_timeout=2)
-        await r.ping()
-        await r.aclose()
-        checks["redis"] = "ok"
-    except Exception as exc:
-        checks["redis"] = f"degraded: {exc}"
-        checks["status"] = "degraded"
-
-    return checks
-
-
-@app.get("/healthz")
-async def healthz():
-    """Lightweight liveness probe — no DB or Redis check required."""
-    return {"status": "ok"}
+app.include_router(health_router)
 
 
 @app.get("/")

@@ -139,3 +139,9 @@ async def health() -> JSONResponse:
         status_code=http_status,
         content=body.model_dump(),
     )
+
+
+@router.get("/healthz")
+async def healthz() -> dict:
+    """Lightweight liveness probe — no DB or Redis check required."""
+    return {"status": "ok"}
