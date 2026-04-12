@@ -145,7 +145,10 @@ class CIFixerAgent(BaseAgent):
 
         try:
             fetcher = get_log_fetcher(ci_run.ci_provider)
-            api_key = self._decrypt_key(integration.ci_api_key_enc)
+            # For GitHub Actions, the log API uses the same token as the GitHub API.
+            # Fall back to github_token when ci_api_key_enc is empty.
+            raw_key = self._decrypt_key(integration.ci_api_key_enc)
+            api_key = raw_key or self._get_github_token(integration)
             log_text = await fetcher.fetch(event, api_key)
         except Exception as exc:
             self._log.warning("ci_fixer.log_fetch_failed", error=str(exc))
