@@ -128,21 +128,70 @@ def _extract_failed_step_from_zip(zip_bytes: bytes, failed_jobs: list[str]) -> s
         return ""
 
 
+def _clean_log_lines(lines: list[str]) -> list[str]:
+    """
+    Strip GitHub Actions timestamps, ANSI codes, and known noise lines.
+    Returns clean lines suitable for classification and file extraction.
+    """
+    # GitHub Actions prepends timestamps: "2026-04-12T17:36:04.1234567Z "
+    timestamp_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*")
+    # ANSI escape codes
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+    # Known noise patterns to skip entirely
+    noise_re = re.compile(
+        r"(Node\.js \d+ actions are deprecated"
+        r"|FORCE_JAVASCRIPT_ACTIONS_TO_NODE"
+        r"|Set up job"
+        r"|Complete job"
+        r"|Post\s"
+        r"|##\[group\]"
+        r"|##\[endgroup\]"
+        r"|##\[debug\]"
+        r"|^$)",
+        re.IGNORECASE,
+    )
+    cleaned = []
+    for line in lines:
+        line = timestamp_re.sub("", line)
+        line = ansi_re.sub("", line)
+        if not noise_re.search(line):
+            cleaned.append(line)
+    return cleaned
+
+
 def _extract_failure_section(lines: list[str]) -> str:
     """
     Find the failure section in log lines.
-    Returns lines around the first error/failure keyword.
+    Cleans noise first, then finds the most specific failure block.
+    Prefers tool-specific error patterns (ruff, pytest, mypy) over generic 'error'.
     """
-    error_keywords = re.compile(
-        r"(error|failed|FAILED|Error|Exception|assert|ASSERT)",
-        re.IGNORECASE,
-    )
+    lines = _clean_log_lines(lines)
+
+    # Priority patterns — find the most specific failure first
+    priority_patterns = [
+        re.compile(r"[\w/\.\-]+\.py:\d+:\d+:\s+[A-Z]\d+"),  # ruff: file:line:col: CODE
+        re.compile(r"FAILED tests/"),  # pytest
+        re.compile(r"[\w/\.\-]+\.py:\d+: error:"),  # mypy
+        re.compile(r"error TS\d+"),  # tsc
+        re.compile(r"Found \d+ error"),  # ruff summary
+    ]
+
+    for pattern in priority_patterns:
+        for i, line in enumerate(lines):
+            if pattern.search(line):
+                start = max(0, i - _CONTEXT_LINES_BEFORE)
+                section = lines[start : i + 100]
+                return "\n".join(section)
+
+    # Fallback: generic error keyword
+    error_re = re.compile(r"\b(error|FAILED|Exception)\b", re.IGNORECASE)
     for i, line in enumerate(lines):
-        if error_keywords.search(line):
+        if error_re.search(line):
             start = max(0, i - _CONTEXT_LINES_BEFORE)
             section = lines[start : i + 100]
             return "\n".join(section)
-    # No error found — return last 150 lines
+
+    # Last resort — return last 150 clean lines
     return "\n".join(lines[-150:])
 
 
