@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     log_format: str = "pretty"
 
     # ── Database ──────────────────────────────────────────────────────────────
-    database_url: str = "postgresql+asyncpg://forge:forge_dev_password@postgres:5432/forge"
+    database_url: str = "postgresql+asyncpg://forge:forge_dev_password@postgres:5432/forge"  # pragma: allowlist secret
     postgres_host: str = "postgres"
     postgres_port: int = 5432
     postgres_user: str = "forge"

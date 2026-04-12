@@ -181,7 +181,7 @@ Return ONLY valid JSON — no markdown fences.
   "running_instructions": {
     "steps": ["step 1 command", "step 2 command", "step 3 command"],
     "url": "http://localhost:<port>",
-    "credentials": {"email": "demo@phalanx.dev", "password": "demo1234"}
+    "credentials": {"email": "demo@phalanx.dev", "password": "demo1234"}  # pragma: allowlist secret
   }
 }
 

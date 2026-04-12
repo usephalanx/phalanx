@@ -237,7 +237,7 @@ class JenkinsLogFetcher:
 
     async def fetch(self, event: CIFailureEvent, api_key: str) -> str:
         # TODO Phase 2: implement Jenkins log fetch
-        # GET {build_url}/consoleText  (api_key = "user:token" base64)
+        # GET {build_url}/consoleText  (api_key = "user:token" base64)  # pragma: allowlist secret
         log.warning("ci_fixer.jenkins.not_implemented")
         return "(Jenkins log fetch not yet implemented)"
 
