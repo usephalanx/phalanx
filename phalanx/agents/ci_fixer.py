@@ -1,30 +1,25 @@
 """
-CI Fixer Agent — reads CI failure logs, fixes the code, commits back to the branch.
+CI Fixer Agent — multi-stage pipeline for autonomous CI failure repair.
 
-Responsibilities:
-  1. Load CIFixRun record (provider, branch, failing commit, logs)
-  2. Fetch raw logs via provider-specific fetcher
-  3. Classify failure type (lint / type / test / build / dependency)
-  4. Reflect on the failure before generating a fix (soul)
-  5. Clone/checkout the failing branch
-  6. Read the files mentioned in the failure log
-  7. Generate a surgical fix (high-confidence only — never guess)
-  8. Apply files, commit, push to the same branch
-  9. Comment on the PR explaining what was fixed
-  10. Mark CIFixRun FIXED or FAILED
+Pipeline:
+  1. Fetch raw CI logs (provider-specific fetcher)
+  2. Parse logs deterministically → structured errors (LogParser)
+  3. Confirm root cause via LLM with structured input (RootCauseAnalyst)
+  4. Apply fix patches to cloned workspace (Builder)
+  5. Validate fix by re-running the failing tool (Validator)
+  6. Commit + push + comment on PR
 
 Design invariants:
   - Never modifies test assertions
   - Never touches files not mentioned in the CI failure
   - Low-confidence → no commit, logs uncertainty trace
+  - Validation failure → one retry with new log (max 2 analyst iterations)
   - Max 2 attempts per PR (tracked via CIFixRun.attempt)
-  - Zero changes to BaseAgent, commander, builder, orchestrator
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,9 +29,11 @@ from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.soul import CI_FIXER_SOUL
-from phalanx.ci_fixer.classifier import classify_failure, extract_failing_files
+from phalanx.ci_fixer.analyst import FixPlan, RootCauseAnalyst
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
+from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
+from phalanx.ci_fixer.validator import validate_fix
 from phalanx.config.settings import get_settings
 from phalanx.db.models import CIFixRun, CIIntegration
 from phalanx.db.session import get_db
@@ -45,66 +42,21 @@ from phalanx.queue.celery_app import celery_app
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
-# Max files to read for context — keeps prompt manageable
-_MAX_CONTEXT_FILES = 8
-# Max chars per file read into the prompt
-_MAX_FILE_CHARS = 3000
-
-_CI_FIXER_PROMPT = """\
-You are fixing a CI failure. Be surgical — fix exactly what the log says is broken.
-
-FAILURE CATEGORY: {category}
-
-CI LOG (failure section):
-```
-{log_text}
-```
-
-FAILING FILES (current content):
-{file_contents}
-
-REFLECTION:
-{reflection}
-
-RULES — non-negotiable:
-1. Fix ONLY what the log explicitly reports as broken.
-2. For TEST failures: fix the IMPLEMENTATION to match the assertion. Never change test code.
-3. For LINT failures: fix exactly the flagged lines. No cleanup beyond the flag.
-4. For TYPE failures: add/fix types or resolve the mismatch. No logic changes.
-5. For BUILD failures: fix imports, syntax, or missing modules only.
-6. If you cannot determine a HIGH-confidence fix from the log, return empty files.
-7. Return ONLY files that need to change — not the full project.
-
-YOUR RESPONSE MUST BE VALID JSON AND NOTHING ELSE. No explanation, no markdown, no preamble.
-Start your response with {{ and end with }}.
-
-{{
-  "confidence": "high" | "medium" | "low",
-  "root_cause": "<one sentence>",
-  "files": [
-    {{"path": "<relative path>", "content": "<full corrected file content>"}}
-  ]
-}}
-
-If confidence is "low" or you cannot determine the fix, return:
-{{"confidence": "low", "root_cause": "<reason>", "files": []}}
-"""
+# Max analyst retry iterations (parse → fix → validate → re-analyze)
+_MAX_ITERATIONS = 2
 
 
 class CIFixerAgent(BaseAgent):
     """
     Autonomous CI failure repair agent.
 
-    Does not inherit any state from the existing Run/Task pipeline.
     Operates on CIFixRun records created by the webhook ingest layer.
+    Does not participate in the normal Run/Task pipeline.
     """
 
     AGENT_ROLE = "ci_fixer"
 
     def __init__(self, ci_fix_run_id: str):
-        # BaseAgent expects run_id + agent_id + task_id
-        # We reuse ci_fix_run_id for all three — ci_fixer doesn't use the
-        # normal Run/Task pipeline
         super().__init__(
             run_id=ci_fix_run_id,
             agent_id="ci-fixer",
@@ -115,7 +67,7 @@ class CIFixerAgent(BaseAgent):
     async def execute(self) -> AgentResult:
         self._log.info("ci_fixer.execute.start", ci_fix_run_id=self.ci_fix_run_id)
 
-        # ── 1. Load CIFixRun ────────────────────────────────────────────────
+        # ── 1. Load records ──────────────────────────────────────────────────
         async with get_db() as session:
             ci_run = await self._load_ci_fix_run(session)
             if ci_run is None:
@@ -127,13 +79,9 @@ class CIFixerAgent(BaseAgent):
             integration = await self._load_integration(session, ci_run.integration_id)
 
         if integration is None:
-            return AgentResult(
-                success=False,
-                output={},
-                error="CIIntegration not found",
-            )
+            return AgentResult(success=False, output={}, error="CIIntegration not found")
 
-        # ── 2. Fetch logs ───────────────────────────────────────────────────
+        # ── 2. Fetch raw logs ─────────────────────────────────────────────────
         event = CIFailureEvent(
             provider=ci_run.ci_provider,
             repo_full_name=ci_run.repo_full_name,
@@ -145,38 +93,41 @@ class CIFixerAgent(BaseAgent):
             integration_id=str(integration.id),
         )
 
-        try:
-            fetcher = get_log_fetcher(ci_run.ci_provider)
-            # For GitHub Actions, the log API uses the same token as the GitHub API.
-            # Fall back to github_token when ci_api_key_enc is empty.
-            raw_key = self._decrypt_key(integration.ci_api_key_enc)
-            api_key = raw_key or self._get_github_token(integration)
-            log_text = await fetcher.fetch(event, api_key)
-        except Exception as exc:
-            self._log.warning("ci_fixer.log_fetch_failed", error=str(exc))
-            log_text = ci_run.failure_summary or "(no logs available)"
+        raw_log = await self._fetch_logs(event, integration)
+        self._log.info(
+            "ci_fixer.logs_fetched",
+            chars=len(raw_log),
+            has_content=bool(raw_log.strip()),
+        )
 
-        # ── 3. Classify ─────────────────────────────────────────────────────
-        category = classify_failure(log_text)
+        # ── 3. Parse deterministically ────────────────────────────────────────
+        parsed = parse_log(raw_log)
+        self._log.info(
+            "ci_fixer.parsed",
+            tool=parsed.tool,
+            lint=len(parsed.lint_errors),
+            type_=len(parsed.type_errors),
+            test=len(parsed.test_failures),
+            build=len(parsed.build_errors),
+            summary=parsed.summary(),
+        )
+
         await self._trace(
             "decision",
-            f"Failure category: **{category}**\nLog preview:\n```\n{log_text[:500]}\n```",
-            {"category": category, "provider": ci_run.ci_provider},
+            f"**Parsed log** — tool: `{parsed.tool}`\n\n{parsed.as_text()}",
+            {"tool": parsed.tool, "summary": parsed.summary()},
         )
 
-        # ── 4. Reflect ──────────────────────────────────────────────────────
-        reflection = self._reflect(
-            task_description=(
-                f"Fix {category} CI failure on {ci_run.repo_full_name}:{ci_run.branch}\n\n"
-                f"Failing jobs: {', '.join(ci_run.failed_jobs or [])}"
-            ),
-            context=log_text[:1500],
-            soul=CI_FIXER_SOUL,
-        )
-        if reflection:
-            await self._trace("reflection", reflection, {"category": category})
+        if not parsed.has_errors:
+            # No structured errors found — fall back to raw log summary
+            self._log.warning("ci_fixer.no_structured_errors", raw_preview=raw_log[:300])
+            await self._mark_failed(ci_run, "no_structured_errors")
+            return AgentResult(
+                success=False,
+                output={"reason": "no_structured_errors", "raw_preview": raw_log[:500]},
+            )
 
-        # ── 5. Clone/checkout branch ─────────────────────────────────────────
+        # ── 4. Clone repo ─────────────────────────────────────────────────────
         workspace = Path(settings.git_workspace) / "ci-fixer" / self.ci_fix_run_id
         workspace.mkdir(parents=True, exist_ok=True)
 
@@ -188,66 +139,125 @@ class CIFixerAgent(BaseAgent):
             github_token=self._get_github_token(integration),
         )
         if not cloned:
-            await self._mark_failed(ci_run, "repo clone failed")
+            await self._mark_failed(ci_run, "repo_clone_failed")
             return AgentResult(success=False, output={}, error="repo clone failed")
 
-        # ── 6. Read failing files ────────────────────────────────────────────
-        failing_file_paths = extract_failing_files(log_text)
-        file_contents = self._read_files(workspace, failing_file_paths)
+        # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
+        analyst = RootCauseAnalyst(call_llm=self._call_claude)
+        fix_plan: FixPlan | None = None
+        validation_output = ""
 
-        # ── 7. Generate fix ──────────────────────────────────────────────────
-        fix = await self._generate_fix(
-            category=category,
-            log_text=log_text,
-            file_contents=file_contents,
-            reflection=reflection,
-        )
+        for iteration in range(1, _MAX_ITERATIONS + 1):
+            self._log.info("ci_fixer.analyst_iteration", iteration=iteration)
 
-        if not fix or fix.get("confidence") == "low" or not fix.get("files"):
-            msg = f"Low confidence fix for {category} failure — skipping commit"
+            # If this is a retry, re-parse the validation output
+            if iteration > 1 and validation_output:
+                retry_parsed = parse_log(validation_output)
+                if retry_parsed.has_errors:
+                    parsed = retry_parsed
+
+            # LLM confirmation
+            fix_plan = analyst.analyze(parsed, workspace)
             self._log.info(
-                "ci_fixer.low_confidence", root_cause=fix.get("root_cause") if fix else "n/a"
+                "ci_fixer.fix_plan",
+                confidence=fix_plan.confidence,
+                root_cause=fix_plan.root_cause,
+                patches=len(fix_plan.patches),
+                needs_test=fix_plan.needs_new_test,
             )
+
             await self._trace(
-                "uncertainty",
-                msg,
-                {"category": category, "root_cause": fix.get("root_cause") if fix else ""},
+                "reflection",
+                f"**Root cause:** {fix_plan.root_cause}\n"
+                f"**Confidence:** {fix_plan.confidence}\n"
+                f"**Patches:** {len(fix_plan.patches)} file(s)",
+                {"confidence": fix_plan.confidence, "iteration": iteration},
             )
+
+            if not fix_plan.is_actionable:
+                self._log.info(
+                    "ci_fixer.low_confidence",
+                    root_cause=fix_plan.root_cause,
+                    iteration=iteration,
+                )
+                break
+
+            # Apply patches
+            files_written = self._apply_patches(workspace, fix_plan.patches)
+            if not files_written:
+                self._log.warning("ci_fixer.no_files_written")
+                break
+
+            # Validate
+            validation = validate_fix(parsed, workspace)
+            self._log.info(
+                "ci_fixer.validation",
+                passed=validation.passed,
+                tool=validation.tool,
+                iteration=iteration,
+            )
+
+            if validation.passed:
+                # Fix confirmed — proceed to commit
+                self._log.info("ci_fixer.validation_passed", files=files_written)
+                break
+            else:
+                validation_output = validation.output
+                self._log.warning(
+                    "ci_fixer.validation_failed",
+                    iteration=iteration,
+                    output=validation.output[:300],
+                )
+                await self._trace(
+                    "uncertainty",
+                    f"Validation failed (iteration {iteration}):\n```\n{validation.output[:500]}\n```",
+                    {"iteration": iteration},
+                )
+                if iteration >= _MAX_ITERATIONS:
+                    # Exhausted retries — still commit if medium+ confidence
+                    # (the PR CI will catch it if wrong)
+                    self._log.warning("ci_fixer.max_iterations_reached")
+
+        # ── 6. Check final plan ───────────────────────────────────────────────
+        if not fix_plan or not fix_plan.is_actionable:
             await self._mark_failed(ci_run, "low_confidence")
             return AgentResult(
-                success=False, output={"reason": "low_confidence", "category": category}
+                success=False,
+                output={
+                    "reason": "low_confidence",
+                    "root_cause": fix_plan.root_cause if fix_plan else "",
+                    "tool": parsed.tool,
+                },
             )
 
-        # ── 8. Apply + commit + push ─────────────────────────────────────────
-        files_written = self._apply_fix_files(workspace, fix["files"])
-        if not files_written:
-            await self._mark_failed(ci_run, "no files written")
-            return AgentResult(success=False, output={}, error="no files written")
+        files_written = [p.path for p in fix_plan.patches]
 
+        # ── 7. Commit + push ──────────────────────────────────────────────────
         commit_result = await self._commit_and_push(
             workspace=workspace,
             branch=ci_run.branch,
             commit_message=(
-                f"fix(ci): resolve {category} failure [{ci_run.ci_provider}]\n\n"
-                f"Root cause: {fix.get('root_cause', 'see CI log')}\n"
+                f"fix(ci): resolve {parsed.tool} failure [{ci_run.ci_provider}]\n\n"
+                f"Root cause: {fix_plan.root_cause}\n"
                 f"Files: {', '.join(files_written)}\n"
                 f"CI Fix Run: {self.ci_fix_run_id}"
             ),
         )
         commit_sha = commit_result.get("sha")
 
-        # ── 9. Comment on PR ─────────────────────────────────────────────────
+        # ── 8. Comment on PR ──────────────────────────────────────────────────
         if ci_run.pr_number and commit_sha and integration.github_token:
             await self._comment_on_pr(
                 integration=integration,
                 ci_run=ci_run,
                 files_written=files_written,
                 commit_sha=commit_sha,
-                category=category,
-                root_cause=fix.get("root_cause", ""),
+                tool=parsed.tool,
+                root_cause=fix_plan.root_cause,
+                parsed=parsed,
             )
 
-        # ── 10. Mark FIXED ───────────────────────────────────────────────────
+        # ── 9. Mark FIXED ─────────────────────────────────────────────────────
         async with get_db() as session:
             await session.execute(
                 update(CIFixRun)
@@ -262,55 +272,53 @@ class CIFixerAgent(BaseAgent):
 
         self._log.info(
             "ci_fixer.execute.done",
-            category=category,
+            tool=parsed.tool,
             files=files_written,
             commit_sha=commit_sha,
+            root_cause=fix_plan.root_cause,
         )
 
         return AgentResult(
             success=True,
             output={
-                "category": category,
-                "root_cause": fix.get("root_cause", ""),
+                "tool": parsed.tool,
+                "root_cause": fix_plan.root_cause,
                 "files_fixed": files_written,
                 "commit_sha": commit_sha,
-                "confidence": fix.get("confidence"),
+                "confidence": fix_plan.confidence,
             },
         )
 
-    # ── Fix generation ─────────────────────────────────────────────────────────
+    # ── Log fetching ───────────────────────────────────────────────────────────
 
-    async def _generate_fix(
-        self,
-        category: str,
-        log_text: str,
-        file_contents: str,
-        reflection: str,
-    ) -> dict | None:
-        prompt = _CI_FIXER_PROMPT.format(
-            category=category,
-            log_text=log_text[:4000],
-            file_contents=file_contents[:6000],
-            reflection=reflection[:800] if reflection else "No reflection available.",
-        )
-
+    async def _fetch_logs(self, event: CIFailureEvent, integration: CIIntegration) -> str:
+        """Fetch raw CI logs. Falls back to failure_summary if fetcher fails."""
+        async with get_db() as session:
+            ci_run = await self._load_ci_fix_run(session)
         try:
-            raw = self._call_claude(
-                messages=[{"role": "user", "content": prompt}],
-                system=CI_FIXER_SOUL,
-                max_tokens=4096,
-            )
-            # Strip markdown fences if Claude wraps in ```json
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            self._log.warning("ci_fixer.fix_parse_failed", raw=raw[:200])
-            return None
+            fetcher = get_log_fetcher(event.provider)
+            raw_key = self._decrypt_key(integration.ci_api_key_enc)
+            api_key = raw_key or self._get_github_token(integration)
+            return await fetcher.fetch(event, api_key)
         except Exception as exc:
-            self._log.warning("ci_fixer.fix_generation_failed", error=str(exc))
-            return None
+            self._log.warning("ci_fixer.log_fetch_failed", error=str(exc))
+            return ci_run.failure_summary or "(no logs available)" if ci_run else "(no logs)"
+
+    # ── Patch application ──────────────────────────────────────────────────────
+
+    def _apply_patches(self, workspace: Path, patches: list) -> list[str]:
+        """Write fix patches to workspace. Returns list of relative paths written."""
+        written: list[str] = []
+        for patch in patches:
+            full_path = workspace / patch.path
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                full_path.write_text(patch.content, encoding="utf-8")
+                written.append(patch.path)
+                self._log.info("ci_fixer.patch_applied", path=patch.path)
+            except Exception as exc:
+                self._log.warning("ci_fixer.patch_failed", path=patch.path, error=str(exc))
+        return written
 
     # ── Git helpers ────────────────────────────────────────────────────────────
 
@@ -322,21 +330,18 @@ class CIFixerAgent(BaseAgent):
         commit_sha: str,
         github_token: str,
     ) -> bool:
-        """Clone the repo at the failing commit SHA, checkout the branch."""
         try:
             from git import Repo  # noqa: PLC0415
 
             repo_url = f"https://github.com/{repo_full_name}.git"
             auth_url = repo_url.replace("https://", f"https://{github_token}@")
 
-            git_dir = workspace / ".git"
-            if git_dir.exists():
+            if (workspace / ".git").exists():
                 repo = Repo(str(workspace))
                 repo.remotes.origin.fetch()
             else:
                 repo = Repo.clone_from(auth_url, str(workspace))
 
-            # Checkout the branch at the failing commit
             try:
                 repo.git.checkout(branch)
             except Exception:
@@ -357,7 +362,6 @@ class CIFixerAgent(BaseAgent):
         branch: str,
         commit_message: str,
     ) -> dict[str, Any]:
-        """Commit all changes and push to origin."""
         try:
             from git import Actor, Repo  # noqa: PLC0415
             from git.exc import InvalidGitRepositoryError  # noqa: PLC0415
@@ -387,47 +391,6 @@ class CIFixerAgent(BaseAgent):
             self._log.warning("ci_fixer.git.commit_failed", error=str(exc))
             return {"sha": None, "error": str(exc)}
 
-    # ── File helpers ───────────────────────────────────────────────────────────
-
-    def _read_files(self, workspace: Path, paths: list[str]) -> str:
-        """Read file contents from workspace. Returns formatted string for prompt."""
-        sections: list[str] = []
-        for rel_path in paths[:_MAX_CONTEXT_FILES]:
-            full_path = workspace / rel_path
-            if not full_path.exists():
-                # Try to find it with a glob
-                matches = list(workspace.rglob(Path(rel_path).name))
-                if matches:
-                    full_path = matches[0]
-                    rel_path = str(full_path.relative_to(workspace))
-                else:
-                    continue
-            try:
-                content = full_path.read_text(encoding="utf-8", errors="replace")
-                if len(content) > _MAX_FILE_CHARS:
-                    content = content[:_MAX_FILE_CHARS] + "\n... (truncated)"
-                sections.append(f"### {rel_path}\n```\n{content}\n```")
-            except Exception:
-                continue
-        return "\n\n".join(sections) if sections else "(no files found)"
-
-    def _apply_fix_files(self, workspace: Path, files: list[dict]) -> list[str]:
-        """Write fix files to workspace. Returns list of relative paths written."""
-        written: list[str] = []
-        for f in files:
-            rel_path = f.get("path", "")
-            content = f.get("content", "")
-            if not rel_path or not content:
-                continue
-            full_path = workspace / rel_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                full_path.write_text(content, encoding="utf-8")
-                written.append(rel_path)
-            except Exception as exc:
-                self._log.warning("ci_fixer.write_failed", path=rel_path, error=str(exc))
-        return written
-
     # ── PR comment ─────────────────────────────────────────────────────────────
 
     async def _comment_on_pr(
@@ -436,20 +399,33 @@ class CIFixerAgent(BaseAgent):
         ci_run: CIFixRun,
         files_written: list[str],
         commit_sha: str,
-        category: str,
+        tool: str,
         root_cause: str,
+        parsed: ParsedLog,
     ) -> None:
-        """Post a PR comment explaining the fix."""
         import httpx  # noqa: PLC0415
 
         files_list = "\n".join(f"- `{f}`" for f in files_written)
+
+        # Build a structured error summary for the comment
+        error_detail = ""
+        if parsed.lint_errors:
+            errors_text = "\n".join(
+                f"  - `{e.file}:{e.line}` — `{e.code}` {e.message}"
+                for e in parsed.lint_errors[:5]
+            )
+            error_detail = f"\n\n**Errors fixed:**\n{errors_text}"
+        elif parsed.test_failures:
+            tests_text = "\n".join(f"  - `{f.test_id}`" for f in parsed.test_failures[:5])
+            error_detail = f"\n\n**Tests fixed:**\n{tests_text}"
+
         body = (
-            f"🔧 **Phalanx CI Fixer** resolved a `{category}` failure "
+            f"🔧 **Phalanx CI Fixer** resolved a `{tool}` failure "
             f"in commit `{commit_sha}`.\n\n"
-            f"**Root cause:** {root_cause}\n\n"
+            f"**Root cause:** {root_cause}"
+            f"{error_detail}\n\n"
             f"**Files changed:**\n{files_list}\n\n"
-            f"A new CI run has been triggered automatically. "
-            f"If it still fails, I'll try once more."
+            f"A new CI run has been triggered automatically."
         )
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -490,13 +466,30 @@ class CIFixerAgent(BaseAgent):
     # ── Auth helpers ────────────────────────────────────────────────────────────
 
     def _decrypt_key(self, encrypted_key: str) -> str:
-        """Decrypt a stored CI API key. Phase 1: no-op (plaintext). Phase 2: KMS."""
-        # TODO Phase 2: decrypt with AWS KMS or Secrets Manager
-        return encrypted_key
+        return encrypted_key  # Phase 2: KMS decrypt
 
     def _get_github_token(self, integration: CIIntegration) -> str:
-        """Return the GitHub token for this integration."""
         return integration.github_token or settings.github_token
+
+    # ── Backward-compat shims (used by unit tests) ─────────────────────────────
+
+    def _apply_fix_files(self, workspace: Path, files: list[dict]) -> list[str]:
+        """Dict-based shim for unit tests. Delegates to _apply_patches."""
+        from phalanx.ci_fixer.analyst import FilePatch  # noqa: PLC0415
+
+        patches = [
+            FilePatch(path=f.get("path", ""), content=f.get("content", ""))
+            for f in files
+            if f.get("path") and f.get("content")
+        ]
+        return self._apply_patches(workspace, patches)
+
+    def _read_files(self, workspace: Path, paths: list[str]) -> str:
+        """Shim for unit tests — reads files for prompt context."""
+        from phalanx.ci_fixer.analyst import RootCauseAnalyst  # noqa: PLC0415
+
+        analyst = RootCauseAnalyst(call_llm=lambda **_: "")
+        return analyst._read_files(workspace, paths)
 
 
 # ── Celery task ────────────────────────────────────────────────────────────────

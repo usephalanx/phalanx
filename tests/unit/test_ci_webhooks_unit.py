@@ -412,31 +412,19 @@ class TestGitHubActionsLogFetcher:
 
     @pytest.mark.asyncio
     async def test_fetch_no_failed_jobs_uses_all_files(self):
-        import io
-        import zipfile
-
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w") as zf:
-            zf.writestr("other-job/1_run.txt", "Error: crash")
-        zip_bytes = buf.getvalue()
-
+        """When job logs return plain text, the failure section is extracted."""
         annotations_resp = MagicMock()
         annotations_resp.raise_for_status = MagicMock()
         annotations_resp.json.return_value = []
 
-        check_run_resp = MagicMock()
-        check_run_resp.raise_for_status = MagicMock()
-        check_run_resp.json.return_value = {}
-
-        log_zip_resp = MagicMock()
-        log_zip_resp.raise_for_status = MagicMock()
-        log_zip_resp.status_code = 200
-        log_zip_resp.content = zip_bytes
+        job_log_resp = MagicMock()
+        job_log_resp.status_code = 200
+        job_log_resp.text = "Step 1\nStep 2\nError: crash\nStep 4"
 
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
-        client.get = AsyncMock(side_effect=[annotations_resp, check_run_resp, log_zip_resp])
+        client.get = AsyncMock(side_effect=[annotations_resp, job_log_resp])
 
         event = self._make_event(failed_jobs=[])
         from phalanx.ci_fixer.log_fetcher import GitHubActionsLogFetcher

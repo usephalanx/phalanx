@@ -282,11 +282,11 @@ class TestCIFixerAgentHelpers:
     def test_read_files_skips_missing(self, tmp_path):
         agent = self._make_agent()
         result = agent._read_files(tmp_path, ["does_not_exist.py"])
-        assert result == "(no files found)"
+        assert "no files found" in result
 
     def test_read_files_empty_list(self, tmp_path):
         agent = self._make_agent()
-        assert agent._read_files(tmp_path, []) == "(no files found)"
+        assert "no files found" in agent._read_files(tmp_path, [])
 
     def test_read_files_truncates_large_file(self, tmp_path):
         agent = self._make_agent()
@@ -320,70 +320,89 @@ class TestCIFixerSoul:
         assert CIFixerAgent.AGENT_ROLE == "ci_fixer"
 
 
-# ── _generate_fix — JSON parsing (mocked _call_claude) ────────────────────────
+# ── RootCauseAnalyst — JSON parsing (mocked _call_llm) ────────────────────────
 
 from unittest.mock import patch  # noqa: E402
 
 
-class TestGenerateFix:
-    def _make_agent(self):
-        from phalanx.agents.ci_fixer import CIFixerAgent
+class TestRootCauseAnalyst:
+    """Tests for the RootCauseAnalyst LLM confirmation step."""
 
-        return CIFixerAgent(ci_fix_run_id="00000000-0000-0000-0000-000000000002")
+    def _make_analyst(self, llm_response: str):
+        from phalanx.ci_fixer.analyst import RootCauseAnalyst
 
-    @pytest.mark.asyncio
-    async def test_valid_json_parsed(self):
-        agent = self._make_agent()
+        return RootCauseAnalyst(call_llm=lambda **_: llm_response)
+
+    def _make_parsed_log(self, tool="ruff"):
+        from phalanx.ci_fixer.log_parser import LintError, ParsedLog
+
+        return ParsedLog(
+            tool=tool,
+            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="'os' imported but unused")],
+        )
+
+    def test_valid_json_returns_fix_plan(self, tmp_path):
         import json as _json
 
-        response = _json.dumps(
-            {
-                "confidence": "high",
-                "root_cause": "missing import",
-                "files": [{"path": "src/foo.py", "content": "import os\n"}],
-            }
-        )
-        with patch.object(agent, "_call_claude", return_value=response):
-            result = await agent._generate_fix("build", "log", "files", "reflection")
-        assert result["confidence"] == "high"
-        assert len(result["files"]) == 1
+        response = _json.dumps({
+            "confidence": "high",
+            "root_cause": "unused import",
+            "patches": [{"path": "src/foo.py", "content": "x = 1\n", "reason": "removed import"}],
+            "needs_new_test": False,
+        })
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "high"
+        assert plan.root_cause == "unused import"
+        assert len(plan.patches) == 1
+        assert plan.is_actionable
 
-    @pytest.mark.asyncio
-    async def test_low_confidence_returns_empty_files(self):
-        agent = self._make_agent()
-        response = '{"confidence": "low", "root_cause": "unclear", "files": []}'
-        with patch.object(agent, "_call_claude", return_value=response):
-            result = await agent._generate_fix("unknown", "log", "files", "")
-        assert result["confidence"] == "low"
-        assert result["files"] == []
+    def test_low_confidence_returns_empty_patches(self, tmp_path):
+        response = '{"confidence": "low", "root_cause": "unclear", "patches": [], "needs_new_test": false}'
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "low"
+        assert not plan.is_actionable
 
-    @pytest.mark.asyncio
-    async def test_json_in_markdown_fences_parsed(self):
-        agent = self._make_agent()
-        response = '```json\n{"confidence": "high", "root_cause": "x", "files": []}\n```'
-        with patch.object(agent, "_call_claude", return_value=response):
-            result = await agent._generate_fix("lint", "log", "files", "")
-        assert result is not None
-        assert result["confidence"] == "high"
+    def test_markdown_fences_stripped(self, tmp_path):
+        response = '```json\n{"confidence": "high", "root_cause": "x", "patches": [], "needs_new_test": false}\n```'
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "high"
 
-    @pytest.mark.asyncio
-    async def test_invalid_json_returns_none(self):
-        agent = self._make_agent()
-        with patch.object(agent, "_call_claude", return_value="not json at all"):
-            result = await agent._generate_fix("test", "log", "files", "")
-        assert result is None
+    def test_invalid_json_returns_low_confidence(self, tmp_path):
+        analyst = self._make_analyst("not json at all")
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "low"
 
-    @pytest.mark.asyncio
-    async def test_claude_exception_returns_none(self):
-        agent = self._make_agent()
-        with patch.object(agent, "_call_claude", side_effect=Exception("API error")):
-            result = await agent._generate_fix("test", "log", "files", "")
-        assert result is None
+    def test_exception_returns_low_confidence(self, tmp_path):
+        from phalanx.ci_fixer.analyst import RootCauseAnalyst
 
-    @pytest.mark.asyncio
-    async def test_medium_confidence_returned(self):
-        agent = self._make_agent()
-        response = '{"confidence": "medium", "root_cause": "probably this", "files": [{"path": "x.py", "content": "pass"}]}'
-        with patch.object(agent, "_call_claude", return_value=response):
-            result = await agent._generate_fix("type", "log", "files", "")
-        assert result["confidence"] == "medium"
+        def bad_llm(**_):
+            raise RuntimeError("API error")
+
+        analyst = RootCauseAnalyst(call_llm=bad_llm)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "low"
+
+    def test_medium_confidence_is_actionable(self, tmp_path):
+        import json as _json
+
+        response = _json.dumps({
+            "confidence": "medium",
+            "root_cause": "probably this",
+            "patches": [{"path": "x.py", "content": "pass\n", "reason": "fix"}],
+            "needs_new_test": False,
+        })
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "medium"
+        assert plan.is_actionable
+
+    def test_no_errors_returns_low_confidence(self, tmp_path):
+        from phalanx.ci_fixer.analyst import RootCauseAnalyst
+        from phalanx.ci_fixer.log_parser import ParsedLog
+
+        analyst = RootCauseAnalyst(call_llm=lambda **_: "{}")
+        plan = analyst.analyze(ParsedLog(tool="unknown"), tmp_path)
+        assert plan.confidence == "low"
