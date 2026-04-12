@@ -7,6 +7,7 @@ implementation-ready requirement package.
 Design principle: preserve explicit requirements, add only minimal safe defaults,
 clearly separate explicit / assumptions / unknowns.
 """
+
 from __future__ import annotations
 
 import json
@@ -85,7 +86,7 @@ class NormalizedSpec:
     target_users: list[str]
     core_user_problem: str
     success_criteria: list[str]
-    mvp_scope: dict[str, list[str]]          # {in_scope: [], out_of_scope: []}
+    mvp_scope: dict[str, list[str]]  # {in_scope: [], out_of_scope: []}
     functional_requirements: list[str]
     non_functional_requirements: list[str]
     technical_constraints: list[str]

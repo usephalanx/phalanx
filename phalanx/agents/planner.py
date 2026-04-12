@@ -221,7 +221,9 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON o
         calibration_data = await self._load_complexity_calibration(run.project_id)
         calibration_ctx = ""
         if calibration_data:
-            avg_ratio = sum(c.get("burn_ratio", 1.0) for c in calibration_data[-5:]) / min(len(calibration_data), 5)
+            avg_ratio = sum(c.get("burn_ratio", 1.0) for c in calibration_data[-5:]) / min(
+                len(calibration_data), 5
+            )
             calibration_ctx = (
                 f"\n\nHistorical complexity calibration: average burn_ratio={avg_ratio:.2f} "
                 f"(>1.0 = tasks harder than estimated, <1.0 = easier). "

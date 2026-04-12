@@ -75,7 +75,9 @@ class TestSlackEscalation:
             yield s
 
         with patch("phalanx.db.session.get_db", fake_db):
-            with patch.object(agent, "_escalate_trace_to_slack", new_callable=AsyncMock) as mock_esc:
+            with patch.object(
+                agent, "_escalate_trace_to_slack", new_callable=AsyncMock
+            ) as mock_esc:
                 await agent._trace("uncertainty", "I'm not sure about this")
             mock_esc.assert_called_once_with("uncertainty", "I'm not sure about this")
 
@@ -92,7 +94,9 @@ class TestSlackEscalation:
             yield s
 
         with patch("phalanx.db.session.get_db", fake_db):
-            with patch.object(agent, "_escalate_trace_to_slack", new_callable=AsyncMock) as mock_esc:
+            with patch.object(
+                agent, "_escalate_trace_to_slack", new_callable=AsyncMock
+            ) as mock_esc:
                 await agent._trace("disagreement", "This spec is contradictory")
             mock_esc.assert_called_once_with("disagreement", "This spec is contradictory")
 
@@ -109,7 +113,9 @@ class TestSlackEscalation:
             yield s
 
         with patch("phalanx.db.session.get_db", fake_db):
-            with patch.object(agent, "_escalate_trace_to_slack", new_callable=AsyncMock) as mock_esc:
+            with patch.object(
+                agent, "_escalate_trace_to_slack", new_callable=AsyncMock
+            ) as mock_esc:
                 await agent._trace("reflection", "Thinking about this task")
             mock_esc.assert_not_called()
 
@@ -134,8 +140,11 @@ class TestSlackEscalation:
 
         # Test via direct patch of from_run
         from phalanx.workflow.slack_notifier import SlackNotifier
+
         with (
-            patch.object(SlackNotifier, "from_run", new_callable=AsyncMock, return_value=mock_notifier),
+            patch.object(
+                SlackNotifier, "from_run", new_callable=AsyncMock, return_value=mock_notifier
+            ),
             patch("phalanx.db.session.get_db", fake_db),
         ):
             await agent._escalate_trace_to_slack("uncertainty", "not sure about auth design")
@@ -166,6 +175,7 @@ class TestSlackEscalation:
     def test_trace_docstring_mentions_soul008(self):
         """_trace docstring documents SOUL-008 escalation behavior."""
         import inspect
+
         src = inspect.getsource(BaseAgent._trace)
         assert "SOUL-008" in src or "uncertainty" in src
 
@@ -188,9 +198,9 @@ class TestCrossRunMemory:
         async def fake_db():
             s = AsyncMock()
             s.execute = AsyncMock(
-                return_value=MagicMock(scalars=lambda: MagicMock(
-                    __iter__=lambda self: iter([fact])
-                ))
+                return_value=MagicMock(
+                    scalars=lambda: MagicMock(__iter__=lambda self: iter([fact]))
+                )
             )
             yield s
 
@@ -279,8 +289,11 @@ class TestCrossRunMemory:
             "verdict": "CHANGES_REQUESTED",
             "summary": "Missing error handling in auth routes",
             "issues": [
-                {"severity": "high", "location": "auth.py:42",
-                 "description": "No try/except around DB call"},
+                {
+                    "severity": "high",
+                    "location": "auth.py:42",
+                    "description": "No try/except around DB call",
+                },
             ],
         }
         with patch("phalanx.db.session.get_db", fake_db):
@@ -314,6 +327,7 @@ class TestCrossRunMemory:
         import inspect
 
         import phalanx.agents.builder as m
+
         src = inspect.getsource(m.BuilderAgent.execute)
         assert "_load_cross_run_memory" in src
 
@@ -322,6 +336,7 @@ class TestCrossRunMemory:
         import inspect
 
         import phalanx.agents.reviewer as m
+
         src = inspect.getsource(m.ReviewerAgent.execute)
         assert "_load_cross_run_memory" in src
 
@@ -412,9 +427,9 @@ class TestComplexityCalibration:
         async def fake_db():
             s = AsyncMock()
             s.execute = AsyncMock(
-                return_value=MagicMock(scalars=lambda: MagicMock(
-                    __iter__=lambda self: iter([fact])
-                ))
+                return_value=MagicMock(
+                    scalars=lambda: MagicMock(__iter__=lambda self: iter([fact]))
+                )
             )
             yield s
 
@@ -444,6 +459,7 @@ class TestComplexityCalibration:
         import inspect
 
         import phalanx.agents.builder as m
+
         src = inspect.getsource(m.BuilderAgent.execute)
         assert "_write_complexity_calibration" in src
 
@@ -452,6 +468,7 @@ class TestComplexityCalibration:
         import inspect
 
         import phalanx.agents.planner as m
+
         src = inspect.getsource(m.PlannerAgent._generate_plan)
         assert "_load_complexity_calibration" in src
 
@@ -460,6 +477,7 @@ class TestComplexityCalibration:
         import inspect
 
         import phalanx.agents.planner as m
+
         src = inspect.getsource(m.PlannerAgent._generate_plan)
         assert "calibration_ctx" in src
 
@@ -471,23 +489,27 @@ class TestTracesPortal:
     def test_portal_router_registered(self):
         """portal_router is defined in traces.py."""
         from phalanx.api.routes.traces import portal_router
+
         assert portal_router is not None
 
     def test_portal_route_exists(self):
         """GET /traces route is registered on portal_router."""
         from phalanx.api.routes.traces import portal_router
+
         routes = [r.path for r in portal_router.routes]
         assert "/traces" in routes
 
     def test_traces_portal_html_has_run_input(self):
         """Portal HTML includes run ID input field."""
         from phalanx.api.routes.traces import _TRACES_PORTAL_HTML
+
         assert "run-input" in _TRACES_PORTAL_HTML
         assert "/v1/runs/" in _TRACES_PORTAL_HTML
 
     def test_traces_portal_html_has_filter_buttons(self):
         """Portal HTML has filter controls for trace types."""
         from phalanx.api.routes.traces import _TRACES_PORTAL_HTML
+
         assert "filter-btn" in _TRACES_PORTAL_HTML
         assert "badge-reflection" in _TRACES_PORTAL_HTML
         assert "badge-uncertainty" in _TRACES_PORTAL_HTML
@@ -495,6 +517,7 @@ class TestTracesPortal:
     def test_traces_portal_html_supports_auto_load(self):
         """Portal HTML auto-loads if ?run_id= is in URL."""
         from phalanx.api.routes.traces import _TRACES_PORTAL_HTML
+
         assert "run_id" in _TRACES_PORTAL_HTML
 
     def test_portal_router_imported_in_main(self):
@@ -502,11 +525,13 @@ class TestTracesPortal:
         import inspect
 
         import phalanx.api.main as main_mod
+
         src = inspect.getsource(main_mod)
         assert "traces_portal_router" in src or "portal_router" in src
 
     def test_portal_html_has_expandable_content(self):
         """Portal cards have expandable content (toggle function)."""
         from phalanx.api.routes.traces import _TRACES_PORTAL_HTML
+
         assert "toggle(" in _TRACES_PORTAL_HTML
         assert "escHtml" in _TRACES_PORTAL_HTML

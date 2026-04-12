@@ -132,7 +132,9 @@ class TestDispatchAndWait:
         self, orchestrator, mock_session, mock_router
     ):
         task = make_task("task-uuid-2", agent_role="qa", status="PENDING")
-        failed_task = make_task("task-uuid-2", agent_role="qa", status="FAILED", error="tests failed")
+        failed_task = make_task(
+            "task-uuid-2", agent_role="qa", status="FAILED", error="tests failed"
+        )
 
         mock_session.execute.return_value = MagicMock(scalar_one=MagicMock(return_value=None))
 
@@ -178,8 +180,9 @@ class TestExecuteDag:
 
         nodes = {
             "t1": DagNode(task_id="t1", agent_role="builder", estimated_minutes=30),
-            "t2": DagNode(task_id="t2", agent_role="reviewer", estimated_minutes=15,
-                          deps={"t1": "full"}),
+            "t2": DagNode(
+                task_id="t2", agent_role="reviewer", estimated_minutes=15, deps={"t1": "full"}
+            ),
         }
         task_map = {"t1": t1, "t2": t2}
 
@@ -193,7 +196,9 @@ class TestExecuteDag:
 
         assert mock_router.dispatch.call_count == 2
 
-    async def test_execute_uses_dag_when_flag_enabled(self, orchestrator, mock_session, mock_router):
+    async def test_execute_uses_dag_when_flag_enabled(
+        self, orchestrator, mock_session, mock_router
+    ):
         """execute() routes to DAG path when phalanx_enable_dag_orchestration=True."""
         t1 = make_task("t1")
         tasks_result = MagicMock()
@@ -407,6 +412,7 @@ class TestStaleTaskWatchdog:
 
     def _make_poll_get_db_for_task(self, task):
         """Return a get_db() mock that yields a session returning `task`."""
+
         @asynccontextmanager
         async def _mock_get_db():
             poll_session = AsyncMock()
@@ -418,9 +424,7 @@ class TestStaleTaskWatchdog:
 
         return _mock_get_db
 
-    async def test_stale_in_progress_task_marked_failed(
-        self, orchestrator
-    ):
+    async def test_stale_in_progress_task_marked_failed(self, orchestrator):
         """A task IN_PROGRESS for > _STALE_TASK_TIMEOUT_SECONDS is marked FAILED."""
         old_start = datetime.now(UTC) - timedelta(seconds=_STALE_TASK_TIMEOUT_SECONDS + 60)
         stale_task = make_task_with_start(
@@ -436,9 +440,7 @@ class TestStaleTaskWatchdog:
         assert "stale-task" in failed
         assert "stale-task" not in completed
 
-    async def test_fresh_in_progress_task_not_marked_stale(
-        self, orchestrator
-    ):
+    async def test_fresh_in_progress_task_not_marked_stale(self, orchestrator):
         """A task IN_PROGRESS for less than the timeout is left alone."""
         fresh_start = datetime.now(UTC) - timedelta(seconds=60)  # 1 minute running
         fresh_task = make_task_with_start(
@@ -454,9 +456,7 @@ class TestStaleTaskWatchdog:
         assert "fresh-task" not in failed
         assert "fresh-task" not in completed
 
-    async def test_in_progress_no_start_time_not_marked_stale(
-        self, orchestrator
-    ):
+    async def test_in_progress_no_start_time_not_marked_stale(self, orchestrator):
         """A task IN_PROGRESS with no started_at is not falsely detected as stale."""
         task = make_task_with_start(
             task_id="no-start-task",
@@ -471,9 +471,7 @@ class TestStaleTaskWatchdog:
         assert "no-start-task" not in failed
         assert "no-start-task" not in completed
 
-    async def test_completed_task_not_affected_by_watchdog(
-        self, orchestrator
-    ):
+    async def test_completed_task_not_affected_by_watchdog(self, orchestrator):
         """COMPLETED tasks are returned as completed, never as failed."""
         old_start = datetime.now(UTC) - timedelta(seconds=_STALE_TASK_TIMEOUT_SECONDS + 3600)
         task = make_task_with_start(

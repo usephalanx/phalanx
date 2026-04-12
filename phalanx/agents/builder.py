@@ -111,6 +111,7 @@ class BuilderAgent(BaseAgent):
 
             # Determine workspace using work order title for human-readable slug
             from phalanx.db.models import WorkOrder  # noqa: PLC0415
+
             wo_result = await session.execute(
                 select(WorkOrder).where(WorkOrder.id == run.work_order_id)
             )
@@ -127,6 +128,7 @@ class BuilderAgent(BaseAgent):
         branch = f"phalanx/{str(self.run_id)[:8]}"
         if work_order_title:
             import re  # noqa: PLC0415
+
             title_slug = re.sub(r"[^a-z0-9]+", "-", work_order_title.lower()).strip("-")[:30]
             branch = f"phalanx/{title_slug}-{str(self.run_id)[:8]}"
 
@@ -194,9 +196,7 @@ class BuilderAgent(BaseAgent):
                 update_vals["active_branch"] = commit_info["branch"]
             # Always write workspace_path — every agent reads it from Run
             update_vals["workspace_path"] = str(workspace)
-            await session.execute(
-                update(Run).where(Run.id == self.run_id).values(**update_vals)
-            )
+            await session.execute(update(Run).where(Run.id == self.run_id).values(**update_vals))
 
             run_ref = await self._load_run(session)
             # Persist diff artifact
@@ -269,22 +269,26 @@ class BuilderAgent(BaseAgent):
     async def _is_first_builder_task(self, session, current_seq: int) -> bool:
         """True if no earlier builder task exists in this run (first task gets fresh clone)."""
         result = await session.execute(
-            select(Task).where(
+            select(Task)
+            .where(
                 Task.run_id == self.run_id,
                 Task.agent_role.in_(["builder", "component_builder", "page_assembler"]),
                 Task.sequence_num < current_seq,
-            ).limit(1)
+            )
+            .limit(1)
         )
         return result.scalar_one_or_none() is None
 
     async def _is_last_builder_task(self, session, current_seq: int) -> bool:
         """True if no later builder task exists in this run (last task writes QA.md)."""
         result = await session.execute(
-            select(Task).where(
+            select(Task)
+            .where(
                 Task.run_id == self.run_id,
                 Task.agent_role.in_(["builder", "component_builder", "page_assembler"]),
                 Task.sequence_num > current_seq,
-            ).limit(1)
+            )
+            .limit(1)
         )
         return result.scalar_one_or_none() is None
 
@@ -297,6 +301,7 @@ class BuilderAgent(BaseAgent):
                 /tmp/phalanx-repos/{project_id}/{run_id}/              (legacy)
         """
         import re  # noqa: PLC0415
+
         base = Path(settings.git_workspace)
         project_id = str(run.project_id) if hasattr(run, "project_id") else "unknown"
         run_short = str(self.run_id)[:8]
@@ -311,6 +316,7 @@ class BuilderAgent(BaseAgent):
         Format: /tmp/phalanx-repos/{app-slug}-{run_id[:8]}/
         """
         import re  # noqa: PLC0415
+
         base = Path(settings.git_workspace)
         run_short = str(self.run_id)[:8]
         if work_order_title:
@@ -320,7 +326,9 @@ class BuilderAgent(BaseAgent):
             dir_name = f"run-{run_short}"
         return base / dir_name
 
-    async def _ensure_workspace(self, workspace: Path, run: Run, branch: str | None = None, is_first: bool = False) -> None:
+    async def _ensure_workspace(
+        self, workspace: Path, run: Run, branch: str | None = None, is_first: bool = False
+    ) -> None:
         """
         Set up the workspace directory.
         - First builder task in the run: always fresh clone (no reuse).
@@ -332,6 +340,7 @@ class BuilderAgent(BaseAgent):
         if is_first and workspace.exists():
             # Wipe stale workspace from a previous run that used the same path
             import shutil  # noqa: PLC0415
+
             shutil.rmtree(workspace, ignore_errors=True)
             self._log.info("builder.workspace.wiped_for_fresh_clone", path=str(workspace))
 
@@ -379,7 +388,9 @@ class BuilderAgent(BaseAgent):
                 if rebase_merge.exists() or rebase_apply.exists():
                     try:
                         repo.git.rebase("--abort")
-                        self._log.warning("builder.git.stale_rebase_aborted", workspace=str(workspace))
+                        self._log.warning(
+                            "builder.git.stale_rebase_aborted", workspace=str(workspace)
+                        )
                     except Exception:
                         pass
                 repo.remotes.origin.fetch()
@@ -427,9 +438,13 @@ class BuilderAgent(BaseAgent):
 
         # Always include shared data/type files if they exist (critical for cross-task consistency)
         _SHARED_FILES = [  # noqa: N806
-            "lib/data.ts", "lib/types.ts", "lib/constants.ts",
-            "src/lib/data.ts", "src/lib/types.ts",
-            "app/page.tsx", "app/layout.tsx",
+            "lib/data.ts",
+            "lib/types.ts",
+            "lib/constants.ts",
+            "src/lib/data.ts",
+            "src/lib/types.ts",
+            "app/page.tsx",
+            "app/layout.tsx",
         ]
         for shared in _SHARED_FILES:
             if shared in contents:
@@ -457,8 +472,18 @@ class BuilderAgent(BaseAgent):
                 if rel in contents:
                     continue
                 # Skip test files, migrations, generated files
-                if any(skip in rel for skip in ("test_", "alembic/versions", "__pycache__",
-                                                 ".test.", ".spec.", "__tests__", "node_modules")):
+                if any(
+                    skip in rel
+                    for skip in (
+                        "test_",
+                        "alembic/versions",
+                        "__pycache__",
+                        ".test.",
+                        ".spec.",
+                        "__tests__",
+                        "node_modules",
+                    )
+                ):
                     continue
                 try:
                     text = src_file.read_text(errors="replace")[:_MAX_FILE_READ_BYTES]
@@ -671,10 +696,14 @@ Return ONLY valid JSON:
             loop = _asyncio.get_event_loop()
 
             # Step 1: vague-check
-            vague_messages = [{"role": "user", "content": (
-                f"Task title: {task.title}\n\n"
-                f"Task description: {task.description}"
-            )}]
+            vague_messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Task title: {task.title}\n\nTask description: {task.description}"
+                    ),
+                }
+            ]
             vague_raw = await loop.run_in_executor(
                 None,
                 lambda: self._call_claude(
@@ -685,6 +714,7 @@ Return ONLY valid JSON:
             )
 
             import json as _json  # noqa: PLC0415
+
             try:
                 vague_result = _json.loads(vague_raw)
             except _json.JSONDecodeError:
@@ -703,20 +733,29 @@ Return ONLY valid JSON:
 
             # Step 2: enrich using the planner plan
             import json as _json2  # noqa: PLC0415, F811
-            plan_summary = _json2.dumps({
-                "approach": plan.get("approach", ""),
-                "files": plan.get("files", [])[:10],
-                "implementation_steps": plan.get("implementation_steps", [])[:8],
-                "acceptance_criteria": plan.get("acceptance_criteria", []),
-            }, indent=2)[:3000]
 
-            enrich_messages = [{"role": "user", "content": (
-                f"Task title: {task.title}\n\n"
-                f"Original description: {task.description}\n\n"
-                f"Planner's implementation plan:\n{plan_summary}\n\n"
-                f"Vague check reason: {vague_result.get('reason', '')}\n\n"
-                "Produce an enriched, concrete description."
-            )}]
+            plan_summary = _json2.dumps(
+                {
+                    "approach": plan.get("approach", ""),
+                    "files": plan.get("files", [])[:10],
+                    "implementation_steps": plan.get("implementation_steps", [])[:8],
+                    "acceptance_criteria": plan.get("acceptance_criteria", []),
+                },
+                indent=2,
+            )[:3000]
+
+            enrich_messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Task title: {task.title}\n\n"
+                        f"Original description: {task.description}\n\n"
+                        f"Planner's implementation plan:\n{plan_summary}\n\n"
+                        f"Vague check reason: {vague_result.get('reason', '')}\n\n"
+                        "Produce an enriched, concrete description."
+                    ),
+                }
+            ]
             enrich_raw = await loop.run_in_executor(
                 None,
                 lambda: self._call_claude(
@@ -784,7 +823,7 @@ Return ONLY valid JSON:
             fb_summary = reviewer_feedback.get("summary", "")
             issues = reviewer_feedback.get("issues", [])
             issues_text = "\n".join(
-                f"- [{i.get('severity','?')}] {i.get('location','?')}: {i.get('description','?')} → {i.get('suggestion','?')}"
+                f"- [{i.get('severity', '?')}] {i.get('location', '?')}: {i.get('description', '?')} → {i.get('suggestion', '?')}"
                 for i in issues[:10]
             )
             reflexion_section = (
@@ -1199,7 +1238,11 @@ Rules:
     # ── Git commit ────────────────────────────────────────────────────────────
 
     async def _commit_changes(
-        self, workspace: Path, task: Task, run: Run, files_written: list[str],
+        self,
+        workspace: Path,
+        task: Task,
+        run: Run,
+        files_written: list[str],
         branch: str | None = None,
     ) -> dict:
         """Commit changes to git if available. Returns commit info dict."""
@@ -1370,6 +1413,7 @@ Rules:
         if not self_check_result:
             return False
         import re as _re  # noqa: PLC0415
+
         # If the result is purely a pass phrase, no issues
         normalized = self_check_result.strip().lower()
         # Purely passing result: only contains "self-check passed" or similar
@@ -1392,7 +1436,6 @@ Rules:
         Returns {} on failure (non-fatal). Returns parsed changes dict on success.
         """
         try:
-
             system, messages = self._build_prompt(task, plan, existing_files)
             fix_instruction = (
                 f"\n\nSELF-CHECK ISSUES FOUND (must fix):\n{self_check_result[:1000]}\n\n"
@@ -1417,8 +1460,8 @@ Rules:
     queue="builder",
     max_retries=2,
     acks_late=True,
-    soft_time_limit=1800,   # 30 min: git clone + LLM codegen can be slow
-    time_limit=3600,        # 1 hour hard kill
+    soft_time_limit=1800,  # 30 min: git clone + LLM codegen can be slow
+    time_limit=3600,  # 1 hour hard kill
 )
 def execute_task(  # pragma: no cover
     self, task_id: str, run_id: str, assigned_agent_id: str | None = None, **kwargs

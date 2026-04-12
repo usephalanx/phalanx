@@ -14,6 +14,7 @@ Supported tech stacks (see verification_profiles.py):
 On failure: marks task ESCALATING with structured error list. Non-fatal in the
 orchestrator — pipeline continues to ship approval with the error noted.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -43,6 +44,7 @@ settings = get_settings()
 # Celery entry-point
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @celery_app.task(
     name="phalanx.agents.verifier.execute_task",
     bind=True,
@@ -59,6 +61,7 @@ def execute_task(self, task_id: str, run_id: str, **kwargs) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class VerifierAgent(BaseAgent):
     AGENT_ROLE = "verifier"

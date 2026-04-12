@@ -1,6 +1,7 @@
 """
 Unit tests for UX Designer agent and commander injection.
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -47,9 +48,24 @@ class TestInjectUxDesignerTask:
     def _base_plan(self):
         return {
             "tasks": [
-                {"sequence_num": 1, "title": "Architecture plan", "agent_role": "planner", "depends_on": []},
-                {"sequence_num": 2, "title": "Build components", "agent_role": "builder", "depends_on": [1]},
-                {"sequence_num": 3, "title": "Code review", "agent_role": "reviewer", "depends_on": [2]},
+                {
+                    "sequence_num": 1,
+                    "title": "Architecture plan",
+                    "agent_role": "planner",
+                    "depends_on": [],
+                },
+                {
+                    "sequence_num": 2,
+                    "title": "Build components",
+                    "agent_role": "builder",
+                    "depends_on": [1],
+                },
+                {
+                    "sequence_num": 3,
+                    "title": "Code review",
+                    "agent_role": "reviewer",
+                    "depends_on": [2],
+                },
             ]
         }
 
@@ -93,9 +109,11 @@ class TestInjectUxDesignerTask:
         assert result == {"tasks": []}
 
     def test_no_builder_tasks_unchanged(self):
-        plan = {"tasks": [
-            {"sequence_num": 1, "title": "Plan", "agent_role": "planner", "depends_on": []}
-        ]}
+        plan = {
+            "tasks": [
+                {"sequence_num": 1, "title": "Plan", "agent_role": "planner", "depends_on": []}
+            ]
+        }
         result = _inject_ux_designer_task(plan, "Build a webapp", "")
         roles = [t["agent_role"] for t in result["tasks"]]
         assert "ux_designer" not in roles
@@ -182,25 +200,39 @@ class TestSoulIntegration:
 
     def test_soul_prompts_registered(self):
         from phalanx.agents.soul import UX_DESIGNER_SOUL, get_reflection_prompt, get_soul
+
         assert get_soul("ux_designer") == UX_DESIGNER_SOUL
         assert get_reflection_prompt("ux_designer") is not None
 
     def test_ux_designer_soul_mentions_wcag(self):
         from phalanx.agents.soul import UX_DESIGNER_SOUL
+
         assert "WCAG" in UX_DESIGNER_SOUL
 
     def test_ux_designer_soul_is_language_agnostic(self):
         from phalanx.agents.soul import UX_DESIGNER_SOUL
+
         # Soul should mention no code
-        assert "never write code" in UX_DESIGNER_SOUL.lower() or "never writes code" in UX_DESIGNER_SOUL.lower()
+        assert (
+            "never write code" in UX_DESIGNER_SOUL.lower()
+            or "never writes code" in UX_DESIGNER_SOUL.lower()
+        )
 
     def test_self_check_prompt_has_contrast_check(self):
         from phalanx.agents.soul import UX_DESIGNER_SELF_CHECK_PROMPT
-        assert "WCAG" in UX_DESIGNER_SELF_CHECK_PROMPT or "contrast" in UX_DESIGNER_SELF_CHECK_PROMPT.lower()
+
+        assert (
+            "WCAG" in UX_DESIGNER_SELF_CHECK_PROMPT
+            or "contrast" in UX_DESIGNER_SELF_CHECK_PROMPT.lower()
+        )
 
     def test_reflection_prompt_asks_about_audience(self):
         from phalanx.agents.soul import UX_DESIGNER_REFLECTION_PROMPT
-        assert "audience" in UX_DESIGNER_REFLECTION_PROMPT.lower() or "user" in UX_DESIGNER_REFLECTION_PROMPT.lower()
+
+        assert (
+            "audience" in UX_DESIGNER_REFLECTION_PROMPT.lower()
+            or "user" in UX_DESIGNER_REFLECTION_PROMPT.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_execute_writes_design_md(self):
@@ -222,10 +254,12 @@ class TestSoulIntegration:
         mock_session = AsyncMock()
         mock_session.add = MagicMock()
         mock_session.commit = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=MagicMock(
-            scalar_one_or_none=MagicMock(return_value=None),
-            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))),
-        ))
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=None),
+                scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))),
+            )
+        )
 
         @asynccontextmanager
         async def mock_get_db():
@@ -240,7 +274,11 @@ class TestSoulIntegration:
             patch.object(agent, "_load_planner_context", return_value=""),
             patch.object(agent, "_reflect", return_value="This is a web todo app."),
             patch.object(agent, "_trace", new_callable=AsyncMock),
-            patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 1. Brand Identity\nApp: Todo\n## 6. Logo\n<svg></svg>"),
+            patch.object(
+                agent,
+                "_generate_design",
+                return_value="# DESIGN.md\n## 1. Brand Identity\nApp: Todo\n## 6. Logo\n<svg></svg>",
+            ),
             patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
             patch.object(agent, "_write_design_handoff", return_value="Clean minimal design."),
             patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
@@ -273,15 +311,18 @@ class TestSoulIntegration:
         mock_session = AsyncMock()
         mock_session.add = MagicMock()
         mock_session.commit = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=MagicMock(
-            scalar_one_or_none=MagicMock(return_value=None),
-        ))
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(
+                scalar_one_or_none=MagicMock(return_value=None),
+            )
+        )
 
         @asynccontextmanager
         async def mock_get_db():
             yield mock_session
 
         import tempfile
+
         with (
             tempfile.TemporaryDirectory() as tmpdir,
             patch("phalanx.agents.ux_designer.settings") as mock_settings,
@@ -289,9 +330,15 @@ class TestSoulIntegration:
             patch.object(agent, "_load_task", return_value=mock_task),
             patch.object(agent, "_load_run", return_value=mock_run),
             patch.object(agent, "_load_planner_context", return_value=""),
-            patch.object(agent, "_reflect", return_value="This brief is underspecified — I cannot determine the target audience."),
+            patch.object(
+                agent,
+                "_reflect",
+                return_value="This brief is underspecified — I cannot determine the target audience.",
+            ),
             patch.object(agent, "_trace", side_effect=capture_trace),
-            patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 6. Logo\n<svg></svg>"),
+            patch.object(
+                agent, "_generate_design", return_value="# DESIGN.md\n## 6. Logo\n<svg></svg>"
+            ),
             patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
             patch.object(agent, "_write_design_handoff", return_value=""),
             patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),

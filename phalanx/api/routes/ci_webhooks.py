@@ -38,6 +38,7 @@ router = APIRouter(tags=["ci-webhooks"])
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
     """
     Look up the CIIntegration for this repo, create a CIFixRun, dispatch task.
@@ -66,7 +67,11 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
             return None
 
         # Author filter — if allowed_authors is set, skip PRs not in the list
-        if integration.allowed_authors and event.pr_author and event.pr_author not in integration.allowed_authors:
+        if (
+            integration.allowed_authors
+            and event.pr_author
+            and event.pr_author not in integration.allowed_authors
+        ):
             log.info(
                 "ci_webhook.author_filtered",
                 repo=event.repo_full_name,
@@ -147,9 +152,7 @@ def _verify_github_signature(body: bytes, signature: str, secret: str) -> bool:
     """Verify X-Hub-Signature-256 from GitHub webhook."""
     if not secret:
         return True  # signature check disabled (dev mode)
-    expected = "sha256=" + hmac.new(
-        secret.encode(), body, hashlib.sha256
-    ).hexdigest()
+    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature or "")
 
 
@@ -161,6 +164,7 @@ def _verify_buildkite_signature(body: bytes, token: str, stored_token: str) -> b
 
 
 # ── GitHub App webhook ─────────────────────────────────────────────────────────
+
 
 @router.post("/webhook/github", status_code=status.HTTP_200_OK)
 async def github_webhook(
@@ -204,7 +208,9 @@ async def github_webhook(
         # pr_author: prefer PR user login, fall back to sender (whoever triggered the event)
         pr_author: str | None = None
         if pull_requests:
-            pr_author = pull_requests[0].get("user", {}).get("login") or pull_requests[0].get("head", {}).get("user", {}).get("login")
+            pr_author = pull_requests[0].get("user", {}).get("login") or pull_requests[0].get(
+                "head", {}
+            ).get("user", {}).get("login")
         if not pr_author:
             pr_author = payload.get("sender", {}).get("login")
 
@@ -231,6 +237,7 @@ async def github_webhook(
 
 
 # ── Buildkite webhook ──────────────────────────────────────────────────────────
+
 
 @router.post("/webhook/buildkite", status_code=status.HTTP_200_OK)
 async def buildkite_webhook(
@@ -274,10 +281,7 @@ async def buildkite_webhook(
     if not repo_full_name:
         return {"status": "skipped", "reason": "cannot parse repo name"}
 
-    failed_jobs = [
-        j["name"] for j in build.get("jobs", [])
-        if j.get("state") == "failed"
-    ]
+    failed_jobs = [j["name"] for j in build.get("jobs", []) if j.get("state") == "failed"]
 
     event = CIFailureEvent(
         provider="buildkite",
@@ -300,6 +304,7 @@ async def buildkite_webhook(
 
 # ── CircleCI webhook (Phase 2 stub) ────────────────────────────────────────────
 
+
 @router.post("/webhook/circleci", status_code=status.HTTP_200_OK)
 async def circleci_webhook(request: Request):
     """CircleCI webhook — Phase 2."""
@@ -307,6 +312,7 @@ async def circleci_webhook(request: Request):
 
 
 # ── Jenkins webhook (Phase 2 stub) ─────────────────────────────────────────────
+
 
 @router.post("/webhook/jenkins", status_code=status.HTTP_200_OK)
 async def jenkins_webhook(request: Request):
@@ -316,9 +322,11 @@ async def jenkins_webhook(request: Request):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _parse_repo_name(repo_url: str) -> str | None:
     """Extract 'owner/repo' from a git remote URL."""
     import re  # noqa: PLC0415
+
     # https://github.com/owner/repo.git
     m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", repo_url)
     if m:

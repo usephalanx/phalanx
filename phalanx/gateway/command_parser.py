@@ -60,9 +60,9 @@ class ParsedCommand:
     tags: list[str] = field(default_factory=list)
     parse_error: str | None = None
     # fix command fields
-    fix_repo: str | None = None        # e.g. "acme/backend"
-    fix_pr_number: int | None = None   # PR number to fix
-    fix_branch: str | None = None      # branch to fix (alternative to PR)
+    fix_repo: str | None = None  # e.g. "acme/backend"
+    fix_pr_number: int | None = None  # PR number to fix
+    fix_branch: str | None = None  # branch to fix (alternative to PR)
 
     @property
     def is_valid(self) -> bool:

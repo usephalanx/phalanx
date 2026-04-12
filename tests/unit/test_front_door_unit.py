@@ -16,6 +16,7 @@ Covers every component that previously had 0% or low coverage:
 
 All OpenAI / DB calls are mocked — no real network or I/O.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -27,6 +28,7 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_scalar_result(obj):
     """Return a mock that behaves like SQLAlchemy's scalar result."""
@@ -45,7 +47,10 @@ def _make_mock_wo(
     wo.id = str(uuid.uuid4())
     wo.project_id = project_id
     wo.title = title
-    wo.intent = intent or {"normalized_goal": "some goal", "_request_type": "semi_specified_request"}
+    wo.intent = intent or {
+        "normalized_goal": "some goal",
+        "_request_type": "semi_specified_request",
+    }
     wo.updated_at = datetime.now(UTC) - timedelta(hours=hours_ago)
     return wo
 
@@ -69,13 +74,18 @@ def _make_router_result(
     risk_flags: list[str] | None = None,
 ):
     # Use is-not-None check so callers can pass [] to mean "empty, not default"
-    reqs = explicit_requirements if explicit_requirements is not None else ["iOS app", "photoshoots"]
-    constraints = explicit_constraints if explicit_constraints is not None else ["App Store compliant"]
+    reqs = (
+        explicit_requirements if explicit_requirements is not None else ["iOS app", "photoshoots"]
+    )
+    constraints = (
+        explicit_constraints if explicit_constraints is not None else ["App Store compliant"]
+    )
     assumptions = inferred_assumptions if inferred_assumptions is not None else ["SwiftUI"]
     uknowns_ = unknowns if unknowns is not None else ["payment processor"]
     flags = risk_flags if risk_flags is not None else ["none"]
 
     from phalanx.agents.intent_router import RouterResult
+
     return RouterResult(
         request_type=request_type,
         primary_intent={"summary": "Build iOS photoshoot app", "category": "mobile_app"},
@@ -97,6 +107,7 @@ def _make_router_result(
 
 def _make_normalized_spec(execution_mode: str = "mvp", is_expert: bool = False):
     from phalanx.agents.requirement_normalizer import NormalizedSpec
+
     return NormalizedSpec(
         normalized_goal="Build an iOS app for photoshoot bookings",
         artifact_type="mobile_app",
@@ -134,23 +145,29 @@ def _make_execution_plan(num_phases: int = 2):
                 title=f"Task {i}",
                 description=f"Description for task {i}",
                 owner_role="engineer",
-                depends_on=[f"t{i-1}"] if i > 1 else [],
+                depends_on=[f"t{i - 1}"] if i > 1 else [],
                 acceptance_criteria=[f"Criterion {i}a", f"Criterion {i}b"],
                 artifacts=[f"File{i}.swift", f"Test{i}.swift"],
                 risk_level="low" if i == 1 else "medium",
             )
         ]
-        phases.append(PlanPhase(
-            phase_name=f"Phase {i}",
-            goal=f"Deliver phase {i} goal",
-            tasks=tasks,
-        ))
+        phases.append(
+            PlanPhase(
+                phase_name=f"Phase {i}",
+                goal=f"Deliver phase {i} goal",
+                tasks=tasks,
+            )
+        )
     return ExecutionPlan(
         plan_summary="Two-phase incremental iOS build",
         execution_strategy="phased_delivery",
         phases=phases,
         repo_actions={"create_branch": True, "branch_name_suggestion": "feature/photoshoot-ios"},
-        verification_plan={"build_checks": ["xcodebuild"], "test_checks": ["xctest"], "manual_review_steps": []},
+        verification_plan={
+            "build_checks": ["xcodebuild"],
+            "test_checks": ["xctest"],
+            "manual_review_steps": [],
+        },
         open_questions=["Which payment processor?"],
         stop_conditions=["If App Store guideline changes"],
         raw={"plan_summary": "Two-phase incremental iOS build"},
@@ -514,6 +531,7 @@ class TestIntentRouter:
             mock_client.call.return_value = _SAMPLE_ROUTER_RAW
 
             from phalanx.agents.intent_router import IntentRouter
+
             result = IntentRouter().route("build an ios app for photoshoot promotions")
 
         assert result.request_type == "semi_specified_request"
@@ -535,9 +553,13 @@ class TestIntentRouter:
             mock_client.call.return_value = raw
 
             from phalanx.agents.intent_router import IntentRouter
+
             result = IntentRouter().route("build something")
 
-        assert result.primary_intent == {"summary": "Build iOS photoshoot app", "category": "unknown"}
+        assert result.primary_intent == {
+            "summary": "Build iOS photoshoot app",
+            "category": "unknown",
+        }
 
     def test_route_uses_low_temperature(self):
         with patch("phalanx.agents.intent_router.OpenAIClient") as mock_cls:
@@ -546,6 +568,7 @@ class TestIntentRouter:
             mock_client.call.return_value = _SAMPLE_ROUTER_RAW
 
             from phalanx.agents.intent_router import IntentRouter
+
             IntentRouter().route("anything")
 
         _, kwargs = mock_client.call.call_args
@@ -558,6 +581,7 @@ class TestIntentRouter:
             mock_client.call.return_value = _SAMPLE_ROUTER_RAW
 
             from phalanx.agents.intent_router import IntentRouter
+
             IntentRouter().route("my unique prompt payload")
 
         _, kwargs = mock_client.call.call_args
@@ -571,6 +595,7 @@ class TestIntentRouter:
             mock_client.call.return_value = _SAMPLE_ROUTER_RAW
 
             from phalanx.agents.intent_router import IntentRouter
+
             IntentRouter().route("build something")
 
         _, kwargs = mock_client.call.call_args
@@ -603,7 +628,9 @@ class TestIntentRouter:
         assert r.needs_split is True
 
     def test_needs_split_false_for_normal_request(self):
-        r = _make_router_result(request_type="semi_specified_request", execution_readiness="needs_light_defaults")
+        r = _make_router_result(
+            request_type="semi_specified_request", execution_readiness="needs_light_defaults"
+        )
         assert r.needs_split is False
 
     def test_is_expert_spec_true(self):
@@ -705,6 +732,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = _SAMPLE_NORMALIZER_RAW
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             result = RequirementNormalizer().normalize(router_result)
 
         assert result.normalized_goal == "Build an MVP iOS app for photoshoot bookings"
@@ -725,6 +753,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = _SAMPLE_NORMALIZER_RAW
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             RequirementNormalizer().normalize(router_result)
 
         _, kwargs = mock_client.call.call_args
@@ -740,6 +769,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = _SAMPLE_NORMALIZER_RAW
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             RequirementNormalizer().normalize(router_result)
 
         _, kwargs = mock_client.call.call_args
@@ -748,6 +778,7 @@ class TestRequirementNormalizer:
     def test_router_output_is_passed_as_json_payload(self):
         """Normalizer must pass the full router_output JSON, not just the prompt text."""
         import json
+
         router_result = _make_router_result()
 
         with patch("phalanx.agents.requirement_normalizer.OpenAIClient") as mock_cls:
@@ -756,6 +787,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = _SAMPLE_NORMALIZER_RAW
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             RequirementNormalizer().normalize(router_result)
 
         _, kwargs = mock_client.call.call_args
@@ -769,11 +801,22 @@ class TestRequirementNormalizer:
         d = spec.to_dict()
 
         required_keys = {
-            "normalized_goal", "artifact_type", "execution_mode", "target_users",
-            "core_user_problem", "success_criteria", "mvp_scope",
-            "functional_requirements", "non_functional_requirements",
-            "technical_constraints", "design_requirements", "content_requirements",
-            "safe_defaults", "assumptions", "unresolved_unknowns", "delivery_expectations",
+            "normalized_goal",
+            "artifact_type",
+            "execution_mode",
+            "target_users",
+            "core_user_problem",
+            "success_criteria",
+            "mvp_scope",
+            "functional_requirements",
+            "non_functional_requirements",
+            "technical_constraints",
+            "design_requirements",
+            "content_requirements",
+            "safe_defaults",
+            "assumptions",
+            "unresolved_unknowns",
+            "delivery_expectations",
         }
         assert required_keys.issubset(set(d.keys()))
 
@@ -794,6 +837,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = raw
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             result = RequirementNormalizer().normalize(router_result)
 
         assert result.delivery_expectations["should_create_branch"] is True
@@ -817,6 +861,7 @@ class TestRequirementNormalizer:
             mock_client.call.return_value = raw
 
             from phalanx.agents.requirement_normalizer import RequirementNormalizer
+
             result = RequirementNormalizer().normalize(router_result)
 
         assert result.delivery_expectations["should_run_build"] is False
@@ -842,7 +887,10 @@ _SAMPLE_PLANNER_RAW = {
                     "description": "Create new SwiftUI project with MVVM structure",
                     "owner_role": "engineer",
                     "depends_on": [],
-                    "acceptance_criteria": ["Project builds without errors", "MVVM folders created"],
+                    "acceptance_criteria": [
+                        "Project builds without errors",
+                        "MVVM folders created",
+                    ],
                     "artifacts": ["App/", "README.md"],
                     "risk_level": "low",
                 }
@@ -858,7 +906,10 @@ _SAMPLE_PLANNER_RAW = {
                     "description": "Implement booking screens per the normalized spec",
                     "owner_role": "engineer",
                     "depends_on": ["t1"],
-                    "acceptance_criteria": ["User can complete a booking", "BookingView.swift exists"],
+                    "acceptance_criteria": [
+                        "User can complete a booking",
+                        "BookingView.swift exists",
+                    ],
                     "artifacts": ["BookingView.swift", "BookingViewModel.swift"],
                     "risk_level": "medium",
                 },
@@ -900,6 +951,7 @@ class TestExecutionPlanner:
             mock_client.call.return_value = _SAMPLE_PLANNER_RAW
 
             from phalanx.agents.execution_planner import ExecutionPlanner
+
             result = ExecutionPlanner().plan(normalized)
 
         assert result.plan_summary == "Two-phase incremental iOS MVP: scaffold then booking flow"
@@ -918,6 +970,7 @@ class TestExecutionPlanner:
             mock_client.call.return_value = _SAMPLE_PLANNER_RAW
 
             from phalanx.agents.execution_planner import ExecutionPlanner
+
             result = ExecutionPlanner().plan(normalized)
 
         phase1_tasks = result.phases[0].tasks
@@ -941,6 +994,7 @@ class TestExecutionPlanner:
 
     def test_planner_uses_normalized_requirements_as_llm_input(self):
         import json
+
         normalized = _make_normalized_spec()
 
         with patch("phalanx.agents.execution_planner.OpenAIClient") as mock_cls:
@@ -949,6 +1003,7 @@ class TestExecutionPlanner:
             mock_client.call.return_value = _SAMPLE_PLANNER_RAW
 
             from phalanx.agents.execution_planner import ExecutionPlanner
+
             ExecutionPlanner().plan(normalized)
 
         _, kwargs = mock_client.call.call_args
@@ -968,6 +1023,7 @@ class TestExecutionPlanner:
             mock_client.call.return_value = _SAMPLE_PLANNER_RAW
 
             from phalanx.agents.execution_planner import ExecutionPlanner
+
             plan = ExecutionPlanner().plan(normalized)
 
         spec = plan.to_enriched_spec()
@@ -987,9 +1043,21 @@ class TestExecutionPlanner:
         spec = plan.to_enriched_spec()
         entry = spec["phases"][0]
 
-        required = {"id", "name", "agent_role", "role", "context", "objectives",
-                    "deliverables", "acceptance_criteria", "rules", "claude_prompt",
-                    "_task_id", "_risk_level", "_depends_on"}
+        required = {
+            "id",
+            "name",
+            "agent_role",
+            "role",
+            "context",
+            "objectives",
+            "deliverables",
+            "acceptance_criteria",
+            "rules",
+            "claude_prompt",
+            "_task_id",
+            "_risk_level",
+            "_depends_on",
+        }
         assert required.issubset(set(entry.keys()))
 
     def test_to_enriched_spec_role_mapping_engineer_to_builder(self):
@@ -999,30 +1067,50 @@ class TestExecutionPlanner:
 
     def test_to_enriched_spec_role_mapping_qa_stays_qa(self):
         from phalanx.agents.execution_planner import ExecutionPlan, PlanPhase, PlanTask
+
         task = PlanTask(
-            task_id="qa1", title="Run tests", description="Run all QA",
-            owner_role="qa", depends_on=[], acceptance_criteria=["All pass"],
-            artifacts=["TestSuite.swift"], risk_level="low",
+            task_id="qa1",
+            title="Run tests",
+            description="Run all QA",
+            owner_role="qa",
+            depends_on=[],
+            acceptance_criteria=["All pass"],
+            artifacts=["TestSuite.swift"],
+            risk_level="low",
         )
         plan = ExecutionPlan(
-            plan_summary="QA phase", execution_strategy="single_pass",
+            plan_summary="QA phase",
+            execution_strategy="single_pass",
             phases=[PlanPhase(phase_name="QA", goal="Test everything", tasks=[task])],
-            repo_actions={}, verification_plan={}, open_questions=[], stop_conditions=[],
+            repo_actions={},
+            verification_plan={},
+            open_questions=[],
+            stop_conditions=[],
         )
         spec = plan.to_enriched_spec()
         assert spec["phases"][0]["agent_role"] == "qa"
 
     def test_to_enriched_spec_role_mapping_release_stays_release(self):
         from phalanx.agents.execution_planner import ExecutionPlan, PlanPhase, PlanTask
+
         task = PlanTask(
-            task_id="r1", title="Publish", description="Ship it",
-            owner_role="release", depends_on=[], acceptance_criteria=["Published"],
-            artifacts=["CHANGELOG.md"], risk_level="low",
+            task_id="r1",
+            title="Publish",
+            description="Ship it",
+            owner_role="release",
+            depends_on=[],
+            acceptance_criteria=["Published"],
+            artifacts=["CHANGELOG.md"],
+            risk_level="low",
         )
         plan = ExecutionPlan(
-            plan_summary="Release", execution_strategy="single_pass",
+            plan_summary="Release",
+            execution_strategy="single_pass",
             phases=[PlanPhase(phase_name="Release", goal="Ship", tasks=[task])],
-            repo_actions={}, verification_plan={}, open_questions=[], stop_conditions=[],
+            repo_actions={},
+            verification_plan={},
+            open_questions=[],
+            stop_conditions=[],
         )
         spec = plan.to_enriched_spec()
         assert spec["phases"][0]["agent_role"] == "release"
@@ -1055,6 +1143,7 @@ class TestExecutionPlanner:
             mock_client.call.return_value = raw
 
             from phalanx.agents.execution_planner import ExecutionPlanner
+
             result = ExecutionPlanner().plan(normalized)
 
         assert result.phases == []
@@ -1107,11 +1196,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", count_plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=block_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=block_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build something weird")
 
         assert result.success is False
@@ -1128,11 +1223,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=block_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=block_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("mixed request")
 
         assert result.validation_status == "block"
@@ -1148,6 +1249,7 @@ class TestPromptEnricherExtras:
             ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build something")
 
         assert result.success is False
@@ -1189,11 +1291,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", capture_route),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             PromptEnricher("wo-id", "proj-id").run(
                 "add new booking screen",
                 context=context,
@@ -1233,11 +1341,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", capture_route),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             PromptEnricher("wo-id", "proj-id").run("fresh new request", context=context)
 
         assert len(captured_prompts) == 1
@@ -1260,11 +1374,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("expert spec prompt")
 
         assert result.request_type == "expert_spec"
@@ -1305,11 +1425,17 @@ class TestPromptEnricherExtras:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", count_plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=revise_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=revise_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build an app")
 
         # After max retries, still succeeds with last plan

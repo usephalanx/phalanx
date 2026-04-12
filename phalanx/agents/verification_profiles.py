@@ -13,6 +13,7 @@ Usage:
     profile = get_profile(tech_stack)
     errors = run_profile_checks(profile, work_dir)
 """
+
 from __future__ import annotations
 
 import json
@@ -50,6 +51,7 @@ class VerificationProfile:
         build_timeout:      seconds before build is killed
         integration_pattern: wiring strategy key used by IntegrationWiringAgent
     """
+
     tech_stack: str
     app_type: str
     entry_points: list[str]
@@ -121,7 +123,6 @@ PROFILES: dict[str, VerificationProfile] = {
         build_timeout=180,
         integration_pattern="generic-web",
     ),
-
     # ── API ───────────────────────────────────────────────────────────────────
     "fastapi": VerificationProfile(
         tech_stack="fastapi",
@@ -129,8 +130,15 @@ PROFILES: dict[str, VerificationProfile] = {
         entry_points=["main.py", "app/main.py"],
         detection_files=["main.py", "app/main.py"],  # plus fastapi import check
         install_cmd=["pip", "install", "-r", "requirements.txt", "--quiet"],
-        build_cmd=["python", "-m", "py_compile"],       # placeholder — real check in _compile_all_py
-        typecheck_cmd=["python", "-m", "mypy", ".", "--ignore-missing-imports", "--no-error-summary"],
+        build_cmd=["python", "-m", "py_compile"],  # placeholder — real check in _compile_all_py
+        typecheck_cmd=[
+            "python",
+            "-m",
+            "mypy",
+            ".",
+            "--ignore-missing-imports",
+            "--no-error-summary",
+        ],
         lint_cmd=[],
         install_timeout=60,
         build_timeout=30,
@@ -167,7 +175,7 @@ PROFILES: dict[str, VerificationProfile] = {
         app_type="api",
         entry_points=["main.go", "cmd/main.go"],
         detection_files=["go.mod"],
-        install_cmd=[],          # go modules handled by go build
+        install_cmd=[],  # go modules handled by go build
         build_cmd=["go", "build", "./..."],
         typecheck_cmd=["go", "vet", "./..."],
         lint_cmd=[],
@@ -188,15 +196,14 @@ PROFILES: dict[str, VerificationProfile] = {
         build_timeout=30,
         integration_pattern="generic-python",
     ),
-
     # ── Mobile ────────────────────────────────────────────────────────────────
     "react_native": VerificationProfile(
         tech_stack="react_native",
         app_type="mobile",
         entry_points=["App.tsx", "App.js", "src/App.tsx"],
-        detection_files=["app.json"],   # plus react-native dep check
+        detection_files=["app.json"],  # plus react-native dep check
         install_cmd=["npm", "install"],
-        build_cmd=[],                   # no headless build; tsc is the check
+        build_cmd=[],  # no headless build; tsc is the check
         typecheck_cmd=["npx", "tsc", "--noEmit"],
         lint_cmd=[],
         install_timeout=120,
@@ -229,7 +236,6 @@ PROFILES: dict[str, VerificationProfile] = {
         build_timeout=120,
         integration_pattern="flutter-material",
     ),
-
     # ── CLI ───────────────────────────────────────────────────────────────────
     "click_cli": VerificationProfile(
         tech_stack="click_cli",
@@ -339,7 +345,9 @@ def detect_tech_stack(work_dir: Path | None, app_type: str) -> str:
 
     # Click CLI — pyproject.toml or setup.py with click import
     if (work_dir / "pyproject.toml").exists() or (work_dir / "setup.py").exists():
-        for py_file in list(work_dir.glob("*.py")) + list((work_dir / "src").glob("*.py") if (work_dir / "src").exists() else []):
+        for py_file in list(work_dir.glob("*.py")) + list(
+            (work_dir / "src").glob("*.py") if (work_dir / "src").exists() else []
+        ):
             try:
                 if "click" in py_file.read_text(errors="ignore").lower():
                     return "click_cli"
@@ -373,10 +381,9 @@ def merge_workspace(base: Path, builder_tasks: list) -> Path:
         shutil.rmtree(merged_dir)
     merged_dir.mkdir(parents=True)
 
-    epic_dirs = sorted({
-        base / (t.branch_name.replace("/", "_") if t.branch_name else "")
-        for t in builder_tasks
-    })
+    epic_dirs = sorted(
+        {base / (t.branch_name.replace("/", "_") if t.branch_name else "") for t in builder_tasks}
+    )
 
     for epic_dir in epic_dirs:
         if epic_dir.is_dir() and epic_dir != merged_dir:
@@ -442,7 +449,9 @@ def _read_pkg_deps(work_dir: Path) -> set[str]:
         return set()
     try:
         data = json.loads(pkg.read_text())
-        return set(data.get("dependencies", {}).keys()) | set(data.get("devDependencies", {}).keys())
+        return set(data.get("dependencies", {}).keys()) | set(
+            data.get("devDependencies", {}).keys()
+        )
     except (json.JSONDecodeError, OSError):
         return set()
 

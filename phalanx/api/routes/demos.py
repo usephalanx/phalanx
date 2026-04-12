@@ -23,6 +23,7 @@ router = APIRouter(tags=["demos"])
 
 # ── Pydantic schemas ──────────────────────────────────────────────────────────
 
+
 class DemoOut(BaseModel):
     id: str
     run_id: str
@@ -41,18 +42,18 @@ class DemoOut(BaseModel):
 
 # ── List demos ────────────────────────────────────────────────────────────────
 
+
 @router.get("/v1/demos", response_model=list[DemoOut])
 async def list_demos():
     """Return all demos ordered by creation date descending."""
     async with get_db() as session:
-        result = await session.execute(
-            select(Demo).order_by(Demo.created_at.desc())
-        )
+        result = await session.execute(select(Demo).order_by(Demo.created_at.desc()))
         demos = result.scalars().all()
         return [_to_out(d) for d in demos]
 
 
 # ── Get single demo ───────────────────────────────────────────────────────────
+
 
 @router.get("/v1/demos/{demo_id}", response_model=DemoOut)
 async def get_demo(demo_id: str):
@@ -64,6 +65,7 @@ async def get_demo(demo_id: str):
 
 
 # ── Start demo ────────────────────────────────────────────────────────────────
+
 
 @router.post("/v1/demos/{demo_id}/start", status_code=status.HTTP_202_ACCEPTED)
 async def start_demo(demo_id: str):
@@ -90,6 +92,7 @@ async def start_demo(demo_id: str):
 
 # ── Stop demo ─────────────────────────────────────────────────────────────────
 
+
 @router.post("/v1/demos/{demo_id}/stop", status_code=status.HTTP_202_ACCEPTED)
 async def stop_demo(demo_id: str):
     """Queue a portal_stop_demo Celery task to stop the container."""
@@ -109,6 +112,7 @@ async def stop_demo(demo_id: str):
 
 
 # ── Delete demo ──────────────────────────────────────────────────────────────
+
 
 @router.delete("/v1/demos/{demo_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_demo(demo_id: str):
@@ -782,11 +786,13 @@ setInterval(fetchDemos, 15000);
 async def demo_portal():
     """Demo portal — AWS-style list with Start/Stop and LRU warning."""
     from phalanx.config.settings import get_settings as _gs  # noqa: PLC0415
+
     max_running = _gs().demo_max_running
     return HTMLResponse(content=_PORTAL_HTML.replace("{max_running}", str(max_running)))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _to_out(demo: Demo) -> DemoOut:
     return DemoOut(

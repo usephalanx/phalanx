@@ -1,4 +1,5 @@
 """Unit tests for the FastAPI /health route in api/routes/health.py."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,9 +35,7 @@ async def test_health_route_ok():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200
@@ -64,9 +63,7 @@ async def test_api_health_route_db_error():
         mock_settings.forge_cors_origins = ""
         mock_engine.connect.side_effect = Exception("DB unavailable")
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 503
@@ -84,9 +81,7 @@ async def test_healthz_via_asgi():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/healthz")
 
     assert response.status_code == 200
@@ -144,6 +139,7 @@ async def test_api_routes_health_endpoint_full():
 
     assert response.status_code == 200
     import json as _json
+
     data = _json.loads(response.body)
     assert data["status"] == "ok"
     assert data["db"] == "ok"
@@ -164,6 +160,7 @@ async def test_api_routes_health_unhealthy_on_db_error():
         response = await health_handler()
 
     import json as _json
+
     data = _json.loads(response.body)
     assert data["status"] == "unhealthy"
     assert response.status_code == 503
@@ -188,6 +185,7 @@ async def test_api_routes_health_degraded_on_redis_error():
         response = await health_handler()
 
     import json as _json
+
     data = _json.loads(response.body)
     assert data["status"] == "degraded"
     assert response.status_code == 200
@@ -206,6 +204,7 @@ async def test_api_routes_health_db_timeout():
         response = await health_handler()
 
     import json as _json
+
     data = _json.loads(response.body)
     assert data["db"] == "timeout"
     assert data["status"] == "unhealthy"
@@ -231,6 +230,7 @@ async def test_api_routes_health_redis_timeout():
         response = await health_handler()
 
     import json as _json
+
     data = _json.loads(response.body)
     assert data["redis"] == "timeout"
     assert data["status"] == "degraded"
@@ -246,9 +246,7 @@ async def test_api_key_middleware_rejects_missing_key():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/v1/runs")
 
     assert response.status_code == 401
@@ -279,9 +277,7 @@ async def test_api_key_middleware_allows_health_without_key():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200
@@ -297,9 +293,7 @@ async def test_cors_with_origins_configured():
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = "https://app.example.com,https://admin.example.com"
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/healthz")
 
     assert response.status_code == 200

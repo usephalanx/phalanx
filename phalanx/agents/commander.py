@@ -73,11 +73,7 @@ def _inject_sre_task(task_plan: dict) -> dict:
     max_seq = max(t.get("sequence_num", 1) for t in tasks)
 
     # Find the last release task to depend on
-    release_seqs = [
-        t.get("sequence_num", 1)
-        for t in tasks
-        if t.get("agent_role") == "release"
-    ]
+    release_seqs = [t.get("sequence_num", 1) for t in tasks if t.get("agent_role") == "release"]
     depends_on = release_seqs if release_seqs else [max_seq]
 
     sre_task = {
@@ -135,11 +131,7 @@ def _inject_ux_designer_task(
             shifted.append(t)
 
     # Build ux_designer task — depends on whatever the first builder depended on (seq < first_builder)
-    planner_seqs = [
-        t.get("sequence_num", 1)
-        for t in tasks
-        if t.get("agent_role") == "planner"
-    ]
+    planner_seqs = [t.get("sequence_num", 1) for t in tasks if t.get("agent_role") == "planner"]
     ux_depends_on = planner_seqs if planner_seqs else []
 
     ux_task = {
@@ -322,18 +314,24 @@ class CommanderAgent(BaseAgent):
         final_status = None
         while elapsed < _max_wait:
             import asyncio as _asyncio  # noqa: PLC0415
+
             await _asyncio.sleep(_poll_interval)
             elapsed += _poll_interval
 
             async with _get_db() as poll_session:
-                run_result = await poll_session.execute(
-                    select(Run).where(Run.id == self.run_id)
-                )
+                run_result = await poll_session.execute(select(Run).where(Run.id == self.run_id))
                 run_snapshot = run_result.scalar_one()
                 final_status = run_snapshot.status
 
-            if final_status in ("VERIFYING", "AWAITING_SHIP_APPROVAL", "READY_TO_MERGE",
-                                "SHIPPED", "MERGED", "FAILED", "CANCELLED"):
+            if final_status in (
+                "VERIFYING",
+                "AWAITING_SHIP_APPROVAL",
+                "READY_TO_MERGE",
+                "SHIPPED",
+                "MERGED",
+                "FAILED",
+                "CANCELLED",
+            ):
                 break
 
             self._log.debug(
@@ -677,11 +675,13 @@ phase_name rules:
             for dep_seq in t.get("depends_on", []):
                 parent_task = seq_to_task.get(int(dep_seq))
                 if parent_task:
-                    session.add(TaskDependency(
-                        task_id=child_task.id,
-                        depends_on_id=parent_task.id,
-                        dependency_type="full",
-                    ))
+                    session.add(
+                        TaskDependency(
+                            task_id=child_task.id,
+                            depends_on_id=parent_task.id,
+                            dependency_type="full",
+                        )
+                    )
                     dep_count += 1
 
         await session.commit()
@@ -701,8 +701,8 @@ phase_name rules:
     queue="commander",
     max_retries=2,
     acks_late=True,
-    soft_time_limit=3600,   # 1 hour: full pipeline (plan+build+review+qa+security+release) needs time
-    time_limit=7200,        # 2 hour hard kill
+    soft_time_limit=3600,  # 1 hour: full pipeline (plan+build+review+qa+security+release) needs time
+    time_limit=7200,  # 2 hour hard kill
 )
 def execute_run(
     self, work_order_id: str, project_id: str, run_id: str, **kwargs

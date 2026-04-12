@@ -40,6 +40,7 @@ class LogFetcher(Protocol):
 
 # ── GitHub Actions ─────────────────────────────────────────────────────────────
 
+
 class GitHubActionsLogFetcher:
     """
     Fetches CI logs from GitHub Actions.
@@ -70,8 +71,7 @@ class GitHubActionsLogFetcher:
                 annotations = r.json()
                 if annotations:
                     lines = [
-                        f"{a['path']}:{a['start_line']}: {a['message']}"
-                        for a in annotations[:20]
+                        f"{a['path']}:{a['start_line']}: {a['message']}" for a in annotations[:20]
                     ]
                     annotations_text = "ANNOTATIONS:\n" + "\n".join(lines) + "\n\n"
             except Exception as exc:
@@ -111,10 +111,7 @@ def _extract_failed_step_from_zip(zip_bytes: bytes, failed_jobs: list[str]) -> s
             # Find files matching failed job names
             candidates: list[str] = []
             for name in zf.namelist():
-                if any(
-                    job.lower() in name.lower()
-                    for job in (failed_jobs or [""])
-                ):
+                if any(job.lower() in name.lower() for job in (failed_jobs or [""])):
                     candidates.append(name)
 
             # Fall back to all files if no match
@@ -152,6 +149,7 @@ def _extract_failure_section(lines: list[str]) -> str:
 
 # ── Buildkite ──────────────────────────────────────────────────────────────────
 
+
 class BuildkiteLogFetcher:
     """
     Fetches CI logs from Buildkite REST API.
@@ -177,7 +175,8 @@ class BuildkiteLogFetcher:
                 build = r.json()
 
                 failed_jobs = [
-                    j for j in build.get("jobs", [])
+                    j
+                    for j in build.get("jobs", [])
                     if j.get("state") in ("failed", "timed_out", "broken")
                 ]
 
@@ -197,7 +196,9 @@ class BuildkiteLogFetcher:
                         section = _extract_failure_section(lines)
                         logs.append(f"JOB: {job.get('name', job_id)}\n{section}")
                     except Exception as exc:
-                        log.warning("ci_fixer.buildkite.job_log_failed", job_id=job_id, error=str(exc))
+                        log.warning(
+                            "ci_fixer.buildkite.job_log_failed", job_id=job_id, error=str(exc)
+                        )
 
                 combined = "\n\n---\n\n".join(logs)
                 return _truncate(combined) if combined.strip() else "(no logs retrieved)"
@@ -208,6 +209,7 @@ class BuildkiteLogFetcher:
 
 
 # ── CircleCI ───────────────────────────────────────────────────────────────────
+
 
 class CircleCILogFetcher:
     """
@@ -225,6 +227,7 @@ class CircleCILogFetcher:
 
 
 # ── Jenkins ────────────────────────────────────────────────────────────────────
+
 
 class JenkinsLogFetcher:
     """
@@ -257,6 +260,7 @@ def get_log_fetcher(provider: str) -> LogFetcher:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _truncate(text: str) -> str:
     """Truncate log text to fit within LLM prompt budget."""

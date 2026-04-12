@@ -2,6 +2,7 @@
 Unit tests for SRE agent pure utility functions.
 No Docker, no DB, no network — pure logic only.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,6 +18,7 @@ from phalanx.agents.sre import (
 )
 
 # ── _make_slug ─────────────────────────────────────────────────────────────────
+
 
 class TestMakeSlug:
     def test_basic_title(self):
@@ -61,6 +63,7 @@ class TestMakeSlug:
 
 # ── _validate_dockerfile ───────────────────────────────────────────────────────
 
+
 class TestValidateDockerfile:
     def test_valid_dockerfile_passes(self):
         content = "FROM python:3.12-slim\nWORKDIR /app\nCMD ['python', 'app.py']\n"
@@ -99,6 +102,7 @@ class TestValidateDockerfile:
 
 # ── _nginx_conf_for_slug ───────────────────────────────────────────────────────
 
+
 class TestNginxConfForSlug:
     def test_contains_slug(self):
         conf = _nginx_conf_for_slug("my-app", "172.17.0.2", 3000)
@@ -125,6 +129,7 @@ class TestNginxConfForSlug:
 
 
 # ── _detect_app_type ───────────────────────────────────────────────────────────
+
 
 class TestDetectAppType:
     def test_react_from_package_json(self, tmp_path):
@@ -215,6 +220,7 @@ class TestDetectAppType:
 
 # ── _scan_repo ─────────────────────────────────────────────────────────────────
 
+
 class TestScanRepo:
     def test_returns_listing_and_contents(self, tmp_path):
         (tmp_path / "main.py").write_text("print('hello')")
@@ -252,6 +258,7 @@ class TestScanRepo:
 
 # ── More _detect_app_type coverage ────────────────────────────────────────────
 
+
 class TestDetectAppTypeExtra:
     def test_php_via_composer_json(self, tmp_path):
         (tmp_path / "composer.json").write_text('{"require": {"php": ">=8.0"}}')
@@ -279,13 +286,16 @@ class TestDetectAppTypeExtra:
         assert port == 8000
 
     def test_pyproject_toml_django(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "myapp"\ndependencies = ["django"]\n')
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "myapp"\ndependencies = ["django"]\n'
+        )
         app_type, port = _detect_app_type(str(tmp_path))
         assert app_type == "django"
         assert port == 8000
 
 
 # ── _validate_dockerfile extra branches ───────────────────────────────────────
+
 
 class TestValidateDockerfileExtra:
     def test_cmd_on_first_line_accepted(self):
@@ -299,6 +309,7 @@ class TestValidateDockerfileExtra:
 
 
 # ── _make_slug additional edge cases ──────────────────────────────────────────
+
 
 class TestMakeSlugExtra:
     def test_make_an_prefix_stripped(self):

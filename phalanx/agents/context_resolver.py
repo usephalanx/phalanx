@@ -14,6 +14,7 @@ Context types:
   continuation     — prior WorkOrder exists, same domain, recently active
   conflicting_branch — active branch from prior run, may conflict
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -37,11 +38,12 @@ class ContextPackage:
     Everything the pipeline knows about prior work before GPT is called.
     Injected into IntentRouter.route() as additional context.
     """
-    context_type: str                         # new_work | continuation | conflicting_branch
+
+    context_type: str  # new_work | continuation | conflicting_branch
     prior_work_order_id: str | None = None
     prior_work_order_title: str | None = None
     prior_intent_doc: dict[str, Any] = field(default_factory=dict)
-    prior_request_type: str | None = None     # from prior enrichment
+    prior_request_type: str | None = None  # from prior enrichment
     active_branch: str | None = None
     last_run_status: str | None = None
     last_run_id: str | None = None
@@ -139,10 +141,7 @@ class ContextResolver:
         last_updated = prior_wo.updated_at
         if last_updated and last_updated.tzinfo is None:
             last_updated = last_updated.replace(tzinfo=UTC)
-        hours_ago = (
-            (now - last_updated).total_seconds() / 3600
-            if last_updated else None
-        )
+        hours_ago = (now - last_updated).total_seconds() / 3600 if last_updated else None
 
         is_recent = hours_ago is not None and hours_ago <= _RECENCY_WINDOW_HOURS
 
@@ -169,7 +168,8 @@ class ContextResolver:
             summary = (
                 f"Prior work exists ('{prior_wo.title}') but is not recent "
                 f"({hours_ago:.0f}h ago) — treating as new work."
-                if hours_ago else "Treating as new work."
+                if hours_ago
+                else "Treating as new work."
             )
 
         pkg = ContextPackage(

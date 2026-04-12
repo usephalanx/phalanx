@@ -163,7 +163,10 @@ class TechLeadAgent(BaseAgent):
         app_type = pm_output.get("app_type", "web")
         tech_stack = pm_output.get("tech_stack", "")  # may be empty — auto-detected later
         epics_json = json.dumps(
-            [{"index": i, "title": e["title"], "description": e.get("description", "")} for i, e in enumerate(epics)],
+            [
+                {"index": i, "title": e["title"], "description": e.get("description", "")}
+                for i, e in enumerate(epics)
+            ],
             indent=2,
         )
 
@@ -397,6 +400,7 @@ def _epic_branch_name(epic_title: str, run_id: str) -> str:
     Example: feat/core-infrastructure-authentication-a1b2c3d4
     """
     import re  # noqa: PLC0415
+
     slug = re.sub(r"[^a-z0-9]+", "-", epic_title.lower()).strip("-")[:40]
     return f"feat/{slug}-{run_id[:8]}"
 
@@ -406,8 +410,5 @@ def _extract_json(text: str) -> dict:
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(
-            line for line in lines
-            if not line.strip().startswith("```")
-        ).strip()
+        text = "\n".join(line for line in lines if not line.strip().startswith("```")).strip()
     return json.loads(text)

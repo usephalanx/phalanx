@@ -81,8 +81,12 @@ class TestLoadEpisodeMemory:
         agent = make_agent()
 
         # DB returns newest-first (ORDER BY created_at DESC)
-        trace_new = make_trace_orm(task_id="task-2", trace_type="self_check", content="Self-check B")
-        trace_old = make_trace_orm(task_id="task-1", trace_type="reflection", content="Prior reflection A")
+        trace_new = make_trace_orm(
+            task_id="task-2", trace_type="self_check", content="Self-check B"
+        )
+        trace_old = make_trace_orm(
+            task_id="task-1", trace_type="reflection", content="Prior reflection A"
+        )
 
         mock_session = AsyncMock()
         result_mock = MagicMock()
@@ -94,9 +98,9 @@ class TestLoadEpisodeMemory:
 
         # reversed() makes oldest first
         assert len(memory) == 2
-        assert memory[0]["trace_type"] == "reflection"   # oldest
+        assert memory[0]["trace_type"] == "reflection"  # oldest
         assert "Prior reflection A" in memory[0]["content"]
-        assert memory[1]["trace_type"] == "self_check"   # newest
+        assert memory[1]["trace_type"] == "self_check"  # newest
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_db_error(self):
@@ -182,7 +186,9 @@ class TestLoadReviewerFeedback:
         reviewer_output = {
             "verdict": "CHANGES_REQUESTED",
             "summary": "Missing error handling",
-            "issues": [{"severity": "high", "description": "No try/except", "suggestion": "Add try/except"}],
+            "issues": [
+                {"severity": "high", "description": "No try/except", "suggestion": "Add try/except"}
+            ],
         }
         reviewer_task = make_task_orm(agent_role="reviewer", output=reviewer_output)
 
@@ -262,7 +268,12 @@ class TestBuildPromptWithReflexion:
             "verdict": "CHANGES_REQUESTED",
             "summary": "Missing error handling",
             "issues": [
-                {"severity": "high", "location": "auth.py:12", "description": "No try/except", "suggestion": "Wrap in try/except"}
+                {
+                    "severity": "high",
+                    "location": "auth.py:12",
+                    "description": "No try/except",
+                    "suggestion": "Wrap in try/except",
+                }
             ],
         }
 
@@ -288,7 +299,14 @@ class TestBuildPromptWithReflexion:
         feedback = {
             "verdict": "CRITICAL_ISSUES",
             "summary": "Security hole",
-            "issues": [{"severity": "critical", "location": "main.py:5", "description": "SQL injection", "suggestion": "Use parameterized queries"}],
+            "issues": [
+                {
+                    "severity": "critical",
+                    "location": "main.py:5",
+                    "description": "SQL injection",
+                    "suggestion": "Use parameterized queries",
+                }
+            ],
         }
 
         _, messages = agent._build_prompt(task, {}, {}, reviewer_feedback=feedback)
@@ -411,7 +429,9 @@ class TestGenerateChangesBlockingWithThinking:
     def _make_builder(self):
         from phalanx.agents.builder import BuilderAgent
 
-        return BuilderAgent(run_id="run-1", task_id="task-1", agent_id="builder", token_budget=200_000)
+        return BuilderAgent(
+            run_id="run-1", task_id="task-1", agent_id="builder", token_budget=200_000
+        )
 
     def _make_task(self, complexity=5):
         t = MagicMock()
@@ -459,7 +479,11 @@ class TestGenerateChangesBlockingWithThinking:
             trace_calls.append((trace_type, content, context))
 
         with (
-            patch.object(agent, "_call_claude_with_thinking", return_value=(json.dumps(changes), thinking_text)),
+            patch.object(
+                agent,
+                "_call_claude_with_thinking",
+                return_value=(json.dumps(changes), thinking_text),
+            ),
             patch.object(agent, "_trace", side_effect=_capture_trace),
         ):
             await agent._generate_changes_blocking(task, {}, {}, MagicMock(), complexity=5)
@@ -482,9 +506,12 @@ class TestGenerateChangesBlockingWithThinking:
         with (
             patch.object(agent, "_call_claude_with_thinking") as mock_thinking,
             patch("phalanx.agents.base._claude_cli_path", None),
-            patch("phalanx.agents.base.get_anthropic_client", return_value=MagicMock(
-                messages=MagicMock(create=MagicMock(return_value=mock_response))
-            )),
+            patch(
+                "phalanx.agents.base.get_anthropic_client",
+                return_value=MagicMock(
+                    messages=MagicMock(create=MagicMock(return_value=mock_response))
+                ),
+            ),
         ):
             await agent._generate_changes_blocking(task, {}, {}, MagicMock(), complexity=2)
 
@@ -502,7 +529,9 @@ class TestGenerateChangesBlockingWithThinking:
             trace_calls.append(trace_type)
 
         with (
-            patch.object(agent, "_call_claude_with_thinking", return_value=(json.dumps(changes), "")),
+            patch.object(
+                agent, "_call_claude_with_thinking", return_value=(json.dumps(changes), "")
+            ),
             patch.object(agent, "_trace", side_effect=_capture_trace),
         ):
             await agent._generate_changes_blocking(task, {}, {}, MagicMock(), complexity=4)

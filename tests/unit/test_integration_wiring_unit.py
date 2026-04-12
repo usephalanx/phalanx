@@ -11,6 +11,7 @@ Tests:
 - _wire_go: main.go present → trusted; absent → generated
 - Full execute() path via AsyncMock session
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from phalanx.agents.integration_wiring import IntegrationWiringAgent
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_agent() -> IntegrationWiringAgent:
     return IntegrationWiringAgent(run_id="run-1", agent_id="agent-1", task_id="task-1")
 
@@ -31,6 +33,7 @@ def _make_agent() -> IntegrationWiringAgent:
 # _wire_nextjs
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_wire_nextjs_generates_page_tsx(tmp_path):
     agent = _make_agent()
     comp_dir = tmp_path / "components"
@@ -38,9 +41,7 @@ def test_wire_nextjs_generates_page_tsx(tmp_path):
     (comp_dir / "Hero.tsx").write_text(
         "export default function Hero() { return <section>Hello</section>; }"
     )
-    (comp_dir / "Footer.tsx").write_text(
-        "export default function Footer() { return <footer/>; }"
-    )
+    (comp_dir / "Footer.tsx").write_text("export default function Footer() { return <footer/>; }")
 
     result = agent._wire_nextjs(tmp_path)
 
@@ -69,9 +70,7 @@ def test_wire_nextjs_trusts_existing_page_tsx(tmp_path):
     agent = _make_agent()
     comp_dir = tmp_path / "components"
     comp_dir.mkdir()
-    (comp_dir / "Hero.tsx").write_text(
-        "export default function Hero() { return <div/>; }"
-    )
+    (comp_dir / "Hero.tsx").write_text("export default function Hero() { return <div/>; }")
 
     app_dir = tmp_path / "app"
     app_dir.mkdir()
@@ -89,13 +88,12 @@ def test_wire_nextjs_trusts_existing_page_tsx(tmp_path):
 # _wire_vite
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_wire_vite_generates_app_tsx(tmp_path):
     agent = _make_agent()
     comp_dir = tmp_path / "src" / "components"
     comp_dir.mkdir(parents=True)
-    (comp_dir / "Hero.tsx").write_text(
-        "export default function Hero() { return <section/>; }"
-    )
+    (comp_dir / "Hero.tsx").write_text("export default function Hero() { return <section/>; }")
 
     result = agent._wire_vite(tmp_path)
 
@@ -115,13 +113,12 @@ def test_wire_vite_no_components_dir_skips(tmp_path):
 # _wire_fastapi
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_wire_fastapi_generates_main_py(tmp_path):
     agent = _make_agent()
     api_dir = tmp_path / "api"
     api_dir.mkdir()
-    (api_dir / "listings.py").write_text(
-        "from fastapi import APIRouter\nrouter = APIRouter()\n"
-    )
+    (api_dir / "listings.py").write_text("from fastapi import APIRouter\nrouter = APIRouter()\n")
 
     result = agent._wire_fastapi(tmp_path)
 
@@ -134,9 +131,7 @@ def test_wire_fastapi_generates_main_py(tmp_path):
 def test_wire_fastapi_trusts_existing_main_py(tmp_path):
     api_dir = tmp_path / "api"
     api_dir.mkdir()
-    (api_dir / "listings.py").write_text(
-        "from fastapi import APIRouter\nrouter = APIRouter()\n"
-    )
+    (api_dir / "listings.py").write_text("from fastapi import APIRouter\nrouter = APIRouter()\n")
     (tmp_path / "main.py").write_text(
         "from fastapi import FastAPI\nfrom api.listings import router as listings_router\n"
         "app = FastAPI()\napp.include_router(listings_router)\n"
@@ -156,6 +151,7 @@ def test_wire_fastapi_no_routers_skips(tmp_path):
 # ─────────────────────────────────────────────────────────────────────────────
 # _wire_react_native
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def test_wire_react_native_trusts_existing_app_tsx(tmp_path):
     agent = _make_agent()
@@ -177,6 +173,7 @@ def test_wire_react_native_generates_app_tsx(tmp_path):
 # _wire_flutter
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_wire_flutter_trusts_existing_main_dart(tmp_path):
     agent = _make_agent()
     (tmp_path / "lib").mkdir()
@@ -196,6 +193,7 @@ def test_wire_flutter_generates_main_dart(tmp_path):
 # ─────────────────────────────────────────────────────────────────────────────
 # _wire_go
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def test_wire_go_trusts_existing_main_go(tmp_path):
     agent = _make_agent()
@@ -224,13 +222,17 @@ def test_wire_go_generates_stub(tmp_path):
 # _wire dispatcher routing
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_wire_dispatches_to_nextjs(tmp_path):
     from phalanx.agents.verification_profiles import get_profile
+
     agent = _make_agent()
     profile = get_profile("nextjs")
 
-    with patch.object(agent, "_wire_nextjs", return_value={"status": "skipped", "files_wired": [], "notes": []}) as mock:
+    with patch.object(
+        agent, "_wire_nextjs", return_value={"status": "skipped", "files_wired": [], "notes": []}
+    ) as mock:
         await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
@@ -238,10 +240,13 @@ async def test_wire_dispatches_to_nextjs(tmp_path):
 @pytest.mark.asyncio
 async def test_wire_dispatches_to_fastapi(tmp_path):
     from phalanx.agents.verification_profiles import get_profile
+
     agent = _make_agent()
     profile = get_profile("fastapi")
 
-    with patch.object(agent, "_wire_fastapi", return_value={"status": "skipped", "files_wired": [], "notes": []}) as mock:
+    with patch.object(
+        agent, "_wire_fastapi", return_value={"status": "skipped", "files_wired": [], "notes": []}
+    ) as mock:
         await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
@@ -249,10 +254,13 @@ async def test_wire_dispatches_to_fastapi(tmp_path):
 @pytest.mark.asyncio
 async def test_wire_dispatches_to_flutter(tmp_path):
     from phalanx.agents.verification_profiles import get_profile
+
     agent = _make_agent()
     profile = get_profile("flutter")
 
-    with patch.object(agent, "_wire_flutter", return_value={"status": "trusted", "files_wired": [], "notes": []}) as mock:
+    with patch.object(
+        agent, "_wire_flutter", return_value={"status": "trusted", "files_wired": [], "notes": []}
+    ) as mock:
         await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
@@ -260,9 +268,12 @@ async def test_wire_dispatches_to_flutter(tmp_path):
 @pytest.mark.asyncio
 async def test_wire_dispatches_to_go(tmp_path):
     from phalanx.agents.verification_profiles import get_profile
+
     agent = _make_agent()
     profile = get_profile("go")
 
-    with patch.object(agent, "_wire_go", return_value={"status": "trusted", "files_wired": [], "notes": []}) as mock:
+    with patch.object(
+        agent, "_wire_go", return_value={"status": "trusted", "files_wired": [], "notes": []}
+    ) as mock:
         await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)

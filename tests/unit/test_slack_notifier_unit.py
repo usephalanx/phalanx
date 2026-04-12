@@ -99,6 +99,7 @@ def _patch_client(post_return_ts="1711111111.000200"):
 def _make_notifier_with_board(tasks, *, channel_id="C123", thread_ts="1711111111.000100"):
     """Create an enabled notifier pre-loaded with a board snapshot (simulates after post_progress_board)."""
     from phalanx.workflow.slack_notifier import _BoardTask, _task_group
+
     notifier = _make_notifier(channel_id=channel_id, thread_ts=thread_ts, enabled=True)
     notifier._progress_ts = "1711111111.board"
     notifier._board_tasks = [
@@ -359,7 +360,9 @@ class TestPostProgressBoard:
     async def test_posts_initial_board_and_stores_ts(self):
         tasks = [
             _make_task(task_id="t1", seq=1, role="planner", title="Plan", phase_name="Planning"),
-            _make_task(task_id="t2", seq=2, role="builder", title="Build API", phase_name="Backend API"),
+            _make_task(
+                task_id="t2", seq=2, role="builder", title="Build API", phase_name="Backend API"
+            ),
         ]
         notifier = _make_notifier()
         patcher, mock_client = _patch_client(post_return_ts="9999.board")
@@ -459,7 +462,9 @@ class TestBuildProgressBlocks:
 
         blocks = notifier._build_progress_blocks()
 
-        block_texts = [b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"]
+        block_texts = [
+            b.get("text", {}).get("text", "") for b in blocks if b.get("type") == "section"
+        ]
         assert any("Backend" in t for t in block_texts)
         assert any("Database" in t for t in block_texts)
 
@@ -721,7 +726,9 @@ class TestRunComplete:
 
     async def test_includes_pr_link_when_present(self):
         notifier = _make_notifier()
-        run = _make_run(status="READY_TO_MERGE", pr_url="https://github.com/usephalanx/showcase/pull/42")
+        run = _make_run(
+            status="READY_TO_MERGE", pr_url="https://github.com/usephalanx/showcase/pull/42"
+        )
         tasks = [_make_task(status="COMPLETED")]
         patcher, mock_client = _patch_client()
 

@@ -130,9 +130,7 @@ async def health() -> JSONResponse:
     )
 
     http_status = (
-        status.HTTP_503_SERVICE_UNAVAILABLE
-        if overall == "unhealthy"
-        else status.HTTP_200_OK
+        status.HTTP_503_SERVICE_UNAVAILABLE if overall == "unhealthy" else status.HTTP_200_OK
     )
 
     return JSONResponse(

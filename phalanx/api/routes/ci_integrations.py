@@ -30,15 +30,22 @@ router = APIRouter(prefix="/ci-integrations", tags=["ci-integrations"])
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 
+
 class CIIntegrationCreate(BaseModel):
     repo_full_name: str = Field(..., description="owner/repo, e.g. acme/backend")
     ci_provider: str = Field(default="github_actions", description="github_actions | buildkite")
     github_token: str | None = Field(default=None, description="GitHub PAT or App token")
-    ci_api_key: str | None = Field(default=None, description="CI provider API key (stored as-is for now)")
-    webhook_secret: str | None = Field(default=None, description="HMAC secret for webhook verification")
+    ci_api_key: str | None = Field(
+        default=None, description="CI provider API key (stored as-is for now)"
+    )
+    webhook_secret: str | None = Field(
+        default=None, description="HMAC secret for webhook verification"
+    )
     max_attempts: int = Field(default=2, ge=1, le=5)
     auto_commit: bool = Field(default=True, description="Auto-commit fixes to the branch")
-    allowed_authors: list[str] = Field(default_factory=list, description="Only fix PRs by these GitHub logins. Empty = fix all.")
+    allowed_authors: list[str] = Field(
+        default_factory=list, description="Only fix PRs by these GitHub logins. Empty = fix all."
+    )
 
 
 class CIIntegrationUpdate(BaseModel):
@@ -84,6 +91,7 @@ class CIIntegrationResponse(BaseModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=CIIntegrationResponse)
 async def register_integration(body: CIIntegrationCreate):

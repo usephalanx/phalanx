@@ -4,6 +4,7 @@ DAG resolver — builds and traverses the task dependency graph.
 DagNode: one task in the graph, with its upstream deps.
 DagResolver: topological sort + critical-path calculation.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ class DagNode:
 
 @dataclass
 class DagPlan:
-    groups: list[list[str]]          # parallel groups in execution order
+    groups: list[list[str]]  # parallel groups in execution order
     critical_path_minutes: int
 
 
@@ -59,10 +60,7 @@ class DagResolver:
         completed: set[str] = set()
 
         while len(completed) < len(nodes):
-            ready = [
-                tid for tid, deg in in_degree.items()
-                if deg == 0 and tid not in completed
-            ]
+            ready = [tid for tid, deg in in_degree.items() if deg == 0 and tid not in completed]
             if not ready:
                 remaining = set(nodes) - completed
                 raise ValueError(f"DAG cycle detected, remaining: {remaining}")
@@ -76,8 +74,12 @@ class DagResolver:
                         in_degree[node.task_id] -= 1
 
         critical_path = self._critical_path(nodes)
-        log.info("dag.resolved", tasks=len(nodes), groups=len(groups),
-                 critical_path_minutes=critical_path)
+        log.info(
+            "dag.resolved",
+            tasks=len(nodes),
+            groups=len(groups),
+            critical_path_minutes=critical_path,
+        )
         return DagPlan(groups=groups, critical_path_minutes=critical_path)
 
     def _critical_path(self, nodes: dict[str, DagNode]) -> int:
@@ -91,9 +93,11 @@ class DagResolver:
             if not node.deps:
                 cache[tid] = node.estimated_minutes
             else:
-                max_upstream = max(
-                    dp(dep_id) for dep_id in node.deps if dep_id in nodes
-                ) if any(d in nodes for d in node.deps) else 0
+                max_upstream = (
+                    max(dp(dep_id) for dep_id in node.deps if dep_id in nodes)
+                    if any(d in nodes for d in node.deps)
+                    else 0
+                )
                 cache[tid] = max_upstream + node.estimated_minutes
             return cache[tid]
 
@@ -115,9 +119,7 @@ class DagResolver:
         }
         for dep in deps:
             if dep.task_id in nodes and dep.depends_on_id in nodes:
-                nodes[dep.task_id].deps[dep.depends_on_id] = getattr(
-                    dep, "dependency_type", "full"
-                )
+                nodes[dep.task_id].deps[dep.depends_on_id] = getattr(dep, "dependency_type", "full")
         return nodes
 
     def get_ready(
@@ -127,7 +129,7 @@ class DagResolver:
     ) -> list[str]:
         """Return task IDs whose deps are all in completed_ids."""
         return [
-            tid for tid, node in nodes.items()
-            if tid not in completed_ids
-            and all(dep_id in completed_ids for dep_id in node.deps)
+            tid
+            for tid, node in nodes.items()
+            if tid not in completed_ids and all(dep_id in completed_ids for dep_id in node.deps)
         ]

@@ -68,7 +68,9 @@ def _build_app(token: str) -> AsyncApp:
             return
 
         if parsed.command_type == CommandType.BUILD:
-            await _handle_build(parsed, user_id=user_id, channel_id=channel_id, respond=respond, client=client)
+            await _handle_build(
+                parsed, user_id=user_id, channel_id=channel_id, respond=respond, client=client
+            )
             return
 
         if parsed.command_type == CommandType.STATUS:

@@ -47,8 +47,8 @@ class StreamingJsonFileParser:
 
         self._found_files_key = False
         self._in_files_array = False
-        self._obj_depth = 0      # brace depth within the files array
-        self._obj_start = -1     # buf index of the current file object's opening {
+        self._obj_depth = 0  # brace depth within the files array
+        self._obj_start = -1  # buf index of the current file object's opening {
 
         self._summary = ""
         self._commit_message = ""
@@ -64,7 +64,6 @@ class StreamingJsonFileParser:
         completed: list[dict] = []
 
         while self._pos < len(self._buf):
-
             # ── Phase 1: find the "files" key ────────────────────────────────
             if not self._found_files_key:
                 marker = '"files"'
@@ -78,13 +77,13 @@ class StreamingJsonFileParser:
                     break
 
                 # Confirm a ':' follows (after optional whitespace)
-                rest = self._buf[idx + len(marker):]
+                rest = self._buf[idx + len(marker) :]
                 stripped = rest.lstrip()
                 if not stripped:
                     # Colon not yet streamed — wait
                     self._pos = len(self._buf)
                     break
-                if stripped[0] != ':':
+                if stripped[0] != ":":
                     # False match (e.g. "files_list") — skip past it
                     self._pos = idx + len(marker)
                     continue
@@ -97,7 +96,7 @@ class StreamingJsonFileParser:
             # ── Phase 2: find the opening '[' ────────────────────────────────
             if not self._in_files_array:
                 ch = self._buf[self._pos]
-                if ch == '[':
+                if ch == "[":
                     self._in_files_array = True
                 self._pos += 1
                 continue
@@ -110,7 +109,7 @@ class StreamingJsonFileParser:
                 self._pos += 1
                 continue
 
-            if ch == '\\' and self._in_string:
+            if ch == "\\" and self._in_string:
                 self._escape_next = True
                 self._pos += 1
                 continue
@@ -125,16 +124,16 @@ class StreamingJsonFileParser:
                 continue
 
             # Structural character (not in a string)
-            if ch == '{':
+            if ch == "{":
                 if self._obj_depth == 0:
                     self._obj_start = self._pos
                 self._obj_depth += 1
 
-            elif ch == '}':
+            elif ch == "}":
                 self._obj_depth -= 1
                 if self._obj_depth == 0 and self._obj_start >= 0:
                     # File object is complete — parse and emit
-                    obj_text = self._buf[self._obj_start:self._pos + 1]
+                    obj_text = self._buf[self._obj_start : self._pos + 1]
                     try:
                         file_obj = json.loads(obj_text)
                         if isinstance(file_obj, dict) and file_obj.get("path"):
@@ -148,7 +147,7 @@ class StreamingJsonFileParser:
                     self._pos = 0
                     continue  # restart from trimmed buffer start
 
-            elif ch == ']' and self._obj_depth == 0:
+            elif ch == "]" and self._obj_depth == 0:
                 # Files array closed
                 self._in_files_array = False
 

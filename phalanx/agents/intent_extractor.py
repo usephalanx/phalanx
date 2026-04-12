@@ -8,6 +8,7 @@ implicit requirements, and success definition.
 The output IntentDocument is immutable once created — it travels with every
 agent (builder, reviewer, QA) for the entire lifetime of the WorkOrder.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -110,7 +111,7 @@ class IntentExtractor:
             {
                 "role": "user",
                 "content": (
-                    f"User's raw prompt:\n\n\"{raw_prompt}\"\n\n"
+                    f'User\'s raw prompt:\n\n"{raw_prompt}"\n\n'
                     "Extract the full product intent. Be thorough, specific, and opinionated. "
                     "Infer everything that a senior engineer would need to know to build this product."
                 ),

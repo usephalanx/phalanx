@@ -31,8 +31,8 @@ _ROLE_TO_QUEUE: dict[str, str] = {
     "builder": "builder",
     "reviewer": "reviewer",
     "qa": "qa",
-    "verifier": "qa",              # lightweight post-build check — shares qa queue
-    "integration_wiring": "qa",    # entry-point wiring — shares qa queue
+    "verifier": "qa",  # lightweight post-build check — shares qa queue
+    "integration_wiring": "qa",  # entry-point wiring — shares qa queue
     "security": "security",
     "release": "release",
     # Scheduled/ingestion tasks

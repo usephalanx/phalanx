@@ -84,8 +84,10 @@ def test_lock_busy_returns_immediately():
     redis_mock = _make_redis(acquired=False)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
     ):
         mock_redis_lib.from_url = MagicMock(return_value=redis_mock)
@@ -107,8 +109,10 @@ def test_terminal_run_exits():
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
     ):
@@ -130,8 +134,10 @@ def test_run_not_found():
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
     ):
@@ -151,9 +157,9 @@ def test_all_complete_transitions_to_verifying():
     t2 = make_task(task_id="t2", status="COMPLETED")
 
     execute_calls = [
-        _scalar_result(run),           # Run lookup
-        _scalars_result([t1, t2]),     # Task list
-        MagicMock(),                   # update Run status
+        _scalar_result(run),  # Run lookup
+        _scalars_result([t1, t2]),  # Task list
+        MagicMock(),  # update Run status
     ]
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=execute_calls)
@@ -162,8 +168,10 @@ def test_all_complete_transitions_to_verifying():
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
         patch("phalanx.workflow.advance_run._schedule_recheck") as mock_recheck,
@@ -189,17 +197,21 @@ def test_in_progress_task_reschedules():
     )
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[
-        _scalar_result(run),
-        _scalars_result([t1]),
-    ])
+    session.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(run),
+            _scalars_result([t1]),
+        ]
+    )
     session.commit = AsyncMock()
 
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
         patch("phalanx.workflow.advance_run._schedule_recheck") as mock_recheck,
@@ -222,13 +234,15 @@ def test_stale_task_gets_reset_to_pending():
     t1_reset = make_task(task_id="t1", agent_role="builder", sequence_num=1, status="PENDING")
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[
-        _scalar_result(run),          # Run lookup
-        _scalars_result([t1_stale]),  # initial task list
-        MagicMock(),                  # update stale task → PENDING
-        _scalars_result([t1_reset]),  # reload after reset
-        MagicMock(),                  # update t1 → IN_PROGRESS (dispatch)
-    ])
+    session.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(run),  # Run lookup
+            _scalars_result([t1_stale]),  # initial task list
+            MagicMock(),  # update stale task → PENDING
+            _scalars_result([t1_reset]),  # reload after reset
+            MagicMock(),  # update t1 → IN_PROGRESS (dispatch)
+        ]
+    )
     session.commit = AsyncMock()
 
     router_mock = MagicMock()
@@ -237,8 +251,10 @@ def test_stale_task_gets_reset_to_pending():
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
         patch("phalanx.workflow.advance_run.TaskRouter", return_value=router_mock),
@@ -260,18 +276,22 @@ def test_failed_task_fails_the_run():
     t1 = make_task(task_id="t1", status="FAILED", error="build error")
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[
-        _scalar_result(run),
-        _scalars_result([t1]),
-        MagicMock(),  # update Run status → FAILED
-    ])
+    session.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(run),
+            _scalars_result([t1]),
+            MagicMock(),  # update Run status → FAILED
+        ]
+    )
     session.commit = AsyncMock()
 
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
         patch("phalanx.workflow.advance_run.validate_transition"),
@@ -292,11 +312,13 @@ def test_pending_task_dispatched():
     t1 = make_task(task_id="t1", agent_role="builder", sequence_num=1, status="PENDING")
 
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=[
-        _scalar_result(run),
-        _scalars_result([t1]),
-        MagicMock(),  # update t1 → IN_PROGRESS
-    ])
+    session.execute = AsyncMock(
+        side_effect=[
+            _scalar_result(run),
+            _scalars_result([t1]),
+            MagicMock(),  # update t1 → IN_PROGRESS
+        ]
+    )
     session.commit = AsyncMock()
 
     router_mock = MagicMock()
@@ -305,8 +327,10 @@ def test_pending_task_dispatched():
     redis_mock = _make_redis(acquired=True)
 
     with (
-        patch("phalanx.workflow.advance_run.get_settings",
-              return_value=MagicMock(redis_url="redis://localhost")),
+        patch(
+            "phalanx.workflow.advance_run.get_settings",
+            return_value=MagicMock(redis_url="redis://localhost"),
+        ),
         patch("phalanx.workflow.advance_run._redis_lib") as mock_redis_lib,
         patch("phalanx.workflow.advance_run.get_db", side_effect=lambda: _fake_db(session)),
         patch("phalanx.workflow.advance_run.TaskRouter", return_value=router_mock),

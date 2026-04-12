@@ -68,7 +68,7 @@ class TestEpicBranchName:
         result = _epic_branch_name("Search/Filter", "run-0001")
         # Should not have double slash in branch name body
         assert "feat/" in result
-        path_part = result[len("feat/"):]
+        path_part = result[len("feat/") :]
         assert "/" not in path_part
 
 
@@ -85,6 +85,7 @@ def _make_agent():
     agent.token_budget = 100000
     agent._tokens_used = 0
     import structlog
+
     agent._log = structlog.get_logger("test").bind(run_id="run-abc12345")
     agent._settings = MagicMock()
     agent._settings.anthropic_model_default = "claude-sonnet-4-6"
@@ -93,8 +94,13 @@ def _make_agent():
 
 def _make_epics(n=2):
     return [
-        {"id": f"epic-{i}", "title": f"Epic Title {i}", "description": f"Desc {i}",
-         "sequence_num": i, "estimated_minutes": 30}
+        {
+            "id": f"epic-{i}",
+            "title": f"Epic Title {i}",
+            "description": f"Desc {i}",
+            "sequence_num": i,
+            "estimated_minutes": 30,
+        }
         for i in range(n)
     ]
 
@@ -112,6 +118,7 @@ def _make_session(collected_tasks, collected_deps):
 
     def _add(obj):
         from phalanx.db.models import Task, TaskDependency
+
         if isinstance(obj, Task):
             collected_tasks.append(obj)
         elif isinstance(obj, TaskDependency):
@@ -125,7 +132,7 @@ def _valid_response(n_tasks=2):
     tasks = [
         {
             "epic_index": i % 2,
-            "title": f"Task {i+1}",
+            "title": f"Task {i + 1}",
             "agent_role": "builder",
             "sequence_num": i + 1,
             "estimated_minutes": 30,
@@ -181,11 +188,24 @@ class TestTechLeadBranchName:
 
         # Two tasks both in epic_index=0
         tasks_data = [
-            {"epic_index": 0, "title": "Task A", "agent_role": "builder",
-             "sequence_num": 1, "estimated_minutes": 20, "files_likely_touched": [], "dependencies": []},
-            {"epic_index": 0, "title": "Task B", "agent_role": "reviewer",
-             "sequence_num": 2, "estimated_minutes": 10, "files_likely_touched": [],
-             "dependencies": [{"depends_on_seq": 1, "dep_type": "full"}]},
+            {
+                "epic_index": 0,
+                "title": "Task A",
+                "agent_role": "builder",
+                "sequence_num": 1,
+                "estimated_minutes": 20,
+                "files_likely_touched": [],
+                "dependencies": [],
+            },
+            {
+                "epic_index": 0,
+                "title": "Task B",
+                "agent_role": "reviewer",
+                "sequence_num": 2,
+                "estimated_minutes": 10,
+                "files_likely_touched": [],
+                "dependencies": [{"depends_on_seq": 1, "dep_type": "full"}],
+            },
         ]
         response = json.dumps({"api_contract": {}, "db_schema": {}, "tasks": tasks_data})
 
@@ -205,19 +225,42 @@ class TestTechLeadBranchName:
         session = _make_session(tasks_out, deps_out)
         wo = _make_work_order()
         epics = [
-            {"id": "epic-0", "title": "Infrastructure", "description": "",
-             "sequence_num": 0, "estimated_minutes": 30},
-            {"id": "epic-1", "title": "Listings API", "description": "",
-             "sequence_num": 1, "estimated_minutes": 30},
+            {
+                "id": "epic-0",
+                "title": "Infrastructure",
+                "description": "",
+                "sequence_num": 0,
+                "estimated_minutes": 30,
+            },
+            {
+                "id": "epic-1",
+                "title": "Listings API",
+                "description": "",
+                "sequence_num": 1,
+                "estimated_minutes": 30,
+            },
         ]
         pm_output = {"epics": epics, "app_type": "web"}
 
         tasks_data = [
-            {"epic_index": 0, "title": "Scaffold DB", "agent_role": "builder",
-             "sequence_num": 1, "estimated_minutes": 30, "files_likely_touched": [], "dependencies": []},
-            {"epic_index": 1, "title": "Build API", "agent_role": "builder",
-             "sequence_num": 2, "estimated_minutes": 45, "files_likely_touched": [],
-             "dependencies": [{"depends_on_seq": 1, "dep_type": "full"}]},
+            {
+                "epic_index": 0,
+                "title": "Scaffold DB",
+                "agent_role": "builder",
+                "sequence_num": 1,
+                "estimated_minutes": 30,
+                "files_likely_touched": [],
+                "dependencies": [],
+            },
+            {
+                "epic_index": 1,
+                "title": "Build API",
+                "agent_role": "builder",
+                "sequence_num": 2,
+                "estimated_minutes": 45,
+                "files_likely_touched": [],
+                "dependencies": [{"depends_on_seq": 1, "dep_type": "full"}],
+            },
         ]
         response = json.dumps({"api_contract": {}, "db_schema": {}, "tasks": tasks_data})
 
@@ -251,6 +294,7 @@ class TestTechLeadBranchName:
 
 def _make_builder(run_id="run-001", task_id="task-001"):
     from phalanx.agents.builder import BuilderAgent
+
     agent = BuilderAgent.__new__(BuilderAgent)
     agent.run_id = run_id
     agent.task_id = task_id
@@ -258,6 +302,7 @@ def _make_builder(run_id="run-001", task_id="task-001"):
     agent.token_budget = 100000
     agent._tokens_used = 0
     import structlog
+
     agent._log = structlog.get_logger("test").bind(run_id=run_id)
     return agent
 
@@ -414,6 +459,7 @@ class TestBuilderCommitBranch:
         # Patch git import to verify the branch variable resolved correctly
         try:
             from git import Repo
+
             original_init = Repo.init
 
             def _patched_init(path, **kwargs):

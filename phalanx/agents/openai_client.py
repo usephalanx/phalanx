@@ -76,7 +76,11 @@ class OpenAIClient:
                 stripped = content.strip()
                 if stripped.startswith("```"):
                     lines = stripped.splitlines()
-                    inner = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+                    inner = (
+                        "\n".join(lines[1:-1])
+                        if lines[-1].strip() == "```"
+                        else "\n".join(lines[1:])
+                    )
                     stripped = inner.strip()
 
                 try:
@@ -97,6 +101,4 @@ class OpenAIClient:
                 if attempt < self._max_retries - 1:
                     time.sleep(_RETRY_DELAY)
 
-        raise RuntimeError(
-            f"OpenAI call failed after {self._max_retries} retries: {last_exc}"
-        )
+        raise RuntimeError(f"OpenAI call failed after {self._max_retries} retries: {last_exc}")

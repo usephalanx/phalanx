@@ -9,6 +9,7 @@ Tests focus on:
   - DryRunValidator: validates phase plan, returns ValidationResult
   - PromptEnricher: orchestrates all steps, handles retries
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -411,9 +412,9 @@ class TestDryRunValidator:
             result = DryRunValidator().validate(SAMPLE_INTENT, SAMPLE_PHASES)
 
         assert result.status == "pass"
-        assert result.passed is True          # backwards-compat property
+        assert result.passed is True  # backwards-compat property
         assert result.confidence == 88
-        assert result.score == 88             # backwards-compat property
+        assert result.score == 88  # backwards-compat property
         assert result.findings == []
         assert result.is_blocked is False
 
@@ -487,6 +488,7 @@ class TestPromptEnricher:
 
     def _make_router_result(self):
         from phalanx.agents.intent_router import RouterResult
+
         return RouterResult(
             request_type="semi_specified_request",
             primary_intent={"summary": "Build photoshoot iOS app", "category": "mobile_app"},
@@ -503,6 +505,7 @@ class TestPromptEnricher:
 
     def _make_normalized_spec(self):
         from phalanx.agents.requirement_normalizer import NormalizedSpec
+
         return NormalizedSpec(
             normalized_goal="Build an iOS app for managing photoshoots",
             artifact_type="mobile_app",
@@ -530,6 +533,7 @@ class TestPromptEnricher:
 
     def _make_execution_plan(self):
         from phalanx.agents.execution_planner import ExecutionPlan, PlanPhase, PlanTask
+
         tasks = [
             PlanTask(
                 task_id="t1",
@@ -556,8 +560,15 @@ class TestPromptEnricher:
             plan_summary="Two-phase MVP build: scaffold then booking flow",
             execution_strategy="phased_delivery",
             phases=[PlanPhase(phase_name="Foundation", goal="Set up project", tasks=tasks)],
-            repo_actions={"create_branch": True, "branch_name_suggestion": "feature/photoshoot-app"},
-            verification_plan={"build_checks": ["xcodebuild"], "test_checks": [], "manual_review_steps": []},
+            repo_actions={
+                "create_branch": True,
+                "branch_name_suggestion": "feature/photoshoot-app",
+            },
+            verification_plan={
+                "build_checks": ["xcodebuild"],
+                "test_checks": [],
+                "manual_review_steps": [],
+            },
             open_questions=[],
             stop_conditions=[],
             raw={"plan_summary": "Two-phase MVP build"},
@@ -600,12 +611,18 @@ class TestPromptEnricher:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate",
-                  return_value=self._make_pass_validation(88)),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate",
+                return_value=self._make_pass_validation(88),
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("test-wo-id", "test-proj-id").run(
                 "build an ios app for photoshoot promotions"
             )
@@ -634,12 +651,18 @@ class TestPromptEnricher:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", fake_plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate",
-                  side_effect=lambda *a, **kw: next(validate_iter)),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate",
+                side_effect=lambda *a, **kw: next(validate_iter),
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build something")
 
         assert result.success is True
@@ -653,11 +676,17 @@ class TestPromptEnricher:
 
         with (
             patch("phalanx.agents.intent_router.IntentRouter.route", return_value=router_result),
-            patch("phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize", return_value=normalized),
+            patch(
+                "phalanx.agents.requirement_normalizer.RequirementNormalizer.normalize",
+                return_value=normalized,
+            ),
             patch("phalanx.agents.execution_planner.ExecutionPlanner.plan", return_value=plan),
-            patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=fail_val),
+            patch(
+                "phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=fail_val
+            ),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build something")
 
         # Still succeeds with the last generated plan
@@ -670,6 +699,7 @@ class TestPromptEnricher:
             side_effect=RuntimeError("OpenAI down"),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
+
             result = PromptEnricher("wo-id", "proj-id").run("build something")
 
         assert result.success is False

@@ -24,6 +24,7 @@ A single score hiding the reason for failure is replaced with:
   confidence: 0-100  (how confident the validator is in its assessment)
   findings: [{ type, severity, description, fixable }]
 """
+
 from __future__ import annotations
 
 import json
@@ -107,7 +108,7 @@ class Finding:
     """A single structured finding from the validator."""
 
     type: str
-    severity: str         # critical | major | minor
+    severity: str  # critical | major | minor
     description: str
     fixable: bool
     suggested_fix: str
@@ -124,10 +125,10 @@ class ValidationResult:
       block  → structural problem, escalate to human
     """
 
-    status: str                          # pass | revise | block
-    confidence: int                      # 0-100
+    status: str  # pass | revise | block
+    confidence: int  # 0-100
     findings: list[Finding]
-    revise_instructions: list[str]       # fed back to ExecutionPlanner on retry
+    revise_instructions: list[str]  # fed back to ExecutionPlanner on retry
     task_findings: list[dict]
     summary: str
     raw: dict[str, Any] = field(default_factory=dict)
@@ -233,9 +234,7 @@ class DryRunValidator:
         finding_types = {f.type for f in findings}
         if finding_types & _BLOCK_TYPES:
             # Any blocking issue type overrides GPT's status
-            non_fixable_block = any(
-                f.type in _BLOCK_TYPES and not f.fixable for f in findings
-            )
+            non_fixable_block = any(f.type in _BLOCK_TYPES and not f.fixable for f in findings)
             if non_fixable_block:
                 status = "block"
         if not findings:

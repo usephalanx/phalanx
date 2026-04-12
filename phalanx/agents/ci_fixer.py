@@ -200,10 +200,18 @@ class CIFixerAgent(BaseAgent):
 
         if not fix or fix.get("confidence") == "low" or not fix.get("files"):
             msg = f"Low confidence fix for {category} failure — skipping commit"
-            self._log.info("ci_fixer.low_confidence", root_cause=fix.get("root_cause") if fix else "n/a")
-            await self._trace("uncertainty", msg, {"category": category, "root_cause": fix.get("root_cause") if fix else ""})
+            self._log.info(
+                "ci_fixer.low_confidence", root_cause=fix.get("root_cause") if fix else "n/a"
+            )
+            await self._trace(
+                "uncertainty",
+                msg,
+                {"category": category, "root_cause": fix.get("root_cause") if fix else ""},
+            )
             await self._mark_failed(ci_run, "low_confidence")
-            return AgentResult(success=False, output={"reason": "low_confidence", "category": category})
+            return AgentResult(
+                success=False, output={"reason": "low_confidence", "category": category}
+            )
 
         # ── 8. Apply + commit + push ─────────────────────────────────────────
         files_written = self._apply_fix_files(workspace, fix["files"])
@@ -456,9 +464,7 @@ class CIFixerAgent(BaseAgent):
     # ── DB helpers ─────────────────────────────────────────────────────────────
 
     async def _load_ci_fix_run(self, session) -> CIFixRun | None:
-        result = await session.execute(
-            select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id)
-        )
+        result = await session.execute(select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id))
         return result.scalar_one_or_none()
 
     async def _load_integration(self, session, integration_id: str) -> CIIntegration | None:
@@ -489,6 +495,7 @@ class CIFixerAgent(BaseAgent):
 
 
 # ── Celery task ────────────────────────────────────────────────────────────────
+
 
 @celery_app.task(
     name="phalanx.agents.ci_fixer.execute_task",

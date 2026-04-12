@@ -2,6 +2,7 @@
 Unit tests for CI webhook route helpers and log fetcher.
 No DB, no network calls.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -28,6 +29,7 @@ from phalanx.ci_fixer.log_fetcher import (
 )
 
 # ── _verify_github_signature ───────────────────────────────────────────────────
+
 
 class TestVerifyGithubSignature:
     def _make_sig(self, body: bytes, secret: str) -> str:
@@ -63,6 +65,7 @@ class TestVerifyGithubSignature:
 
 # ── _verify_buildkite_signature ────────────────────────────────────────────────
 
+
 class TestVerifyBuildkiteSignature:
     def test_matching_tokens(self):
         assert _verify_buildkite_signature(b"body", "my-token", "my-token") is True
@@ -79,6 +82,7 @@ class TestVerifyBuildkiteSignature:
 
 
 # ── _parse_repo_name ───────────────────────────────────────────────────────────
+
 
 class TestParseRepoName:
     def test_https_url(self):
@@ -101,6 +105,7 @@ class TestParseRepoName:
 
 
 # ── get_log_fetcher ────────────────────────────────────────────────────────────
+
 
 class TestGetLogFetcher:
     def test_github_actions(self):
@@ -125,6 +130,7 @@ class TestGetLogFetcher:
 
 
 # ── _extract_failed_step_from_zip ─────────────────────────────────────────────
+
 
 class TestExtractFailedStepFromZip:
     def _make_zip(self, files: dict[str, str]) -> bytes:
@@ -158,6 +164,7 @@ class TestExtractFailedStepFromZip:
 
 # ── _extract_failure_section ───────────────────────────────────────────────────
 
+
 class TestExtractFailureSection:
     def test_finds_failed_keyword(self):
         lines = ["line1", "FAILED tests/foo.py::test_bar", "traceback here"]
@@ -185,6 +192,7 @@ class TestExtractFailureSection:
 
 
 # ── _truncate ──────────────────────────────────────────────────────────────────
+
 
 class TestTruncateLogFetcher:
     def test_short_text_unchanged(self):
@@ -250,6 +258,7 @@ class TestStubFetchers:
 
 # ── _extract_failure_section edge cases ────────────────────────────────────────
 
+
 class TestExtractFailureSectionEdge:
     def test_exactly_150_lines_no_error(self):
         lines = [f"x{i}" for i in range(150)]
@@ -274,6 +283,7 @@ class TestExtractFailureSectionEdge:
 
 
 # ── _truncate edge cases ────────────────────────────────────────────────────────
+
 
 class TestTruncateEdge:
     def test_exactly_at_limit_not_truncated(self):
@@ -320,6 +330,7 @@ class TestGitHubActionsLogFetcher:
     async def test_fetch_with_annotations_and_logs(self):
         import io
         import zipfile
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("unit-tests/1_run.txt", "ok\nError: test failed\ndone")
@@ -346,6 +357,7 @@ class TestGitHubActionsLogFetcher:
         client.get = AsyncMock(side_effect=[annotations_resp, check_run_resp, log_zip_resp])
 
         from phalanx.ci_fixer.log_fetcher import GitHubActionsLogFetcher
+
         fetcher = GitHubActionsLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "my-token")
@@ -372,6 +384,7 @@ class TestGitHubActionsLogFetcher:
         client.get = AsyncMock(side_effect=[annotations_resp, check_run_resp, log_zip_resp])
 
         from phalanx.ci_fixer.log_fetcher import GitHubActionsLogFetcher
+
         fetcher = GitHubActionsLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "tok")
@@ -390,6 +403,7 @@ class TestGitHubActionsLogFetcher:
         client.get = AsyncMock(side_effect=Exception("connect failed"))
 
         from phalanx.ci_fixer.log_fetcher import GitHubActionsLogFetcher
+
         fetcher = GitHubActionsLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "tok")
@@ -400,6 +414,7 @@ class TestGitHubActionsLogFetcher:
     async def test_fetch_no_failed_jobs_uses_all_files(self):
         import io
         import zipfile
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("other-job/1_run.txt", "Error: crash")
@@ -425,6 +440,7 @@ class TestGitHubActionsLogFetcher:
 
         event = self._make_event(failed_jobs=[])
         from phalanx.ci_fixer.log_fetcher import GitHubActionsLogFetcher
+
         fetcher = GitHubActionsLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(event, "tok")
@@ -433,6 +449,7 @@ class TestGitHubActionsLogFetcher:
 
 
 # ── BuildkiteLogFetcher (mocked httpx) ─────────────────────────────────────────
+
 
 class TestBuildkiteLogFetcher:
     def _make_event(self):
@@ -466,6 +483,7 @@ class TestBuildkiteLogFetcher:
         client.get = AsyncMock(side_effect=[build_resp, log_resp])
 
         from phalanx.ci_fixer.log_fetcher import BuildkiteLogFetcher
+
         fetcher = BuildkiteLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "bk-token")
@@ -484,6 +502,7 @@ class TestBuildkiteLogFetcher:
         client.get = AsyncMock(return_value=build_resp)
 
         from phalanx.ci_fixer.log_fetcher import BuildkiteLogFetcher
+
         fetcher = BuildkiteLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "bk-token")
@@ -498,6 +517,7 @@ class TestBuildkiteLogFetcher:
         client.get = AsyncMock(side_effect=Exception("network error"))
 
         from phalanx.ci_fixer.log_fetcher import BuildkiteLogFetcher
+
         fetcher = BuildkiteLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "bk-token")
@@ -521,6 +541,7 @@ class TestBuildkiteLogFetcher:
         client.get = AsyncMock(side_effect=[build_resp, log_resp])
 
         from phalanx.ci_fixer.log_fetcher import BuildkiteLogFetcher
+
         fetcher = BuildkiteLogFetcher()
         with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
             result = await fetcher.fetch(self._make_event(), "bk-token")
@@ -540,6 +561,7 @@ def _make_app():
     from fastapi import FastAPI
 
     from phalanx.api.routes.ci_webhooks import router
+
     app = FastAPI()
     app.include_router(router)
     return app
@@ -643,8 +665,12 @@ class TestBuildkiteWebhookRoutes:
         payload = {
             "event": "build.finished",
             "build": {
-                "state": "failed", "branch": "main", "commit": "abc",
-                "id": 99, "web_url": "https://bk.io/1", "jobs": [],
+                "state": "failed",
+                "branch": "main",
+                "commit": "abc",
+                "id": 99,
+                "web_url": "https://bk.io/1",
+                "jobs": [],
             },
             "pipeline": {"repository": "https://github.com/acme/api.git"},
         }

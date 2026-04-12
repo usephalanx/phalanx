@@ -184,7 +184,9 @@ class ReviewerAgent(BaseAgent):
 
     # ── Review logic ──────────────────────────────────────────────────────────
 
-    async def _run_review(self, task: Task, builder_output: dict, code_context: str, builder_handoff: str = "") -> dict:
+    async def _run_review(
+        self, task: Task, builder_output: dict, code_context: str, builder_handoff: str = ""
+    ) -> dict:
         """Call Claude to review the code changes."""
 
         summary = builder_output.get("summary", "No builder summary available.")
@@ -231,11 +233,7 @@ Return ONLY valid JSON — no markdown fences.
             else "\n\nNo code context available — reviewing based on task description."
         )
 
-        handoff_section = (
-            f"\n\nBuilder handoff note:\n{builder_handoff}"
-            if builder_handoff
-            else ""
-        )
+        handoff_section = f"\n\nBuilder handoff note:\n{builder_handoff}" if builder_handoff else ""
 
         messages = [
             {

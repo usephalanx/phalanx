@@ -46,8 +46,13 @@ def _make_session():
 
 def _make_epics(n=2):
     return [
-        {"id": f"epic-{i}", "title": f"Epic {i}", "description": f"Desc {i}",
-         "sequence_num": i, "estimated_minutes": 30}
+        {
+            "id": f"epic-{i}",
+            "title": f"Epic {i}",
+            "description": f"Desc {i}",
+            "sequence_num": i,
+            "estimated_minutes": 30,
+        }
         for i in range(n)
     ]
 
@@ -57,10 +62,9 @@ def _valid_response(tasks=None):
         "api_contract": {
             "endpoints": [{"method": "GET", "path": "/api/listings", "description": "List"}]
         },
-        "db_schema": {
-            "tables": [{"name": "listings", "columns": ["id", "title", "price"]}]
-        },
-        "tasks": tasks or [
+        "db_schema": {"tables": [{"name": "listings", "columns": ["id", "title", "price"]}]},
+        "tasks": tasks
+        or [
             {
                 "epic_index": 0,
                 "title": "Scaffold infrastructure",
@@ -92,6 +96,7 @@ def _make_agent():
     agent.token_budget = 100000
     agent._tokens_used = 0
     import structlog
+
     agent._log = structlog.get_logger("test").bind(run_id="run-001")
     agent._settings = MagicMock()
     agent._settings.anthropic_model_default = "claude-sonnet-4-6"
@@ -285,5 +290,6 @@ class TestTechLeadAgent:
     def test_execute_raises_not_implemented(self):
         agent = _make_agent()
         import asyncio
+
         with pytest.raises(NotImplementedError):
             asyncio.run(agent.execute())

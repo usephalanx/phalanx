@@ -17,59 +17,74 @@ import re
 
 # Ordered by specificity — first match wins
 _PATTERNS: list[tuple[str, list[str]]] = [
-    ("lint", [
-        r"ruff.*error",
-        r"pylint.*error",
-        r"eslint.*error",
-        r"prettier.*error",
-        r"Found \d+ error",
-        r"error\[E\d+\]",                        # ruff error codes
-        r"W\d{4}",                               # pylint warning codes
-        r"Trailing whitespace",
-        r"Missing newline at end of file",
-    ]),
-    ("type", [
-        r"error TS\d+",                          # tsc
-        r"error: Argument of type",              # mypy
-        r"error: Incompatible return value",     # mypy
-        r"error: Item .* has no attribute",      # mypy
-        r"error: Cannot find name",              # tsc
-        r"Type '\w+' is not assignable",         # tsc
-        r"Property '\w+' does not exist",        # tsc
-        r"mypy.*Found \d+ error",
-    ]),
-    ("test", [
-        r"FAILED tests/",                        # pytest
-        r"AssertionError",
-        r"assert .* ==",
-        r"\d+ failed",
-        r"● Test Suites:.*failed",               # jest
-        r"FAIL src/",                            # jest
-        r"Tests:\s+\d+ failed",
-        r"Expected:.*\nReceived:",
-        r"test.*FAILED",
-    ]),
-    ("build", [
-        r"SyntaxError",
-        r"IndentationError",
-        r"ModuleNotFoundError",
-        r"ImportError",
-        r"Cannot find module",
-        r"Module not found",
-        r"Failed to compile",
-        r"Build failed",
-        r"error: cannot open",
-        r"make.*Error \d+",
-    ]),
-    ("dependency", [
-        r"ResolutionImpossible",
-        r"Could not find a version",
-        r"No matching distribution",
-        r"peer dep missing",
-        r"Could not resolve dependency",
-        r"npm ERR! code ERESOLVE",
-        r"yarn error",
-    ]),
+    (
+        "lint",
+        [
+            r"ruff.*error",
+            r"pylint.*error",
+            r"eslint.*error",
+            r"prettier.*error",
+            r"Found \d+ error",
+            r"error\[E\d+\]",  # ruff error codes
+            r"W\d{4}",  # pylint warning codes
+            r"Trailing whitespace",
+            r"Missing newline at end of file",
+        ],
+    ),
+    (
+        "type",
+        [
+            r"error TS\d+",  # tsc
+            r"error: Argument of type",  # mypy
+            r"error: Incompatible return value",  # mypy
+            r"error: Item .* has no attribute",  # mypy
+            r"error: Cannot find name",  # tsc
+            r"Type '\w+' is not assignable",  # tsc
+            r"Property '\w+' does not exist",  # tsc
+            r"mypy.*Found \d+ error",
+        ],
+    ),
+    (
+        "test",
+        [
+            r"FAILED tests/",  # pytest
+            r"AssertionError",
+            r"assert .* ==",
+            r"\d+ failed",
+            r"● Test Suites:.*failed",  # jest
+            r"FAIL src/",  # jest
+            r"Tests:\s+\d+ failed",
+            r"Expected:.*\nReceived:",
+            r"test.*FAILED",
+        ],
+    ),
+    (
+        "build",
+        [
+            r"SyntaxError",
+            r"IndentationError",
+            r"ModuleNotFoundError",
+            r"ImportError",
+            r"Cannot find module",
+            r"Module not found",
+            r"Failed to compile",
+            r"Build failed",
+            r"error: cannot open",
+            r"make.*Error \d+",
+        ],
+    ),
+    (
+        "dependency",
+        [
+            r"ResolutionImpossible",
+            r"Could not find a version",
+            r"No matching distribution",
+            r"peer dep missing",
+            r"Could not resolve dependency",
+            r"npm ERR! code ERESOLVE",
+            r"yarn error",
+        ],
+    ),
 ]
 
 
@@ -101,10 +116,10 @@ def extract_failing_files(log_text: str) -> list[str]:
       - tsc:     src/foo.ts(42,5): error TS2345: ...
     """
     patterns = [
-        r"FAILED\s+([\w/\.\-]+\.py)",           # pytest
-        r"FAIL\s+([\w/\.\-]+\.[jt]sx?)",        # jest
-        r"([\w/\.\-]+\.py):\d+:\s+error",       # mypy/ruff
-        r"([\w/\.\-]+\.[jt]sx?)[\(:]\d+",       # tsc/eslint
+        r"FAILED\s+([\w/\.\-]+\.py)",  # pytest
+        r"FAIL\s+([\w/\.\-]+\.[jt]sx?)",  # jest
+        r"([\w/\.\-]+\.py):\d+:\s+error",  # mypy/ruff
+        r"([\w/\.\-]+\.[jt]sx?)[\(:]\d+",  # tsc/eslint
         r"error in ([\w/\.\-]+\.\w+)",
     ]
     files: list[str] = []

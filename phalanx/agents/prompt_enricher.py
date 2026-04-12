@@ -19,6 +19,7 @@ After enrichment:
 Commander reads enriched_spec.phases[] to create DB tasks.
 Builder reads task.role_context to adopt the right expert persona.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -40,12 +41,12 @@ class EnrichmentResult:
     """Result of the full enrichment pipeline."""
 
     success: bool
-    intent_doc: dict[str, Any]        # NormalizedSpec dict (WorkOrder.intent)
-    enriched_spec: dict[str, Any]     # ExecutionPlan dict  (WorkOrder.enriched_spec)
-    validation_score: int             # validator confidence 0-100
+    intent_doc: dict[str, Any]  # NormalizedSpec dict (WorkOrder.intent)
+    enriched_spec: dict[str, Any]  # ExecutionPlan dict  (WorkOrder.enriched_spec)
+    validation_score: int  # validator confidence 0-100
     phases_count: int
     request_type: str = "vague_request"
-    validation_status: str = "pass"   # pass | revise | block
+    validation_status: str = "pass"  # pass | revise | block
     validation_findings: list = field(default_factory=list)  # Finding descriptions for DB
     error: str | None = None
 
@@ -71,7 +72,7 @@ class PromptEnricher:
     def run(
         self,
         raw_prompt: str,
-        context: Any | None = None,   # ContextPackage from ContextResolver
+        context: Any | None = None,  # ContextPackage from ContextResolver
     ) -> EnrichmentResult:
         """
         Run the full 3-stage pipeline synchronously.
@@ -101,16 +102,16 @@ class PromptEnricher:
             # Build augmented prompt if we have prior context
             prompt_with_context = raw_prompt
             if context and context.has_prior_work:
-                prompt_with_context = (
-                    f"{context.to_context_block()}\n\n"
-                    f"New request: {raw_prompt}"
-                )
+                prompt_with_context = f"{context.to_context_block()}\n\nNew request: {raw_prompt}"
             router_result = IntentRouter().route(prompt_with_context)
         except Exception as exc:
             self._log.error("prompt_enricher.route_failed", error=str(exc))
             return EnrichmentResult(
-                success=False, intent_doc={}, enriched_spec={},
-                validation_score=0, phases_count=0,
+                success=False,
+                intent_doc={},
+                enriched_spec={},
+                validation_score=0,
+                phases_count=0,
                 error=f"Intent routing failed: {exc}",
             )
 
@@ -136,8 +137,11 @@ class PromptEnricher:
         except Exception as exc:
             self._log.error("prompt_enricher.normalize_failed", error=str(exc))
             return EnrichmentResult(
-                success=False, intent_doc={}, enriched_spec={},
-                validation_score=0, phases_count=0,
+                success=False,
+                intent_doc={},
+                enriched_spec={},
+                validation_score=0,
+                phases_count=0,
                 error=f"Requirement normalization failed: {exc}",
             )
 
@@ -165,8 +169,11 @@ class PromptEnricher:
                 self._log.error("prompt_enricher.plan_failed", attempt=attempt, error=str(exc))
                 if attempt > _MAX_PLAN_RETRIES:
                     return EnrichmentResult(
-                        success=False, intent_doc=intent_doc, enriched_spec={},
-                        validation_score=0, phases_count=0,
+                        success=False,
+                        intent_doc=intent_doc,
+                        enriched_spec={},
+                        validation_score=0,
+                        phases_count=0,
                         request_type=router_result.request_type,
                         error=f"Execution planning failed: {exc}",
                     )
@@ -223,7 +230,9 @@ class PromptEnricher:
                 retrying=attempt <= _MAX_PLAN_RETRIES,
             )
             if attempt > _MAX_PLAN_RETRIES:
-                self._log.warning("prompt_enricher.max_retries_hit", final_confidence=validation.confidence)
+                self._log.warning(
+                    "prompt_enricher.max_retries_hit", final_confidence=validation.confidence
+                )
                 break
 
         phases = enriched_spec.get("phases", [])
@@ -292,8 +301,8 @@ class PromptEnricher:
     queue="enricher",
     max_retries=1,
     acks_late=True,
-    soft_time_limit=300,   # 5 min: 3 GPT-4o calls + possible retry
-    time_limit=600,        # 10 min hard kill
+    soft_time_limit=300,  # 5 min: 3 GPT-4o calls + possible retry
+    time_limit=600,  # 10 min hard kill
 )
 def enrich_work_order(  # pragma: no cover
     self,

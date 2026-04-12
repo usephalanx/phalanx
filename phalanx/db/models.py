@@ -31,7 +31,6 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 TIMESTAMPTZ = TIMESTAMP(timezone=True)
 
 
-
 def _uuid() -> str:
     return str(uuid.uuid4())
 

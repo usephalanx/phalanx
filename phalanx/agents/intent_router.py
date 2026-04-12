@@ -7,6 +7,7 @@ for the RequirementNormalizer (Stage 1).
 Design principle: preserve what the user said, infer only what is necessary,
 label every assumption.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -80,7 +81,7 @@ class RouterResult:
     """Structured output from IntentRouter."""
 
     request_type: str
-    primary_intent: dict[str, str]          # {summary, category}
+    primary_intent: dict[str, str]  # {summary, category}
     secondary_intents: list[dict[str, str]]  # [{summary, category}]
     explicit_requirements: list[str]
     explicit_constraints: list[str]

@@ -2,6 +2,7 @@
 Unit tests for CI Fixer — classifier, log_fetcher helpers, events, command parser.
 No DB, no network, no Celery.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -12,6 +13,7 @@ from phalanx.ci_fixer.log_fetcher import _extract_failure_section, _truncate
 from phalanx.gateway.command_parser import CommandType, parse_command
 
 # ── CIFailureEvent ─────────────────────────────────────────────────────────────
+
 
 class TestCIFailureEvent:
     def test_defaults(self):
@@ -44,6 +46,7 @@ class TestCIFailureEvent:
 
 
 # ── classify_failure ───────────────────────────────────────────────────────────
+
 
 class TestClassifyFailure:
     def test_pytest_failure(self):
@@ -104,6 +107,7 @@ class TestClassifyFailure:
 
 # ── extract_failing_files ──────────────────────────────────────────────────────
 
+
 class TestExtractFailingFiles:
     def test_pytest_path(self):
         log = "FAILED tests/unit/test_auth.py::TestClass::test_method"
@@ -126,10 +130,7 @@ class TestExtractFailingFiles:
         assert "src/app.tsx" in files
 
     def test_deduplication(self):
-        log = (
-            "FAILED tests/test_foo.py::TestA::test_1\n"
-            "FAILED tests/test_foo.py::TestA::test_2\n"
-        )
+        log = "FAILED tests/test_foo.py::TestA::test_1\nFAILED tests/test_foo.py::TestA::test_2\n"
         files = extract_failing_files(log)
         assert files.count("tests/test_foo.py") == 1
 
@@ -143,6 +144,7 @@ class TestExtractFailingFiles:
 
 
 # ── log_fetcher helpers ────────────────────────────────────────────────────────
+
 
 class TestExtractFailureSection:
     def test_finds_error_line(self):
@@ -183,6 +185,7 @@ class TestTruncate:
 
 
 # ── command parser — /phalanx fix ──────────────────────────────────────────────
+
 
 class TestParseFix:
     def test_fix_pr_number(self):
@@ -228,9 +231,11 @@ class TestParseFix:
 
 # ── CIFixerAgent — pure helpers (no DB, no network) ───────────────────────────
 
+
 class TestCIFixerAgentHelpers:
     def _make_agent(self):
         from phalanx.agents.ci_fixer import CIFixerAgent
+
         return CIFixerAgent(ci_fix_run_id="00000000-0000-0000-0000-000000000001")
 
     def test_decrypt_key_passthrough(self):
@@ -292,21 +297,26 @@ class TestCIFixerAgentHelpers:
 
 # ── CI_FIXER_SOUL ──────────────────────────────────────────────────────────────
 
+
 class TestCIFixerSoul:
     def test_soul_registered(self):
         from phalanx.agents.soul import CI_FIXER_SOUL, get_soul
+
         assert get_soul("ci_fixer") == CI_FIXER_SOUL
 
     def test_soul_mentions_never_change_tests(self):
         from phalanx.agents.soul import CI_FIXER_SOUL
+
         assert "test" in CI_FIXER_SOUL.lower()
 
     def test_soul_mentions_surgical(self):
         from phalanx.agents.soul import CI_FIXER_SOUL
+
         assert "surgical" in CI_FIXER_SOUL.lower() or "exactly" in CI_FIXER_SOUL.lower()
 
     def test_agent_role_is_ci_fixer(self):
         from phalanx.agents.ci_fixer import CIFixerAgent
+
         assert CIFixerAgent.AGENT_ROLE == "ci_fixer"
 
 
@@ -318,17 +328,21 @@ from unittest.mock import patch  # noqa: E402
 class TestGenerateFix:
     def _make_agent(self):
         from phalanx.agents.ci_fixer import CIFixerAgent
+
         return CIFixerAgent(ci_fix_run_id="00000000-0000-0000-0000-000000000002")
 
     @pytest.mark.asyncio
     async def test_valid_json_parsed(self):
         agent = self._make_agent()
         import json as _json
-        response = _json.dumps({
-            "confidence": "high",
-            "root_cause": "missing import",
-            "files": [{"path": "src/foo.py", "content": "import os\n"}],
-        })
+
+        response = _json.dumps(
+            {
+                "confidence": "high",
+                "root_cause": "missing import",
+                "files": [{"path": "src/foo.py", "content": "import os\n"}],
+            }
+        )
         with patch.object(agent, "_call_claude", return_value=response):
             result = await agent._generate_fix("build", "log", "files", "reflection")
         assert result["confidence"] == "high"

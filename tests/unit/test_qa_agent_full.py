@@ -104,16 +104,19 @@ def write_coverage_xml(path: Path, line_rate: float = 0.95) -> None:
 
 
 def write_broken_conftest(path: Path) -> None:
-    path.write_text(textwrap.dedent("""\
+    path.write_text(
+        textwrap.dedent("""\
         def pytest_addoption(parser):
             try:
                 parser.addoption("--timeout", action="store", default=None)
             except ValueError:
                 pass
-    """))
+    """)
+    )
 
 
 # ── Unit: _derive_coverage_source ────────────────────────────────────────────
+
 
 class TestDeriveCoverageSource:
     def test_package_dir_detected(self, tmp_path):
@@ -174,6 +177,7 @@ class TestDeriveCoverageSource:
 
 # ── Unit: _apply_test_plan ────────────────────────────────────────────────────
 
+
 class TestApplyTestPlan:
     def test_llm_files_used_when_valid(self, tmp_path):
         agent = make_agent(tmp_path)
@@ -190,7 +194,10 @@ class TestApplyTestPlan:
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_real.py").write_text("")
         test_plan = {"test_files": ["tests/ghost_file.py"]}
-        context = {"changed_files": ["tests/test_real.py", "app/main.py"], "existing_test_files": []}
+        context = {
+            "changed_files": ["tests/test_real.py", "app/main.py"],
+            "existing_test_files": [],
+        }
         agent._apply_test_plan(test_plan, context, _PYTHON_BRIEF)
         assert "tests/test_real.py" in agent.test_command
         assert "tests/ghost_file.py" not in agent.test_command
@@ -270,6 +277,7 @@ class TestApplyTestPlan:
 
 # ── Unit: _remove_root_conftest ───────────────────────────────────────────────
 
+
 class TestRemoveRootConftest:
     def test_removes_existing_conftest(self, tmp_path):
         agent = make_agent(tmp_path)
@@ -291,6 +299,7 @@ class TestRemoveRootConftest:
 
 # ── Unit: _evaluate_outcome ───────────────────────────────────────────────────
 
+
 class TestEvaluateOutcome:
     def _lint_ok(self):
         return [
@@ -305,16 +314,23 @@ class TestEvaluateOutcome:
         ]
 
     def _coverage_ok(self):
-        return CoverageResult(line_coverage_pct=85.0, branch_coverage_pct=None, threshold_met=True, threshold=70.0)
+        return CoverageResult(
+            line_coverage_pct=85.0, branch_coverage_pct=None, threshold_met=True, threshold=70.0
+        )
 
     def _coverage_low(self):
-        return CoverageResult(line_coverage_pct=50.0, branch_coverage_pct=None, threshold_met=False, threshold=70.0)
+        return CoverageResult(
+            line_coverage_pct=50.0, branch_coverage_pct=None, threshold_met=False, threshold=70.0
+        )
 
     def test_all_pass(self, tmp_path):
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=0, total_tests=5, total_failures=0,
-            coverage=self._coverage_ok(), lint_results=self._lint_ok(),
+            test_rc=0,
+            total_tests=5,
+            total_failures=0,
+            coverage=self._coverage_ok(),
+            lint_results=self._lint_ok(),
         )
         assert outcome == QAOutcome.PASSED
         assert reason is None
@@ -322,8 +338,11 @@ class TestEvaluateOutcome:
     def test_no_tests_fails(self, tmp_path):
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=0, total_tests=0, total_failures=0,
-            coverage=None, lint_results=self._lint_ok(),
+            test_rc=0,
+            total_tests=0,
+            total_failures=0,
+            coverage=None,
+            lint_results=self._lint_ok(),
         )
         assert outcome == QAOutcome.FAILED
         assert "No tests" in reason
@@ -331,8 +350,11 @@ class TestEvaluateOutcome:
     def test_test_failures_fails(self, tmp_path):
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=1, total_tests=5, total_failures=2,
-            coverage=self._coverage_ok(), lint_results=self._lint_ok(),
+            test_rc=1,
+            total_tests=5,
+            total_failures=2,
+            coverage=self._coverage_ok(),
+            lint_results=self._lint_ok(),
         )
         assert outcome == QAOutcome.FAILED
         assert "2 test(s) failed" in reason
@@ -340,8 +362,11 @@ class TestEvaluateOutcome:
     def test_low_coverage_fails(self, tmp_path):
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=0, total_tests=5, total_failures=0,
-            coverage=self._coverage_low(), lint_results=self._lint_ok(),
+            test_rc=0,
+            total_tests=5,
+            total_failures=0,
+            coverage=self._coverage_low(),
+            lint_results=self._lint_ok(),
         )
         assert outcome == QAOutcome.FAILED
         assert "50.0%" in reason
@@ -350,8 +375,11 @@ class TestEvaluateOutcome:
         # Lint is advisory — does NOT fail the QA gate (belongs in Reviewer)
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=0, total_tests=5, total_failures=0,
-            coverage=self._coverage_ok(), lint_results=self._lint_fail(),
+            test_rc=0,
+            total_tests=5,
+            total_failures=0,
+            coverage=self._coverage_ok(),
+            lint_results=self._lint_fail(),
         )
         assert outcome == QAOutcome.PASSED
         assert reason is None
@@ -360,8 +388,11 @@ class TestEvaluateOutcome:
         # Test failures + low coverage → both blocking, lint advisory only
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=1, total_tests=3, total_failures=1,
-            coverage=self._coverage_low(), lint_results=self._lint_fail(),
+            test_rc=1,
+            total_tests=3,
+            total_failures=1,
+            coverage=self._coverage_low(),
+            lint_results=self._lint_fail(),
         )
         assert outcome == QAOutcome.FAILED
         assert " | " in reason  # test failure + coverage, both blocking
@@ -370,21 +401,32 @@ class TestEvaluateOutcome:
     def test_no_coverage_does_not_fail(self, tmp_path):
         agent = make_agent(tmp_path)
         outcome, reason = agent._evaluate_outcome(
-            test_rc=0, total_tests=3, total_failures=0,
-            coverage=None, lint_results=self._lint_ok(),
+            test_rc=0,
+            total_tests=3,
+            total_failures=0,
+            coverage=None,
+            lint_results=self._lint_ok(),
         )
         assert outcome == QAOutcome.PASSED
 
 
 # ── Unit: _build_evidence ────────────────────────────────────────────────────
 
+
 class TestBuildEvidence:
     def test_includes_test_plan(self, tmp_path):
         agent = make_agent(tmp_path)
         suites = [TestSuiteResult("s", 5, 5, 0, 0, 0, 1.0)]
         evidence = agent._build_evidence(
-            suites=suites, coverage=None, lint_results=[], outcome=QAOutcome.PASSED,
-            test_plan={"what_to_verify": "GET /", "rationale": "only endpoint", "test_files": ["tests/test_main.py"]},
+            suites=suites,
+            coverage=None,
+            lint_results=[],
+            outcome=QAOutcome.PASSED,
+            test_plan={
+                "what_to_verify": "GET /",
+                "rationale": "only endpoint",
+                "test_files": ["tests/test_main.py"],
+            },
         )
         assert evidence["test_plan"]["what_to_verify"] == "GET /"
         assert "tests/test_main.py" in evidence["test_plan"]["test_files"]
@@ -392,7 +434,10 @@ class TestBuildEvidence:
     def test_no_test_plan_key_absent(self, tmp_path):
         agent = make_agent(tmp_path)
         evidence = agent._build_evidence(
-            suites=[], coverage=None, lint_results=[], outcome=QAOutcome.PASSED,
+            suites=[],
+            coverage=None,
+            lint_results=[],
+            outcome=QAOutcome.PASSED,
             test_plan=None,
         )
         assert "test_plan" not in evidence
@@ -401,7 +446,9 @@ class TestBuildEvidence:
         agent = make_agent(tmp_path)
         coverage = CoverageResult(85.0, None, True, 70.0)
         suites = [TestSuiteResult("s", 10, 9, 1, 0, 0, 2.0)]
-        evidence = agent._build_evidence(suites=suites, coverage=coverage, lint_results=[], outcome=QAOutcome.FAILED)
+        evidence = agent._build_evidence(
+            suites=suites, coverage=coverage, lint_results=[], outcome=QAOutcome.FAILED
+        )
         s = evidence["summary"]
         assert s["tests_total"] == 10
         assert s["tests_passed"] == 9
@@ -411,11 +458,14 @@ class TestBuildEvidence:
 
     def test_gate_always_qa(self, tmp_path):
         agent = make_agent(tmp_path)
-        evidence = agent._build_evidence(suites=[], coverage=None, lint_results=[], outcome=QAOutcome.PASSED)
+        evidence = agent._build_evidence(
+            suites=[], coverage=None, lint_results=[], outcome=QAOutcome.PASSED
+        )
         assert evidence["gate"] == "qa"
 
 
 # ── Unit: _read_doc ───────────────────────────────────────────────────────────
+
 
 class TestReadDoc:
     def test_reads_existing_file(self, tmp_path):
@@ -437,17 +487,20 @@ class TestReadDoc:
 
 # ── Simulation: full evaluate() flow ─────────────────────────────────────────
 
+
 def _fake_run_factory(responses: dict[str, tuple[int, str, str]]):
     """
     Returns an async _run() mock that returns specific (rc, stdout, stderr)
     based on the first element of the command list.
     """
+
     async def fake_run(cmd, cwd=None):
         # Match by any substring in command
         for pattern, response in responses.items():
             if pattern in " ".join(cmd):
                 return response
         return (0, "", "")
+
     return fake_run
 
 
@@ -491,8 +544,16 @@ class TestEvaluateSimulation:
 
     def _patch_db(self):
         """Patch both DB methods to no-ops."""
-        persist = patch.object(QAAgent, "_persist_artifact", new_callable=lambda: lambda self: AsyncMock(return_value=None))
-        update = patch.object(QAAgent, "_update_run_status", new_callable=lambda: lambda self: AsyncMock(return_value=None))
+        persist = patch.object(
+            QAAgent,
+            "_persist_artifact",
+            new_callable=lambda: lambda self: AsyncMock(return_value=None),
+        )
+        update = patch.object(
+            QAAgent,
+            "_update_run_status",
+            new_callable=lambda: lambda self: AsyncMock(return_value=None),
+        )
         return persist, update
 
     @pytest.mark.asyncio
@@ -519,10 +580,12 @@ class TestEvaluateSimulation:
 
         agent = make_agent(tmp_path)
 
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert report.outcome == QAOutcome.PASSED
@@ -548,10 +611,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert report.outcome == QAOutcome.FAILED
@@ -575,10 +640,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert report.outcome == QAOutcome.FAILED
@@ -601,17 +668,23 @@ class TestEvaluateSimulation:
             if "pytest" in cmd:
                 pytest_cmds.append(cmd)
                 # Verify conftest is gone by this point
-                assert not (tmp_path / "conftest.py").exists(), "conftest.py should be removed before pytest runs"
+                assert not (tmp_path / "conftest.py").exists(), (
+                    "conftest.py should be removed before pytest runs"
+                )
                 return (0, "3 passed", "")
             if "ruff" in cmd:
                 return (0, "", "")
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: BROKEN_CONFTEST_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(
+                agent, "_call_openai_sync", side_effect=lambda s, m: BROKEN_CONFTEST_CLAUDE_RESPONSE
+            ),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert not (tmp_path / "conftest.py").exists()
@@ -637,10 +710,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=Exception("API error")),  \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=Exception("API error")),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         # Should still work via fallback — diff has test_main.py
@@ -670,10 +745,12 @@ class TestEvaluateSimulation:
 
         no_tests_plan = '{"test_files": [], "coverage_source": "app", "what_to_verify": "nothing", "rationale": "no tests", "remove_root_conftest": false}'
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: no_tests_plan), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: no_tests_plan),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert report.outcome == QAOutcome.FAILED
@@ -699,10 +776,12 @@ class TestEvaluateSimulation:
 
         agent = make_agent(tmp_path)
         update_mock = AsyncMock()
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", update_mock):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", update_mock),
+        ):
             report = await agent.evaluate()
 
         update_mock.assert_called_once_with(report)
@@ -727,10 +806,12 @@ class TestEvaluateSimulation:
 
         agent = make_agent(tmp_path)
         update_mock = AsyncMock()
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", update_mock):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", update_mock),
+        ):
             report = await agent.evaluate()
 
         update_mock.assert_called_once_with(report)
@@ -754,10 +835,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         assert "test_plan" in report.quality_evidence
@@ -783,10 +866,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=lambda s, m: GOOD_CLAUDE_RESPONSE),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             report = await agent.evaluate()
 
         # Lint is advisory — does NOT fail the QA gate
@@ -816,10 +901,12 @@ class TestEvaluateSimulation:
             return (0, "", "")
 
         agent = make_agent(tmp_path)
-        with patch("phalanx.agents.qa._run", side_effect=fake_run), \
-             patch.object(agent, "_call_openai_sync", side_effect=no_cov_source_lambda), \
-             patch.object(agent, "_persist_artifact", new=AsyncMock()), \
-             patch.object(agent, "_update_run_status", new=AsyncMock()):
+        with (
+            patch("phalanx.agents.qa._run", side_effect=fake_run),
+            patch.object(agent, "_call_openai_sync", side_effect=no_cov_source_lambda),
+            patch.object(agent, "_persist_artifact", new=AsyncMock()),
+            patch.object(agent, "_update_run_status", new=AsyncMock()),
+        ):
             await agent.evaluate()
 
         # app/ exists on disk and is in diff → should derive "app"
@@ -827,6 +914,7 @@ class TestEvaluateSimulation:
 
 
 # ── Unit: _parse_junit_xml ────────────────────────────────────────────────────
+
 
 class TestParseJunitXml:
     def test_valid_xml_parsed(self, tmp_path):
@@ -854,6 +942,7 @@ class TestParseJunitXml:
 
 
 # ── Unit: _parse_coverage_xml ────────────────────────────────────────────────
+
 
 class TestParseCoverageXml:
     def test_high_coverage_passes_threshold(self, tmp_path):

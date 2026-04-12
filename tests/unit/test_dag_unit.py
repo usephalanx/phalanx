@@ -1,4 +1,5 @@
 """Unit tests for phalanx/workflow/dag.py"""
+
 from __future__ import annotations
 
 import pytest
@@ -91,6 +92,7 @@ class TestGetReady:
 class TestBuildNodes:
     def test_builds_from_orm_objects(self):
         from unittest.mock import MagicMock
+
         r = DagResolver()
 
         t1 = MagicMock(id="t1", agent_role="builder", estimated_minutes=30)
@@ -104,6 +106,7 @@ class TestBuildNodes:
 
     def test_ignores_dep_with_unknown_task_id(self):
         from unittest.mock import MagicMock
+
         r = DagResolver()
 
         t1 = MagicMock(id="t1", agent_role="builder", estimated_minutes=30)

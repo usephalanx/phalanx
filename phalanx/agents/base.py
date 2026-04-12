@@ -223,9 +223,12 @@ class BaseAgent(abc.ABC):
             prompt = "\n\n".join(parts)
 
         cmd = [
-            _claude_cli_path, "-p",
-            "--output-format", "json",
-            "--model", model or settings.anthropic_model_default,
+            _claude_cli_path,
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            model or settings.anthropic_model_default,
             "--no-session-persistence",  # each call is independent
             "--dangerously-skip-permissions",  # non-interactive, no file tools
         ]
@@ -246,9 +249,7 @@ class BaseAgent(abc.ABC):
             raise RuntimeError(f"Claude CLI subprocess error: {exc}") from exc
 
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Claude CLI exit {result.returncode}: {result.stderr[:200]}"
-            )
+            raise RuntimeError(f"Claude CLI exit {result.returncode}: {result.stderr[:200]}")
 
         try:
             data = json.loads(result.stdout)
@@ -256,7 +257,7 @@ class BaseAgent(abc.ABC):
             raise RuntimeError(f"Claude CLI returned non-JSON: {result.stdout[:200]}") from exc
 
         if data.get("is_error") or data.get("subtype") != "success":
-            raise RuntimeError(f"Claude CLI error response: {data.get('result','')[:200]}")
+            raise RuntimeError(f"Claude CLI error response: {data.get('result', '')[:200]}")
 
         # Track tokens — CLI reports input + output + cache tokens
         usage = data.get("usage", {})
@@ -443,8 +444,7 @@ class BaseAgent(abc.ABC):
 
             notifier = await SlackNotifier.from_run(self.run_id)
             msg = (
-                f":warning: *{trace_type.title()}* from *{self.AGENT_ROLE}* agent:\n"
-                f"{content[:500]}"
+                f":warning: *{trace_type.title()}* from *{self.AGENT_ROLE}* agent:\n{content[:500]}"
             )
             await notifier.post(msg)
         except Exception as exc:
@@ -531,7 +531,9 @@ class BaseAgent(abc.ABC):
             kwargs["system"] = system
 
         response = client.messages.create(**kwargs)
-        self._tokens_used += (response.usage.input_tokens or 0) + (response.usage.output_tokens or 0)
+        self._tokens_used += (response.usage.input_tokens or 0) + (
+            response.usage.output_tokens or 0
+        )
 
         text = ""
         thinking = ""

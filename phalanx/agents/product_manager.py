@@ -133,7 +133,9 @@ class ProductManagerAgent(BaseAgent):
         try:
             parsed = _extract_json(response_text)
         except (json.JSONDecodeError, ValueError) as exc:
-            self._log.error("product_manager.parse_failed", error=str(exc), response=response_text[:200])
+            self._log.error(
+                "product_manager.parse_failed", error=str(exc), response=response_text[:200]
+            )
             return AgentResult(success=False, output={}, error=f"JSON parse error: {exc}")
 
         epics_data: list[dict] = parsed.get("epics", [])
@@ -201,10 +203,7 @@ def _extract_json(text: str) -> dict:
     # Remove code fences if present
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(
-            line for line in lines
-            if not line.strip().startswith("```")
-        ).strip()
+        text = "\n".join(line for line in lines if not line.strip().startswith("```")).strip()
     return json.loads(text)
 
 

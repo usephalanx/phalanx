@@ -1,4 +1,5 @@
 """Unit tests for MemoryWriter."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock

@@ -14,17 +14,20 @@ from phalanx.agents.streaming_parser import StreamingJsonFileParser
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _build_response(
     summary: str,
     commit_message: str,
     files: list[dict],
 ) -> str:
     """Build a well-formed builder JSON response string."""
-    return json.dumps({
-        "summary": summary,
-        "commit_message": commit_message,
-        "files": files,
-    })
+    return json.dumps(
+        {
+            "summary": summary,
+            "commit_message": commit_message,
+            "files": files,
+        }
+    )
 
 
 def _feed_all(parser: StreamingJsonFileParser, text: str) -> list[dict]:
@@ -36,11 +39,12 @@ def _feed_chunked(parser: StreamingJsonFileParser, text: str, size: int = 32) ->
     """Feed text in small chunks of `size` bytes."""
     results: list[dict] = []
     for i in range(0, len(text), size):
-        results.extend(parser.feed(text[i:i + size]))
+        results.extend(parser.feed(text[i : i + size]))
     return results
 
 
 # ── Normal complete response ──────────────────────────────────────────────────
+
 
 class TestNormalResponse:
     def test_single_file_emitted(self):
@@ -48,7 +52,13 @@ class TestNormalResponse:
         text = _build_response(
             "Built Button component",
             "feat: add Button component",
-            [{"path": "src/Button.tsx", "action": "create", "content": "export const Button = () => <button/>;"}],
+            [
+                {
+                    "path": "src/Button.tsx",
+                    "action": "create",
+                    "content": "export const Button = () => <button/>;",
+                }
+            ],
         )
         files = _feed_all(parser, text)
         assert len(files) == 1
@@ -81,7 +91,9 @@ class TestNormalResponse:
     def test_files_emitted_in_order(self):
         parser = StreamingJsonFileParser()
         paths = [f"src/Component{i}.tsx" for i in range(5)]
-        files = [{"path": p, "action": "create", "content": f"content_{i}"} for i, p in enumerate(paths)]
+        files = [
+            {"path": p, "action": "create", "content": f"content_{i}"} for i, p in enumerate(paths)
+        ]
         text = _build_response("Five components", "feat: components", files)
         result = _feed_all(parser, text)
         assert [f["path"] for f in result] == paths
@@ -95,6 +107,7 @@ class TestNormalResponse:
 
 
 # ── Chunked delivery ─────────────────────────────────────────────────────────
+
 
 class TestChunkedDelivery:
     def test_byte_by_byte_delivery(self):
@@ -142,7 +155,7 @@ class TestChunkedDelivery:
 
         emitted: list[dict] = []
         for i in range(0, len(text), 4):
-            emitted.extend(parser.feed(text[i:i + 4]))
+            emitted.extend(parser.feed(text[i : i + 4]))
 
         assert len(emitted) == 2
         assert emitted[0]["path"] == "src/First.tsx"
@@ -150,6 +163,7 @@ class TestChunkedDelivery:
 
 
 # ── Truncation handling ───────────────────────────────────────────────────────
+
 
 class TestTruncation:
     def test_truncation_mid_second_file_first_file_emitted(self):
@@ -161,8 +175,8 @@ class TestTruncation:
         ]
         full = _build_response("Two", "feat: two", files)
         # Find the closing } of the first file and cut there
-        first_close = full.index('}, {')
-        truncated = full[:first_close + 1]  # include the closing } of first file
+        first_close = full.index("}, {")
+        truncated = full[: first_close + 1]  # include the closing } of first file
 
         result = _feed_all(parser, truncated)
         assert len(result) == 1
@@ -178,7 +192,7 @@ class TestTruncation:
         )
         # Truncate in the middle of the content value
         idx = full.index("some long")
-        truncated = full[:idx + 4]  # "some"
+        truncated = full[: idx + 4]  # "some"
 
         result = _feed_all(parser, truncated)
         assert result == []
@@ -203,6 +217,7 @@ class TestTruncation:
 
 
 # ── Special characters in content ────────────────────────────────────────────
+
 
 class TestSpecialCharacters:
     def test_escaped_quotes_in_content(self):
@@ -278,6 +293,7 @@ class TestSpecialCharacters:
 
 # ── Large file ────────────────────────────────────────────────────────────────
 
+
 class TestLargeFile:
     def test_large_content_completes(self):
         """A file with ~100KB of content is handled correctly."""
@@ -308,6 +324,7 @@ class TestLargeFile:
 
 # ── Summary/commit_message edge cases ────────────────────────────────────────
 
+
 class TestMetadataExtraction:
     def test_summary_with_special_chars(self):
         parser = StreamingJsonFileParser()
@@ -329,8 +346,12 @@ class TestMetadataExtraction:
 
     def test_commit_message_extracted(self):
         parser = StreamingJsonFileParser()
-        text = _build_response("X", "feat(ui): add Navbar with mobile drawer", [
-            {"path": "x.tsx", "action": "create", "content": "y"},
-        ])
+        text = _build_response(
+            "X",
+            "feat(ui): add Navbar with mobile drawer",
+            [
+                {"path": "x.tsx", "action": "create", "content": "y"},
+            ],
+        )
         _feed_all(parser, text)
         assert parser.commit_message == "feat(ui): add Navbar with mobile drawer"

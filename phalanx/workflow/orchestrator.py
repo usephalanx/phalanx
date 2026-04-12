@@ -89,8 +89,10 @@ class WorkflowOrchestrator:
         self._router = task_router
         self._approval_timeout = approval_timeout_hours * 3600
         self._log = log.bind(run_id=run_id)
-        self._notifier = notifier if notifier is not None else SlackNotifier(
-            channel_id=None, thread_ts=None, slack_token="", enabled=False
+        self._notifier = (
+            notifier
+            if notifier is not None
+            else SlackNotifier(channel_id=None, thread_ts=None, slack_token="", enabled=False)
         )
 
     async def execute(self) -> None:
@@ -146,7 +148,7 @@ class WorkflowOrchestrator:
           5. Repeat until all tasks are completed.
         """
         completed_ids: set[str] = set()
-        in_flight: set[str] = set()   # dispatched, not yet COMPLETED
+        in_flight: set[str] = set()  # dispatched, not yet COMPLETED
 
         while len(completed_ids) < len(nodes):
             # ── Dispatch all newly unblocked tasks ────────────────────────────
@@ -188,7 +190,8 @@ class WorkflowOrchestrator:
                         non_fatal.append(detail)
                         self._log.warning(
                             "orchestrator.dag.non_fatal_failure",
-                            task_id=fid, role=role,
+                            task_id=fid,
+                            role=role,
                         )
                         await self._notifier.task_failed(task_map[fid])
                         # Treat as done so DAG can continue
@@ -196,17 +199,21 @@ class WorkflowOrchestrator:
                     else:
                         fatal.append(detail)
                         fatal_ids.append(fid)
-                newly_failed -= {fid for fid in newly_failed
-                                  if (task_map.get(fid) and
-                                      task_map[fid].agent_role in ("qa", "reviewer", "verifier", "integration_wiring"))}
+                newly_failed -= {
+                    fid
+                    for fid in newly_failed
+                    if (
+                        task_map.get(fid)
+                        and task_map[fid].agent_role
+                        in ("qa", "reviewer", "verifier", "integration_wiring")
+                    )
+                }
                 if fatal:
                     for fid in fatal_ids:
                         t = task_map.get(fid)
                         if t is not None:
                             await self._notifier.task_failed(t)
-                    raise OrchestratorError(
-                        f"DAG task(s) failed: {'; '.join(fatal)}"
-                    )
+                    raise OrchestratorError(f"DAG task(s) failed: {'; '.join(fatal)}")
 
             if newly_done:
                 self._log.info(
@@ -238,9 +245,7 @@ class WorkflowOrchestrator:
             payload={"assigned_agent_id": task.assigned_agent_id},
         )
 
-    async def _poll_in_flight(
-        self, task_ids: set[str]
-    ) -> tuple[set[str], set[str]]:
+    async def _poll_in_flight(self, task_ids: set[str]) -> tuple[set[str], set[str]]:
         """
         Poll all in-flight tasks in a single fresh DB session.
 

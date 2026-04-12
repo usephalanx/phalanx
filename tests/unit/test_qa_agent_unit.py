@@ -466,6 +466,7 @@ class TestParseQAMd:
         import uuid
 
         from phalanx.agents.qa import QAAgent
+
         return QAAgent(run_id=uuid.uuid4(), repo_path=repo_path)
 
     def test_parses_valid_yaml(self, tmp_path):
@@ -547,10 +548,12 @@ class TestMergeQAMdIntoBrief:
         import uuid
 
         from phalanx.agents.qa import QAAgent
+
         return QAAgent(run_id=uuid.uuid4(), repo_path=tmp_path)
 
     def _make_brief(self):
         from phalanx.agents.qa import TeamBrief
+
         return TeamBrief()
 
     def test_merges_stack_and_runner(self, tmp_path):
@@ -593,6 +596,7 @@ class TestWorkspaceIsolation:
         from unittest.mock import MagicMock
 
         from phalanx.agents.builder import BuilderAgent
+
         run_id = str(uuid.uuid4())
         task_id = str(uuid.uuid4())
         agent = BuilderAgent.__new__(BuilderAgent)
@@ -653,14 +657,16 @@ class TestWorkspaceIsolation:
         (tmp_path / "tests").mkdir()
         (tmp_path / "tests" / "test_real.py").write_text("pass")
 
-        raw = yaml.dump({
-            "stack": "Python/FastAPI",
-            "test_runner": "pytest tests/",
-            "install_steps": ["pip install -r requirements.txt"],
-            "test_files": ["tests/test_real.py", "tests/test_ghost.py"],
-            "coverage_applies": True,
-            "coverage_threshold": 70,
-        })
+        raw = yaml.dump(
+            {
+                "stack": "Python/FastAPI",
+                "test_runner": "pytest tests/",
+                "install_steps": ["pip install -r requirements.txt"],
+                "test_files": ["tests/test_real.py", "tests/test_ghost.py"],
+                "coverage_applies": True,
+                "coverage_threshold": 70,
+            }
+        )
 
         result = agent._validate_qa_md(raw, tmp_path)
         assert result is not None
@@ -679,11 +685,13 @@ class TestWorkspaceIsolation:
         import yaml
 
         agent, _ = self._make_agent()
-        raw = yaml.dump({
-            "stack": "Python/FastAPI",
-            "test_runner": "pytest tests/",
-            "install_steps": [],
-        })
+        raw = yaml.dump(
+            {
+                "stack": "Python/FastAPI",
+                "test_runner": "pytest tests/",
+                "install_steps": [],
+            }
+        )
 
         result = agent._validate_qa_md(raw, tmp_path)
         assert result is not None

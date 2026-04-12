@@ -9,6 +9,7 @@ that Claude receives as the task description. This is where quality is made.
 
 The output PhaseSpec[] is saved to WorkOrder.enriched_spec.phases.
 """
+
 from __future__ import annotations
 
 from typing import Any

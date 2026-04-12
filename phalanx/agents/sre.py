@@ -245,23 +245,23 @@ CMD ["supervisord", "-c", "/etc/supervisor/conf.d/app.conf"]
 
 # app_type → (dockerfile_content, internal_port)
 _APP_TEMPLATES: dict[str, tuple[str, int]] = {
-    "react":      (_DOCKERFILE_REACT,      80),
-    "nextjs":     (_DOCKERFILE_NEXTJS,     3000),
-    "fastapi":    (_DOCKERFILE_FASTAPI,    8000),
-    "flask":      (_DOCKERFILE_FLASK,      5000),
-    "django":     (_DOCKERFILE_DJANGO,     8000),
-    "express":    (_DOCKERFILE_EXPRESS,    3000),
-    "go":         (_DOCKERFILE_GO,         8080),
-    "ruby":       (_DOCKERFILE_RUBY,       3000),
-    "php":        (_DOCKERFILE_PHP,        80),
-    "rust":       (_DOCKERFILE_RUST,       8080),
-    "fullstack":  (_DOCKERFILE_FULLSTACK,  80),
-    "static":     (_DOCKERFILE_STATIC,     80),
+    "react": (_DOCKERFILE_REACT, 80),
+    "nextjs": (_DOCKERFILE_NEXTJS, 3000),
+    "fastapi": (_DOCKERFILE_FASTAPI, 8000),
+    "flask": (_DOCKERFILE_FLASK, 5000),
+    "django": (_DOCKERFILE_DJANGO, 8000),
+    "express": (_DOCKERFILE_EXPRESS, 3000),
+    "go": (_DOCKERFILE_GO, 8080),
+    "ruby": (_DOCKERFILE_RUBY, 3000),
+    "php": (_DOCKERFILE_PHP, 80),
+    "rust": (_DOCKERFILE_RUST, 8080),
+    "fullstack": (_DOCKERFILE_FULLSTACK, 80),
+    "static": (_DOCKERFILE_STATIC, 80),
 }
 
 _HEALTH_CHECK_RETRIES = 12
 _HEALTH_CHECK_INTERVAL = 10  # seconds
-_MAX_SELF_HEAL_RETRIES = 2   # max builder fix attempts before giving up
+_MAX_SELF_HEAL_RETRIES = 2  # max builder fix attempts before giving up
 
 # Valid Dockerfile first-instruction keywords (FROM must appear first or after ARG)
 _DOCKERFILE_VALID_FIRST = {"FROM", "ARG", "COMMENT", "#"}
@@ -274,7 +274,9 @@ def _validate_dockerfile(content: str) -> None:
       - First non-comment line doesn't start with FROM/ARG
       - No CMD or ENTRYPOINT found (container won't start)
     """
-    lines = [ln.strip() for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    lines = [
+        ln.strip() for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("#")
+    ]
     if not lines:
         raise ValueError("Dockerfile is empty after stripping comments")
     first_keyword = lines[0].split()[0].upper() if lines[0].split() else ""
@@ -289,19 +291,34 @@ def _validate_dockerfile(content: str) -> None:
     if not has_cmd and not has_entrypoint:
         raise ValueError("Dockerfile has no CMD or ENTRYPOINT — container would not start")
 
+
 # Files the LLM context scanner prioritises (in order)
 _SCAN_PRIORITY_FILES = [
     "package.json",
-    "requirements.txt", "pyproject.toml",
-    "go.mod", "Cargo.toml", "Gemfile",
-    "pom.xml", "build.gradle",
+    "requirements.txt",
+    "pyproject.toml",
+    "go.mod",
+    "Cargo.toml",
+    "Gemfile",
+    "pom.xml",
+    "build.gradle",
     "Dockerfile",
-    "next.config.js", "next.config.ts",
-    "vite.config.ts", "vite.config.js",
-    "src/main.tsx", "src/main.jsx", "src/index.tsx", "src/index.jsx",
-    "src/App.tsx", "src/App.jsx",
-    "main.py", "app.py", "server.py",
-    "server.js", "index.js", "app.js",
+    "next.config.js",
+    "next.config.ts",
+    "vite.config.ts",
+    "vite.config.js",
+    "src/main.tsx",
+    "src/main.jsx",
+    "src/index.tsx",
+    "src/index.jsx",
+    "src/App.tsx",
+    "src/App.jsx",
+    "main.py",
+    "app.py",
+    "server.py",
+    "server.js",
+    "index.js",
+    "app.js",
     "README.md",
 ]
 
@@ -338,7 +355,9 @@ def _scan_repo(repo_path: str) -> dict:
 
 def _make_slug(title: str) -> str:
     """'Build a Salon Booking App' → 'salon-booking-app'"""
-    title = re.sub(r"^(build|create|make|implement|develop)\s+(a|an|the)\s+", "", title, flags=re.IGNORECASE)
+    title = re.sub(
+        r"^(build|create|make|implement|develop)\s+(a|an|the)\s+", "", title, flags=re.IGNORECASE
+    )
     slug = re.sub(r"[^\w\s-]", "", title.lower().strip())
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = re.sub(r"-+", "-", slug).strip("-")
@@ -372,7 +391,11 @@ def _detect_app_type(repo_path: str) -> tuple[str, int]:
             deps: dict = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
             if "next" in deps:
                 return "nextjs", 3000
-            if "react-scripts" in deps or "vite" in deps or any(k.startswith("@vitejs") for k in deps):
+            if (
+                "react-scripts" in deps
+                or "vite" in deps
+                or any(k.startswith("@vitejs") for k in deps)
+            ):
                 return "react", 80
             if "express" in deps or "fastify" in deps or "koa" in deps or "hapi" in deps:
                 return "express", 3000
@@ -473,7 +496,9 @@ class SREAgent(BaseAgent):
             self._log.info("sre.execute.disabled")
             async with get_db() as session:
                 await session.execute(
-                    update(Task).where(Task.id == self.task_id).values(
+                    update(Task)
+                    .where(Task.id == self.task_id)
+                    .values(
                         status="COMPLETED",
                         output={"skipped": True, "reason": "phalanx_enable_demo_deploy=false"},
                         completed_at=datetime.now(UTC),
@@ -505,9 +530,7 @@ class SREAgent(BaseAgent):
             # files_produced: all files_written from builder/component/page tasks
             tech_stack = ""
             files_produced: list[str] = []
-            all_tasks_result = await session.execute(
-                select(Task).where(Task.run_id == self.run_id)
-            )
+            all_tasks_result = await session.execute(select(Task).where(Task.run_id == self.run_id))
             for t in all_tasks_result.scalars():
                 out = t.output or {}
                 if not tech_stack and out.get("tech_stack"):
@@ -535,12 +558,12 @@ class SREAgent(BaseAgent):
             demo = existing.scalar_one_or_none()
             if demo is None:
                 # Check if slug is already taken by a different run
-                slug_taken = await session.execute(
-                    select(Demo).where(Demo.slug == slug)
-                )
+                slug_taken = await session.execute(select(Demo).where(Demo.slug == slug))
                 if slug_taken.scalar_one_or_none() is not None:
                     slug = f"{base_slug}-{str(self.run_id)[:8]}"
-                    self._log.info("sre.deploy.slug_collision_resolved", base_slug=base_slug, new_slug=slug)
+                    self._log.info(
+                        "sre.deploy.slug_collision_resolved", base_slug=base_slug, new_slug=slug
+                    )
                 demo = Demo(
                     run_id=self.run_id,
                     slug=slug,
@@ -574,10 +597,17 @@ class SREAgent(BaseAgent):
             self._log.error("sre.build.failed", error=str(exc))
             await self._update_demo(demo_id, status="FAILED", error=str(exc)[:1000])
             await self._notify_slack_failure(
-                self.run_id, slug,
-                {"category": "build", "root_cause": str(exc), "frontend_ok": False,
-                 "backend_ok": False, "suggested_fix": "Review build logs", "agent_role": None,
-                 "fix_description": None},
+                self.run_id,
+                slug,
+                {
+                    "category": "build",
+                    "root_cause": str(exc),
+                    "frontend_ok": False,
+                    "backend_ok": False,
+                    "suggested_fix": "Review build logs",
+                    "agent_role": None,
+                    "fix_description": None,
+                },
                 attempt=1,
             )
             await self._complete_task(error=str(exc))
@@ -620,10 +650,17 @@ class SREAgent(BaseAgent):
                 await self._update_demo(demo_id, status="FAILED", error=last_error[:1000])
                 # Cannot self-heal a container-start failure — break immediately
                 await self._notify_slack_failure(
-                    self.run_id, slug,
-                    {"category": "runtime", "root_cause": last_error, "frontend_ok": False,
-                     "backend_ok": False, "suggested_fix": "Check Docker daemon + image CMD",
-                     "agent_role": None, "fix_description": None},
+                    self.run_id,
+                    slug,
+                    {
+                        "category": "runtime",
+                        "root_cause": last_error,
+                        "frontend_ok": False,
+                        "backend_ok": False,
+                        "suggested_fix": "Check Docker daemon + image CMD",
+                        "agent_role": None,
+                        "fix_description": None,
+                    },
                     attempt=attempt,
                 )
                 break
@@ -695,7 +732,9 @@ class SREAgent(BaseAgent):
 
         # Final DB update and notifications
         final_status = "RUNNING" if healthy else "FAILED"
-        final_error = None if healthy else (last_error or "Container started but health check failed")
+        final_error = (
+            None if healthy else (last_error or "Container started but health check failed")
+        )
 
         await self._update_demo(
             demo_id,
@@ -722,7 +761,11 @@ class SREAgent(BaseAgent):
         )
         return AgentResult(
             success=healthy,
-            output={"slug": slug, "demo_url": demo_url if healthy else None, "status": final_status},
+            output={
+                "slug": slug,
+                "demo_url": demo_url if healthy else None,
+                "status": final_status,
+            },
         )
 
     # ── LLM deployment planning ───────────────────────────────────────────────
@@ -752,8 +795,7 @@ class SREAgent(BaseAgent):
         scan = _scan_repo(repo_path)
         file_listing = "\n".join(f"  {p}" for p in scan["listing"])
         file_contents = "\n\n".join(
-            f"=== {path} ===\n{content}"
-            for path, content in scan["contents"].items()
+            f"=== {path} ===\n{content}" for path, content in scan["contents"].items()
         )
 
         # Build optional context sections from planner/builder outputs
@@ -862,9 +904,7 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the object
             return dockerfile, internal_port, app_type
 
         except Exception as exc:
-            self._log.warning(
-                "sre.llm.plan_failed", error=str(exc)[:200], fallback="template"
-            )
+            self._log.warning("sre.llm.plan_failed", error=str(exc)[:200], fallback="template")
             # Fallback: existing template detection
             app_type_fb, port_fb = _detect_app_type(repo_path)
             template_fb, _ = _APP_TEMPLATES.get(app_type_fb, _APP_TEMPLATES["static"])
@@ -892,7 +932,9 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the object
         branch = run.active_branch
         repo_url = await self._get_clone_url(run, settings)
         if not repo_url:
-            raise RuntimeError("No repo URL configured — set GITHUB_TOKEN or project.config.repo_url")
+            raise RuntimeError(
+                "No repo URL configured — set GITHUB_TOKEN or project.config.repo_url"
+            )
 
         with tempfile.TemporaryDirectory(prefix=f"sre-{slug}-") as tmpdir:
             self._log.info("sre.git.clone", branch=branch, dest=tmpdir)
@@ -1024,10 +1066,16 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the object
 
             # Collect last 100 lines of stderr + stdout
             raw = container.logs(stdout=True, stderr=True, tail=100)
-            logs_text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+            logs_text = (
+                raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+            )
 
             # Quick probe: frontend (port 80 or internal_port) and backend (/health)
-            for probe_path, label in [("/", "frontend"), ("/health", "backend"), ("/api/health", "backend")]:
+            for probe_path, label in [
+                ("/", "frontend"),
+                ("/health", "backend"),
+                ("/api/health", "backend"),
+            ]:
                 probe_port = 80 if app_type == "fullstack" else internal_port
                 ec, _ = container.exec_run(
                     f"sh -c 'curl -sf http://localhost:{probe_port}{probe_path} > /dev/null 2>&1'"
@@ -1163,7 +1211,7 @@ Rules:
                     select(Task).where(Task.run_id == run_id).order_by(Task.sequence_num.desc())
                 )
                 tasks_list = list(existing.scalars())
-                next_seq = (max((t.sequence_num for t in tasks_list), default=0) + 1)
+                next_seq = max((t.sequence_num for t in tasks_list), default=0) + 1
 
                 fix_task = Task(
                     run_id=run_id,
@@ -1242,8 +1290,17 @@ Rules:
             pass  # doesn't exist — fine
 
         _fallback_commands: dict[str, list[str]] = {
-            "fastapi": ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
-            "flask":   ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
+            "fastapi": [
+                "python",
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+            ],
+            "flask": ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
             "express": ["node", "server.js"],
         }
         fallback_cmd = _fallback_commands.get(slug.split("-")[0]) if slug else None
@@ -1306,9 +1363,7 @@ Rules:
 
     async def _get_running_demos(self) -> list:
         async with get_db() as session:
-            result = await session.execute(
-                select(Demo).where(Demo.status == "RUNNING")
-            )
+            result = await session.execute(select(Demo).where(Demo.status == "RUNNING"))
             return list(result.scalars())
 
     # ── nginx wiring ──────────────────────────────────────────────────────────
@@ -1354,6 +1409,7 @@ Rules:
             # docker cp the file in
             import io  # noqa: PLC0415
             import tarfile
+
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w") as tar:
                 info = tarfile.TarInfo(name=f"{slug}.conf")
@@ -1416,14 +1472,14 @@ Rules:
                     f"sh -c '"
                     f"curl -sf http://localhost:{internal_port}/health 2>/dev/null || "
                     f"curl -sf http://localhost:{internal_port}/ 2>/dev/null || "
-                    f"python3 -c \""
+                    f'python3 -c "'
                     f"import urllib.request; urllib.request.urlopen("
-                    f"\\\"http://localhost:{internal_port}/health\\\""
-                    f").read()\" 2>/dev/null || "
-                    f"python3 -c \""
+                    f'\\"http://localhost:{internal_port}/health\\"'
+                    f').read()" 2>/dev/null || '
+                    f'python3 -c "'
                     f"import urllib.request; urllib.request.urlopen("
-                    f"\\\"http://localhost:{internal_port}/\\\""
-                    f").read()\" 2>/dev/null"
+                    f'\\"http://localhost:{internal_port}/\\"'
+                    f').read()" 2>/dev/null'
                     f"'"
                 )
                 if exit_code == 0:
@@ -1440,16 +1496,16 @@ Rules:
     async def _update_demo(self, demo_id: str, **kwargs) -> None:
         kwargs["updated_at"] = datetime.now(UTC)
         async with get_db() as session:
-            await session.execute(
-                update(Demo).where(Demo.id == demo_id).values(**kwargs)
-            )
+            await session.execute(update(Demo).where(Demo.id == demo_id).values(**kwargs))
             await session.commit()
 
     async def _complete_task(self, error: str | None = None) -> None:
         status = "COMPLETED" if error is None else "COMPLETED"  # SRE is non-fatal
         async with get_db() as session:
             await session.execute(
-                update(Task).where(Task.id == self.task_id).values(
+                update(Task)
+                .where(Task.id == self.task_id)
+                .values(
                     status=status,
                     output={"error": error} if error else {"success": True},
                     completed_at=datetime.now(UTC),
@@ -1481,14 +1537,14 @@ async def _health_check(container_name: str, internal_port: int) -> bool:
                 f"sh -c '"
                 f"curl -sf http://localhost:{internal_port}/health 2>/dev/null || "
                 f"curl -sf http://localhost:{internal_port}/ 2>/dev/null || "
-                f"python3 -c \""
+                f'python3 -c "'
                 f"import urllib.request; urllib.request.urlopen("
-                f"\\\"http://localhost:{internal_port}/health\\\""
-                f").read()\" 2>/dev/null || "
-                f"python3 -c \""
+                f'\\"http://localhost:{internal_port}/health\\"'
+                f').read()" 2>/dev/null || '
+                f'python3 -c "'
                 f"import urllib.request; urllib.request.urlopen("
-                f"\\\"http://localhost:{internal_port}/\\\""
-                f").read()\" 2>/dev/null"
+                f'\\"http://localhost:{internal_port}/\\"'
+                f').read()" 2>/dev/null'
                 f"'"
             )
             if exit_code == 0:
@@ -1532,7 +1588,9 @@ async def start_demo_by_id(demo_id: str) -> None:
 
         # ── Validate image exists ─────────────────────────────────────────────
         if not demo.image_name:
-            raise ValueError("Demo has no image — it must be rebuilt by re-submitting the work order.")
+            raise ValueError(
+                "Demo has no image — it must be rebuilt by re-submitting the work order."
+            )
         try:
             client.images.get(demo.image_name)
         except docker.errors.ImageNotFound as exc:
@@ -1545,13 +1603,20 @@ async def start_demo_by_id(demo_id: str) -> None:
         running = await _get_running_demos_for_portal()
         if len(running) >= settings.demo_max_running:
             lru = min(running, key=lambda d: d.last_accessed_at or d.created_at)
-            log.info("sre.portal.lru_evict", slug=lru.slug, running=len(running), max=settings.demo_max_running)
+            log.info(
+                "sre.portal.lru_evict",
+                slug=lru.slug,
+                running=len(running),
+                max=settings.demo_max_running,
+            )
             if lru.container_name:
                 with contextlib.suppress(Exception):
                     client.containers.get(lru.container_name).stop(timeout=15)
             async with get_db() as session:
                 await session.execute(
-                    update(Demo).where(Demo.id == lru.id).values(status="STOPPED", container_id=None)
+                    update(Demo)
+                    .where(Demo.id == lru.id)
+                    .values(status="STOPPED", container_id=None)
                 )
                 await session.commit()
 
@@ -1566,12 +1631,21 @@ async def start_demo_by_id(demo_id: str) -> None:
 
         # ── Start container ───────────────────────────────────────────────────
         _fallback_commands: dict[str, list[str]] = {
-            "fastapi":    ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
-            "flask":      ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
-            "express":    ["node", "server.js"],
-            "nextjs":     ["node_modules/.bin/next", "start", "-p", "3000"],
-            "django":     ["python", "manage.py", "runserver", "0.0.0.0:8000"],
-            "rails":      ["bundle", "exec", "ruby", "app.rb", "-o", "0.0.0.0", "-p", "3000"],
+            "fastapi": [
+                "python",
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8000",
+            ],
+            "flask": ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
+            "express": ["node", "server.js"],
+            "nextjs": ["node_modules/.bin/next", "start", "-p", "3000"],
+            "django": ["python", "manage.py", "runserver", "0.0.0.0:8000"],
+            "rails": ["bundle", "exec", "ruby", "app.rb", "-o", "0.0.0.0", "-p", "3000"],
         }
         fallback_cmd = _fallback_commands.get(demo.app_type or "") if demo.app_type else None
         internal_port = demo.internal_port or 80
@@ -1596,7 +1670,12 @@ async def start_demo_by_id(demo_id: str) -> None:
             container = client.containers.run(**run_kwargs)
         except docker.errors.APIError as exc:
             if "no command specified" in str(exc) and fallback_cmd:
-                log.warning("sre.portal.no_cmd_fallback", demo_id=demo_id, app_type=demo.app_type, cmd=fallback_cmd)
+                log.warning(
+                    "sre.portal.no_cmd_fallback",
+                    demo_id=demo_id,
+                    app_type=demo.app_type,
+                    cmd=fallback_cmd,
+                )
                 run_kwargs["command"] = fallback_cmd
                 container = client.containers.run(**run_kwargs)
             else:
@@ -1613,6 +1692,7 @@ async def start_demo_by_id(demo_id: str) -> None:
             try:
                 import io
                 import tarfile  # noqa: PLC0415
+
                 conf_content = _nginx_conf_for_slug(demo.slug, container_ip, internal_port)
                 nginx = client.containers.get(settings.demo_nginx_container)
                 nginx.exec_run("mkdir -p /etc/nginx/conf.d/demos")
@@ -1625,7 +1705,9 @@ async def start_demo_by_id(demo_id: str) -> None:
                 buf.seek(0)
                 nginx.put_archive("/etc/nginx/conf.d/demos", buf.read())
                 nginx.exec_run("nginx -s reload")
-                log.info("sre.portal.nginx_wired", slug=demo.slug, ip=container_ip, port=internal_port)
+                log.info(
+                    "sre.portal.nginx_wired", slug=demo.slug, ip=container_ip, port=internal_port
+                )
             except Exception as exc:
                 log.warning("sre.portal.nginx_wire_failed", slug=demo.slug, error=str(exc))
         else:
@@ -1641,7 +1723,9 @@ async def start_demo_by_id(demo_id: str) -> None:
         # ── Persist RUNNING ───────────────────────────────────────────────────
         async with get_db() as session:
             await session.execute(
-                update(Demo).where(Demo.id == demo_id).values(
+                update(Demo)
+                .where(Demo.id == demo_id)
+                .values(
                     status="RUNNING",
                     container_id=container.id,
                     demo_url=demo_url,
@@ -1655,7 +1739,9 @@ async def start_demo_by_id(demo_id: str) -> None:
     except Exception as exc:
         async with get_db() as session:
             await session.execute(
-                update(Demo).where(Demo.id == demo_id).values(
+                update(Demo)
+                .where(Demo.id == demo_id)
+                .values(
                     status="FAILED",
                     error=str(exc)[:500],
                 )
@@ -1675,9 +1761,7 @@ async def stop_demo_by_id(demo_id: str) -> None:
         demo = result.scalar_one_or_none()
         if demo is None or demo.status != "RUNNING":
             return
-        await session.execute(
-            update(Demo).where(Demo.id == demo_id).values(status="STOPPING")
-        )
+        await session.execute(update(Demo).where(Demo.id == demo_id).values(status="STOPPING"))
         await session.commit()
 
     try:
@@ -1698,7 +1782,9 @@ async def stop_demo_by_id(demo_id: str) -> None:
 
         async with get_db() as session:
             await session.execute(
-                update(Demo).where(Demo.id == demo_id).values(
+                update(Demo)
+                .where(Demo.id == demo_id)
+                .values(
                     status="STOPPED",
                     container_id=None,
                 )
@@ -1839,7 +1925,12 @@ async def _rewire_nginx() -> dict:  # pragma: no cover
                 nginx.put_archive("/etc/nginx/conf.d/demos", buf.read())
                 results["wired"].append(demo.slug)
                 reloaded = True
-                log.info("sre.rewire.wired", slug=demo.slug, ip=container_ip, port=demo.internal_port or 80)
+                log.info(
+                    "sre.rewire.wired",
+                    slug=demo.slug,
+                    ip=container_ip,
+                    port=demo.internal_port or 80,
+                )
             except Exception as exc:
                 log.warning("sre.rewire.demo_failed", slug=demo.slug, error=str(exc))
                 results["errors"].append(f"{demo.slug}: {exc}")
@@ -1864,7 +1955,7 @@ async def _rewire_nginx() -> dict:  # pragma: no cover
     queue="sre",
     max_retries=1,
     acks_late=True,
-    soft_time_limit=900,   # 15 min: git clone + docker build + start
+    soft_time_limit=900,  # 15 min: git clone + docker build + start
     time_limit=1200,
 )
 def execute_task(  # pragma: no cover
@@ -1927,7 +2018,7 @@ def portal_stop_demo(self, demo_id: str) -> dict:  # pragma: no cover
     queue="sre",
     max_retries=0,
     acks_late=True,
-    soft_time_limit=300,   # 5 min: image pulls can be slow on cold start
+    soft_time_limit=300,  # 5 min: image pulls can be slow on cold start
     time_limit=400,
 )
 def prep_infra(self, run_id: str, slug: str) -> dict:  # pragma: no cover

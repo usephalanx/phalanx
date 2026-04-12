@@ -56,9 +56,7 @@ async def test_api_health_200_with_real_db(aiosqlite_engine) -> None:
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200
@@ -86,9 +84,7 @@ async def test_api_health_includes_redis_ok(aiosqlite_engine) -> None:
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     data = response.json()
@@ -112,9 +108,7 @@ async def test_api_health_version_matches_package(aiosqlite_engine) -> None:
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     data = response.json()
@@ -124,9 +118,7 @@ async def test_api_health_version_matches_package(aiosqlite_engine) -> None:
 @pytest.mark.asyncio
 async def test_api_healthz_returns_200(aiosqlite_engine) -> None:
     """GET /healthz returns 200 liveness probe (no DB or Redis needed)."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/healthz")
 
     assert response.status_code == 200
@@ -153,7 +145,9 @@ async def test_gateway_health_200_with_real_db(aiosqlite_engine) -> None:
 
     # Build a real async session factory backed by the aiosqlite engine.
     _session_local = async_sessionmaker(
-        aiosqlite_engine, class_=AsyncSession, expire_on_commit=False,
+        aiosqlite_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
     )
 
     @asynccontextmanager
@@ -193,9 +187,7 @@ async def test_api_health_content_type_is_json(aiosqlite_engine) -> None:
         mock_settings.is_production = False
         mock_settings.forge_cors_origins = ""
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.get("/health")
 
     assert response.status_code == 200
@@ -215,7 +207,9 @@ async def test_gateway_health_content_type_is_json(aiosqlite_engine) -> None:
     from phalanx.gateway.health import GatewayHealthServer
 
     _session_local = async_sessionmaker(
-        aiosqlite_engine, class_=AsyncSession, expire_on_commit=False,
+        aiosqlite_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
     )
 
     @asynccontextmanager

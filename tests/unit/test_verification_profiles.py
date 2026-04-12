@@ -8,6 +8,7 @@ Tests:
 - get_profile returns fallback for unknown tech_stack
 - run_profile_checks routes correctly (mocked _run)
 """
+
 from __future__ import annotations
 
 import json
@@ -26,20 +27,31 @@ from phalanx.agents.verification_profiles import (
 # Profile registry sanity
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_all_profiles_non_empty():
     assert len(PROFILES) >= 10, "Expected at least 10 registered profiles"
 
 
 def test_all_profiles_have_required_fields():
     required_keys = [
-        "tech_stack", "app_type", "entry_points", "detection_files",
-        "install_cmd", "build_cmd", "typecheck_cmd", "lint_cmd",
-        "install_timeout", "build_timeout", "integration_pattern",
+        "tech_stack",
+        "app_type",
+        "entry_points",
+        "detection_files",
+        "install_cmd",
+        "build_cmd",
+        "typecheck_cmd",
+        "lint_cmd",
+        "install_timeout",
+        "build_timeout",
+        "integration_pattern",
     ]
     for name, profile in PROFILES.items():
         for key in required_keys:
             assert hasattr(profile, key), f"Profile '{name}' missing field '{key}'"
-        assert profile.tech_stack == name, f"Profile key '{name}' != tech_stack '{profile.tech_stack}'"
+        assert profile.tech_stack == name, (
+            f"Profile key '{name}' != tech_stack '{profile.tech_stack}'"
+        )
         assert profile.app_type in ("web", "api", "mobile", "cli"), f"Invalid app_type in '{name}'"
         assert profile.integration_pattern, f"Empty integration_pattern in '{name}'"
         assert len(profile.entry_points) >= 1, f"No entry_points in '{name}'"
@@ -60,6 +72,7 @@ def test_get_profile_known():
 # ─────────────────────────────────────────────────────────────────────────────
 # detect_tech_stack — filesystem heuristics
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def test_detect_nextjs(tmp_path):
     (tmp_path / "next.config.js").touch()
@@ -162,6 +175,7 @@ def test_detect_nextjs_wins_over_generic_web(tmp_path):
 # run_profile_checks
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_run_profile_checks_passes_on_success(tmp_path):
     profile = get_profile("nextjs")
     # Create the entry point so the entry-point check passes
@@ -205,7 +219,9 @@ def test_run_profile_skips_install_when_cmd_empty(tmp_path):
     profile = get_profile("go")
     assert profile.install_cmd == []
 
-    with patch("phalanx.agents.verification_profiles._run", return_value=(True, "", "")) as mock_run:
+    with patch(
+        "phalanx.agents.verification_profiles._run", return_value=(True, "", "")
+    ) as mock_run:
         # Create entry point
         (tmp_path / "main.go").write_text("package main\nfunc main() {}\n")
         run_profile_checks(profile, tmp_path)
@@ -218,15 +234,14 @@ def test_run_profile_skips_install_when_cmd_empty(tmp_path):
 # _discover_react_components
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_discover_react_components_finds_tsx(tmp_path):
     comp_dir = tmp_path / "components"
     comp_dir.mkdir()
     (comp_dir / "Hero.tsx").write_text(
         "export default function Hero() { return <section>Hero</section>; }"
     )
-    (comp_dir / "Footer.tsx").write_text(
-        "export default function Footer() { return <footer/>; }"
-    )
+    (comp_dir / "Footer.tsx").write_text("export default function Footer() { return <footer/>; }")
     result = _discover_react_components(comp_dir)
     names = {c["name"] for c in result}
     assert "Hero" in names
@@ -267,15 +282,12 @@ def test_discover_react_components_named_export(tmp_path):
 # _discover_fastapi_routers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def test_discover_fastapi_routers_finds_router_files(tmp_path):
     api_dir = tmp_path / "api"
     api_dir.mkdir()
-    (api_dir / "listings.py").write_text(
-        "from fastapi import APIRouter\nrouter = APIRouter()\n"
-    )
-    (api_dir / "users.py").write_text(
-        "from fastapi import APIRouter\nrouter = APIRouter()\n"
-    )
+    (api_dir / "listings.py").write_text("from fastapi import APIRouter\nrouter = APIRouter()\n")
+    (api_dir / "users.py").write_text("from fastapi import APIRouter\nrouter = APIRouter()\n")
     result = _discover_fastapi_routers(tmp_path)
     names = {r["name"] for r in result}
     assert "listings" in names
@@ -285,8 +297,6 @@ def test_discover_fastapi_routers_finds_router_files(tmp_path):
 def test_discover_fastapi_routers_skips_init(tmp_path):
     api_dir = tmp_path / "api"
     api_dir.mkdir()
-    (api_dir / "__init__.py").write_text(
-        "from fastapi import APIRouter\nrouter = APIRouter()\n"
-    )
+    (api_dir / "__init__.py").write_text("from fastapi import APIRouter\nrouter = APIRouter()\n")
     result = _discover_fastapi_routers(tmp_path)
     assert all(r["name"] != "__init__" for r in result)

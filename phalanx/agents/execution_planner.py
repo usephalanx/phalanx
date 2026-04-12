@@ -10,6 +10,7 @@ Prefer the smallest implementation that satisfies the goal.
 Note: named ExecutionPlanner (not Planner) to avoid collision with
 phalanx/agents/planner.py which is the in-pipeline task planner agent.
 """
+
 from __future__ import annotations
 
 import json
@@ -149,27 +150,29 @@ class ExecutionPlan:
         phases_out = []
         for phase in self.phases:
             for task in phase.tasks:
-                phases_out.append({
-                    "id": len(phases_out) + 1,
-                    "name": task.title,
-                    "phase_name": phase.phase_name,
-                    "agent_role": _ROLE_MAP.get(task.owner_role, "builder"),
-                    "role": {
-                        "title": _ROLE_TITLES.get(task.owner_role, "Senior Software Engineer"),
-                        "seniority": "Senior",
-                        "domain": task.owner_role,
-                        "persona": "",
-                    },
-                    "context": phase.goal,
-                    "objectives": task.acceptance_criteria,
-                    "deliverables": [{"file": a, "description": a} for a in task.artifacts],
-                    "acceptance_criteria": task.acceptance_criteria,
-                    "rules": {"do": [], "dont": []},
-                    "claude_prompt": _build_claude_prompt(task, phase),
-                    "_task_id": task.task_id,
-                    "_risk_level": task.risk_level,
-                    "_depends_on": task.depends_on,
-                })
+                phases_out.append(
+                    {
+                        "id": len(phases_out) + 1,
+                        "name": task.title,
+                        "phase_name": phase.phase_name,
+                        "agent_role": _ROLE_MAP.get(task.owner_role, "builder"),
+                        "role": {
+                            "title": _ROLE_TITLES.get(task.owner_role, "Senior Software Engineer"),
+                            "seniority": "Senior",
+                            "domain": task.owner_role,
+                            "persona": "",
+                        },
+                        "context": phase.goal,
+                        "objectives": task.acceptance_criteria,
+                        "deliverables": [{"file": a, "description": a} for a in task.artifacts],
+                        "acceptance_criteria": task.acceptance_criteria,
+                        "rules": {"do": [], "dont": []},
+                        "claude_prompt": _build_claude_prompt(task, phase),
+                        "_task_id": task.task_id,
+                        "_risk_level": task.risk_level,
+                        "_depends_on": task.depends_on,
+                    }
+                )
 
         return {
             "phases": phases_out,
@@ -223,9 +226,7 @@ class ExecutionPlanner:
             functional_reqs=len(normalized.functional_requirements),
         )
 
-        user_content = json.dumps(
-            {"normalized_requirements": normalized.to_dict()}, indent=2
-        )
+        user_content = json.dumps({"normalized_requirements": normalized.to_dict()}, indent=2)
 
         raw = self._client.call(
             messages=[{"role": "user", "content": user_content}],
@@ -249,11 +250,13 @@ class ExecutionPlanner:
                 )
                 for t in phase_raw.get("tasks", [])
             ]
-            phases.append(PlanPhase(
-                phase_name=phase_raw.get("phase_name", ""),
-                goal=phase_raw.get("goal", ""),
-                tasks=tasks,
-            ))
+            phases.append(
+                PlanPhase(
+                    phase_name=phase_raw.get("phase_name", ""),
+                    goal=phase_raw.get("goal", ""),
+                    tasks=tasks,
+                )
+            )
 
         result = ExecutionPlan(
             plan_summary=raw.get("plan_summary", ""),

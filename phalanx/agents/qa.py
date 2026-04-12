@@ -296,6 +296,7 @@ class TeamBrief:
     Parsed from the ## TEAM_BRIEF section of RUNNING.md.
     Written by the Planner; read by every agent as shared team context.
     """
+
     stack: str = ""
     test_runner: str = "pytest tests/"
     lint_tool: str = "ruff check ."
@@ -678,7 +679,9 @@ class QAAgent:
             try:
                 rc, _, stderr = await _run(parts, cwd=self.repo_path)
                 if rc != 0:
-                    self._log.warning("qa_agent.qa_md.install_step_failed", cmd=step, stderr=stderr[:200])
+                    self._log.warning(
+                        "qa_agent.qa_md.install_step_failed", cmd=step, stderr=stderr[:200]
+                    )
                 else:
                     self._log.info("qa_agent.qa_md.install_step_ok", cmd=step)
             except FileNotFoundError:
@@ -744,11 +747,16 @@ Produce the test plan JSON now."""
             # (.test.jsx, .spec.tsx, etc.). The filesystem is always authoritative.
             if not plan.get("test_files"):
                 globs = [
-                    "**/*.test.py", "**/test_*.py",
-                    "**/*.test.js", "**/*.test.ts",
-                    "**/*.test.jsx", "**/*.test.tsx",
-                    "**/*.spec.js", "**/*.spec.ts",
-                    "**/*.spec.jsx", "**/*.spec.tsx",
+                    "**/*.test.py",
+                    "**/test_*.py",
+                    "**/*.test.js",
+                    "**/*.test.ts",
+                    "**/*.test.jsx",
+                    "**/*.test.tsx",
+                    "**/*.spec.js",
+                    "**/*.spec.ts",
+                    "**/*.spec.jsx",
+                    "**/*.spec.tsx",
                 ]
                 found: list[str] = []
                 for pattern in globs:
@@ -760,7 +768,9 @@ Produce the test plan JSON now."""
                 if found:
                     self._log.info(
                         "qa_agent.test_plan.glob_override",
-                        llm_files=0, found=len(found), files=found[:10],
+                        llm_files=0,
+                        found=len(found),
+                        files=found[:10],
                     )
                     plan["test_files"] = sorted(set(found))
 
@@ -850,7 +860,8 @@ Produce the test plan JSON now."""
             # Fallback 1: changed test files on this branch
             changed = context.get("changed_files", [])
             valid_files = [
-                f for f in changed
+                f
+                for f in changed
                 if (f.startswith("tests/") or "test_" in f)
                 and f.endswith(".py")
                 and (self.repo_path / f).exists()
@@ -870,13 +881,14 @@ Produce the test plan JSON now."""
         # ── Build final pytest command ────────────────────────────────────
         # Extract non-cov flags, then re-add --cov with scoped source.
         base_flags = [
-            a for a in self.test_command
-            if a.startswith("-") and not a.startswith("--cov")
+            a for a in self.test_command if a.startswith("-") and not a.startswith("--cov")
         ]
 
-        cov_flags = [f"--cov={cov_source}", "--cov-report=xml:coverage.xml"] if cov_source else [
-            "--cov=.", "--cov-report=xml:coverage.xml"
-        ]
+        cov_flags = (
+            [f"--cov={cov_source}", "--cov-report=xml:coverage.xml"]
+            if cov_source
+            else ["--cov=.", "--cov-report=xml:coverage.xml"]
+        )
 
         self._log.info("qa_agent.coverage_scope", source=cov_source or ".")
 
@@ -902,7 +914,8 @@ Produce the test plan JSON now."""
         """
         changed = context.get("changed_files", [])
         source_files = [
-            f for f in changed
+            f
+            for f in changed
             if f.endswith(".py")
             and not f.startswith("tests/")
             and "test_" not in f
@@ -943,7 +956,13 @@ Produce the test plan JSON now."""
         pip = str(Path(sys.executable).parent / "pip")
 
         # Python stacks
-        if "python" in stack or "fastapi" in stack or "flask" in stack or "django" in stack or not stack:
+        if (
+            "python" in stack
+            or "fastapi" in stack
+            or "flask" in stack
+            or "django" in stack
+            or not stack
+        ):
             for req_file, cmd in [
                 ("requirements.txt", [pip, "install", "-r", "requirements.txt", "-q"]),
                 ("requirements-dev.txt", [pip, "install", "-r", "requirements-dev.txt", "-q"]),
@@ -954,14 +973,19 @@ Produce the test plan JSON now."""
                     self._log.info("qa_agent.deps.install", file=req_file)
                     rc, _, stderr = await _run(cmd, cwd=self.repo_path)
                     if rc != 0:
-                        self._log.warning("qa_agent.deps.install_failed", file=req_file, stderr=stderr[:300])
+                        self._log.warning(
+                            "qa_agent.deps.install_failed", file=req_file, stderr=stderr[:300]
+                        )
                     else:
                         self._log.info("qa_agent.deps.installed", file=req_file)
                     if req_file in ("requirements.txt", "requirements-dev.txt"):
                         break
 
         # Node/JS stacks — npm install if package.json exists
-        if any(k in stack for k in ("node", "react", "typescript", "vite", "next", "express", "javascript")):
+        if any(
+            k in stack
+            for k in ("node", "react", "typescript", "vite", "next", "express", "javascript")
+        ):
             for pkg_json, cwd in [
                 ("package.json", self.repo_path),
                 ("frontend/package.json", self.repo_path / "frontend"),
@@ -969,14 +993,21 @@ Produce the test plan JSON now."""
                 if (self.repo_path / pkg_json).exists():
                     self._log.info("qa_agent.deps.install", file=pkg_json)
                     try:
-                        rc, _, stderr = await _run(["npm", "install", "--legacy-peer-deps"], cwd=cwd)
+                        rc, _, stderr = await _run(
+                            ["npm", "install", "--legacy-peer-deps"], cwd=cwd
+                        )
                         if rc != 0:
-                            self._log.warning("qa_agent.deps.install_failed", file=pkg_json, stderr=stderr[:300])
+                            self._log.warning(
+                                "qa_agent.deps.install_failed", file=pkg_json, stderr=stderr[:300]
+                            )
                         else:
                             self._log.info("qa_agent.deps.installed", file=pkg_json)
                     except FileNotFoundError:
-                        self._log.warning("qa_agent.deps.tool_missing", tool="npm",
-                                          reason="npm not installed in worker — skipping JS deps")
+                        self._log.warning(
+                            "qa_agent.deps.tool_missing",
+                            tool="npm",
+                            reason="npm not installed in worker — skipping JS deps",
+                        )
 
         # Go stacks
         if ("go" in stack or "golang" in stack) and (self.repo_path / "go.mod").exists():
@@ -984,12 +1015,17 @@ Produce the test plan JSON now."""
             try:
                 rc, _, stderr = await _run(["go", "mod", "download"], cwd=self.repo_path)
                 if rc != 0:
-                    self._log.warning("qa_agent.deps.install_failed", file="go.mod", stderr=stderr[:300])
+                    self._log.warning(
+                        "qa_agent.deps.install_failed", file="go.mod", stderr=stderr[:300]
+                    )
                 else:
                     self._log.info("qa_agent.deps.installed", file="go.mod")
             except FileNotFoundError:
-                self._log.warning("qa_agent.deps.tool_missing", tool="go",
-                                  reason="go not installed in worker — skipping Go deps")
+                self._log.warning(
+                    "qa_agent.deps.tool_missing",
+                    tool="go",
+                    reason="go not installed in worker — skipping Go deps",
+                )
 
     def _apply_test_plan(self, test_plan: dict, context: dict, team_brief: TeamBrief) -> None:
         """
@@ -1020,8 +1056,10 @@ Produce the test plan JSON now."""
             else:
                 cov_flags = []  # No coverage for this stack
 
-            self._log.info("qa_agent.coverage_scope",
-                           source=coverage_source or ("." if team_brief.coverage_applies else "N/A"))
+            self._log.info(
+                "qa_agent.coverage_scope",
+                source=coverage_source or ("." if team_brief.coverage_applies else "N/A"),
+            )
 
             if not valid_files:
                 valid_files = self._fallback_test_files(context)
@@ -1032,8 +1070,12 @@ Produce the test plan JSON now."""
                 self.test_command = [self._PYTEST_BIN] + base_flags + cov_flags
 
             if valid_files:
-                self._log.info("qa_agent.test_scope.from_llm" if test_plan.get("test_files") else
-                               "qa_agent.test_scope.fallback", files=valid_files)
+                self._log.info(
+                    "qa_agent.test_scope.from_llm"
+                    if test_plan.get("test_files")
+                    else "qa_agent.test_scope.fallback",
+                    files=valid_files,
+                )
 
         # ── npm test (React/Node/TypeScript) ─────────────────────────────────
         elif "npm" in test_runner or "jest" in test_runner or "vitest" in test_runner:
@@ -1060,7 +1102,8 @@ Produce the test plan JSON now."""
         """Find test files from diff or tests/ dir when LLM didn't specify any."""
         changed = context.get("changed_files", [])
         from_diff = [
-            f for f in changed
+            f
+            for f in changed
             if (f.startswith("tests/") or "test_" in f)
             and f.endswith(".py")
             and (self.repo_path / f).exists()
@@ -1092,8 +1135,8 @@ Produce the test plan JSON now."""
                 '<testsuite name="qa" tests="1" failures="1" errors="0" skipped="0" time="0">'
                 f'<testcase classname="qa" name="tool_missing">'
                 f'<failure message="tool not installed">{tool} binary not found in worker container</failure>'
-                '</testcase>'
-                '</testsuite>'
+                "</testcase>"
+                "</testsuite>"
             )
             return junit_path, 1
         self._log.info("qa_agent.tests.done", rc=rc)
@@ -1105,9 +1148,8 @@ Produce the test plan JSON now."""
         if rc != 0 and self.test_command and self.test_command[0] in ("npx", "npm"):
             combined = stdout + stderr
             import re as _re
-            missing_match = _re.search(
-                r"Cannot find module '([@\w][^']*)'", combined
-            )
+
+            missing_match = _re.search(r"Cannot find module '([@\w][^']*)'", combined)
             if missing_match:
                 missing_pkg = missing_match.group(1).split("/")
                 # Reconstruct scoped package name (e.g. @testing-library/dom)
@@ -1133,7 +1175,8 @@ Produce the test plan JSON now."""
                 else:
                     self._log.warning(
                         "qa_agent.npm.peer_dep_repair_failed",
-                        pkg=pkg_to_install, stderr=repair_err[:200],
+                        pkg=pkg_to_install,
+                        stderr=repair_err[:200],
                     )
 
         # For non-pytest runners (npm test, go test), synthesize a minimal JUnit XML
@@ -1143,18 +1186,23 @@ Produce the test plan JSON now."""
                 '<?xml version="1.0"?>'
                 '<testsuite name="qa" tests="1" failures="0" errors="0" skipped="0" time="0">'
                 '<testcase classname="qa" name="tests_passed"/>'
-                '</testsuite>'
+                "</testsuite>"
             )
         elif not junit_path.exists() and rc != 0:
             # Write failure record so evaluator picks up the failure
-            escaped = (stdout + stderr)[:500].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            escaped = (
+                (stdout + stderr)[:500]
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
             junit_path.write_text(
                 '<?xml version="1.0"?>'
                 f'<testsuite name="qa" tests="1" failures="1" errors="0" skipped="0" time="0">'
                 f'<testcase classname="qa" name="tests_failed">'
                 f'<failure message="test runner failed">{escaped}</failure>'
-                f'</testcase>'
-                f'</testsuite>'
+                f"</testcase>"
+                f"</testsuite>"
             )
         return junit_path, rc
 
@@ -1170,13 +1218,27 @@ Produce the test plan JSON now."""
         # ── ruff (Python) ─────────────────────────────────────────────────────
         if "ruff" in lint_tool:
             rc, stdout, _ = await _run(["ruff", "check", "."], cwd=self.repo_path)
-            violation_count = len([ln for ln in stdout.splitlines() if ln.strip() and not ln.startswith("Found")])
-            results.append(LintResult(tool="ruff-check", passed=rc == 0,
-                                      violation_count=violation_count, output=stdout[:3000]))
+            violation_count = len(
+                [ln for ln in stdout.splitlines() if ln.strip() and not ln.startswith("Found")]
+            )
+            results.append(
+                LintResult(
+                    tool="ruff-check",
+                    passed=rc == 0,
+                    violation_count=violation_count,
+                    output=stdout[:3000],
+                )
+            )
 
             rc, stdout, _ = await _run(["ruff", "format", "--check", "."], cwd=self.repo_path)
-            results.append(LintResult(tool="ruff-format", passed=rc == 0,
-                                      violation_count=0 if rc == 0 else 1, output=stdout[:1000]))
+            results.append(
+                LintResult(
+                    tool="ruff-format",
+                    passed=rc == 0,
+                    violation_count=0 if rc == 0 else 1,
+                    output=stdout[:1000],
+                )
+            )
 
         # ── eslint (JS/TS) ────────────────────────────────────────────────────
         elif "eslint" in lint_tool:
@@ -1184,8 +1246,14 @@ Produce the test plan JSON now."""
             try:
                 rc, stdout, stderr = await _run(cmd, cwd=self.repo_path)
                 violation_count = stdout.count("error") + stdout.count("warning")
-                results.append(LintResult(tool="eslint", passed=rc == 0,
-                                          violation_count=violation_count, output=stdout[:3000]))
+                results.append(
+                    LintResult(
+                        tool="eslint",
+                        passed=rc == 0,
+                        violation_count=violation_count,
+                        output=stdout[:3000],
+                    )
+                )
             except FileNotFoundError:
                 self._log.warning("qa_agent.lint.tool_missing", tool="eslint")
 
@@ -1194,8 +1262,14 @@ Produce the test plan JSON now."""
             cmd = lint_tool.split()
             try:
                 rc, stdout, stderr = await _run(cmd, cwd=self.repo_path)
-                results.append(LintResult(tool=cmd[0], passed=rc == 0,
-                                          violation_count=0 if rc == 0 else 1, output=(stdout + stderr)[:3000]))
+                results.append(
+                    LintResult(
+                        tool=cmd[0],
+                        passed=rc == 0,
+                        violation_count=0 if rc == 0 else 1,
+                        output=(stdout + stderr)[:3000],
+                    )
+                )
             except FileNotFoundError:
                 self._log.warning("qa_agent.lint.tool_missing", tool=cmd[0])
 
@@ -1204,8 +1278,14 @@ Produce the test plan JSON now."""
             cmd = lint_tool.split()
             try:
                 rc, stdout, stderr = await _run(cmd, cwd=self.repo_path)
-                results.append(LintResult(tool=cmd[0] if cmd else "lint", passed=rc == 0,
-                                          violation_count=0 if rc == 0 else 1, output=(stdout + stderr)[:3000]))
+                results.append(
+                    LintResult(
+                        tool=cmd[0] if cmd else "lint",
+                        passed=rc == 0,
+                        violation_count=0 if rc == 0 else 1,
+                        output=(stdout + stderr)[:3000],
+                    )
+                )
             except FileNotFoundError:
                 self._log.warning("qa_agent.lint.tool_missing", tool=cmd[0] if cmd else "lint")
 
@@ -1231,8 +1311,7 @@ Produce the test plan JSON now."""
         coverage_applies = team_brief.coverage_applies if team_brief else True
         if coverage_applies and coverage and not coverage.threshold_met:
             reasons.append(
-                f"Coverage {coverage.line_coverage_pct}% is below threshold "
-                f"{coverage.threshold}%."
+                f"Coverage {coverage.line_coverage_pct}% is below threshold {coverage.threshold}%."
             )
 
         # Lint is advisory — reported in evidence but does NOT block QA pass.
@@ -1293,7 +1372,9 @@ Produce the test plan JSON now."""
             content_hash = hashlib.sha256(json_bytes).hexdigest()
 
             async with get_db() as session:
-                row = await session.execute(select(Run.project_id).where(Run.id == str(self.run_id)))
+                row = await session.execute(
+                    select(Run.project_id).where(Run.id == str(self.run_id))
+                )
                 project_id = row.scalar_one()
 
                 artifact = Artifact(

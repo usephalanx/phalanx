@@ -21,6 +21,7 @@ Strategy per integration_pattern:
 Non-fatal: if wiring fails, the VerifierAgent will catch the compile error.
 The pipeline continues — this agent never blocks ship approval.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -54,6 +55,7 @@ settings = get_settings()
 # Celery entry-point
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @celery_app.task(
     name="phalanx.agents.integration_wiring.execute_task",
     bind=True,
@@ -70,6 +72,7 @@ def execute_task(self, task_id: str, run_id: str, **kwargs) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Agent
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class IntegrationWiringAgent(BaseAgent):
     AGENT_ROLE = "integration_wiring"
@@ -92,7 +95,9 @@ class IntegrationWiringAgent(BaseAgent):
 
         if not builder_tasks:
             self._log.info("integration_wiring.no_builder_tasks")
-            await self._complete(status="COMPLETED", output={"status": "skipped", "reason": "no builder tasks"})
+            await self._complete(
+                status="COMPLETED", output={"status": "skipped", "reason": "no builder tasks"}
+            )
             return AgentResult(success=True, output={"status": "skipped"})
 
         # Resolve tech_stack — read from planning hint, then auto-detect
@@ -173,19 +178,31 @@ class IntegrationWiringAgent(BaseAgent):
         """
         components_dir = work_dir / "components"
         if not components_dir.exists():
-            return {"status": "skipped", "reason": "no components/ directory", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": "no components/ directory",
+                "files_wired": [],
+                "notes": [],
+            }
 
         # Discover exported components
         components = _discover_react_components(components_dir)
         if not components:
-            return {"status": "skipped", "reason": "no React components found in components/", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": "no React components found in components/",
+                "files_wired": [],
+                "notes": [],
+            }
 
         # Check if page.tsx already has meaningful imports (trust the builder)
         page_tsx = work_dir / "app" / "page.tsx"
         if page_tsx.exists():
             existing = page_tsx.read_text(errors="ignore")
             # Count existing component imports — if >1 found, trust builder
-            existing_imports = re.findall(r"^import\s+\w+\s+from\s+['\"]@/components", existing, re.MULTILINE)
+            existing_imports = re.findall(
+                r"^import\s+\w+\s+from\s+['\"]@/components", existing, re.MULTILINE
+            )
             if len(existing_imports) >= 2:
                 return {
                     "status": "trusted",
@@ -213,7 +230,9 @@ export default function HomePage() {{
 }}
 """
         page_tsx.write_text(content, encoding="utf-8")
-        self._log.info("integration_wiring.nextjs.wired", components=[c["name"] for c in components])
+        self._log.info(
+            "integration_wiring.nextjs.wired", components=[c["name"] for c in components]
+        )
         return {
             "status": "wired",
             "files_wired": ["app/page.tsx"],
@@ -224,20 +243,37 @@ export default function HomePage() {{
         """Wire src/App.tsx to import components from src/components/."""
         components_dir = work_dir / "src" / "components"
         if not components_dir.exists():
-            return {"status": "skipped", "reason": "no src/components/", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": "no src/components/",
+                "files_wired": [],
+                "notes": [],
+            }
 
         components = _discover_react_components(components_dir)
         if not components:
-            return {"status": "skipped", "reason": "no components found", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": "no components found",
+                "files_wired": [],
+                "notes": [],
+            }
 
         app_tsx = work_dir / "src" / "App.tsx"
         if app_tsx.exists():
             existing = app_tsx.read_text(errors="ignore")
             if len(re.findall(r"^import ", existing, re.MULTILINE)) >= 3:
-                return {"status": "trusted", "reason": "App.tsx has existing imports", "files_wired": [], "notes": []}
+                return {
+                    "status": "trusted",
+                    "reason": "App.tsx has existing imports",
+                    "files_wired": [],
+                    "notes": [],
+                }
 
         app_tsx.parent.mkdir(parents=True, exist_ok=True)
-        imports = "\n".join(f"import {c['name']} from './components/{c['name']}'" for c in components)
+        imports = "\n".join(
+            f"import {c['name']} from './components/{c['name']}'" for c in components
+        )
         renders = "\n      ".join(f"<{c['name']} />" for c in components)
         content = f"""\
 import React from 'react';
@@ -254,14 +290,23 @@ function App() {{
 export default App;
 """
         app_tsx.write_text(content, encoding="utf-8")
-        return {"status": "wired", "files_wired": ["src/App.tsx"], "notes": [f"Wired {len(components)} components"]}
+        return {
+            "status": "wired",
+            "files_wired": ["src/App.tsx"],
+            "notes": [f"Wired {len(components)} components"],
+        }
 
     def _wire_fastapi(self, work_dir: Path) -> dict:
         """Discover APIRouter instances and include them in main.py."""
         # Find router files
         router_files = _discover_fastapi_routers(work_dir)
         if not router_files:
-            return {"status": "skipped", "reason": "no APIRouter files found", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": "no APIRouter files found",
+                "files_wired": [],
+                "notes": [],
+            }
 
         main_candidates = [work_dir / "main.py", work_dir / "app" / "main.py"]
         main_py = next((p for p in main_candidates if p.exists()), None)
@@ -270,12 +315,19 @@ export default App;
             existing = main_py.read_text(errors="ignore")
             # Count include_router calls
             if existing.count("include_router") >= len(router_files):
-                return {"status": "trusted", "reason": "main.py already has router includes", "files_wired": [], "notes": []}
+                return {
+                    "status": "trusted",
+                    "reason": "main.py already has router includes",
+                    "files_wired": [],
+                    "notes": [],
+                }
 
         # Build minimal main.py
         main_py = main_candidates[0]
         main_py.parent.mkdir(parents=True, exist_ok=True)
-        imports = "\n".join(f"from {r['module']} import router as {r['name']}_router" for r in router_files)
+        imports = "\n".join(
+            f"from {r['module']} import router as {r['name']}_router" for r in router_files
+        )
         includes = "\n".join(f"app.include_router({r['name']}_router)" for r in router_files)
         content = f"""\
 from fastapi import FastAPI
@@ -287,13 +339,22 @@ app = FastAPI()
 {includes}
 """
         main_py.write_text(content, encoding="utf-8")
-        return {"status": "wired", "files_wired": [str(main_py.relative_to(work_dir))], "notes": [f"Registered {len(router_files)} routers"]}
+        return {
+            "status": "wired",
+            "files_wired": [str(main_py.relative_to(work_dir))],
+            "notes": [f"Registered {len(router_files)} routers"],
+        }
 
     def _wire_react_native(self, work_dir: Path, entry_points: list[str]) -> dict:
         """Check App.tsx exists; if not, generate minimal navigation wrapper."""
         for ep in entry_points:
             if (work_dir / ep).exists():
-                return {"status": "trusted", "reason": f"{ep} exists", "files_wired": [], "notes": []}
+                return {
+                    "status": "trusted",
+                    "reason": f"{ep} exists",
+                    "files_wired": [],
+                    "notes": [],
+                }
 
         # Generate minimal App.tsx
         app_tsx = work_dir / "App.tsx"
@@ -318,13 +379,22 @@ const styles = StyleSheet.create({
 });
 """
         app_tsx.write_text(content, encoding="utf-8")
-        return {"status": "wired", "files_wired": ["App.tsx"], "notes": [f"Generated minimal App.tsx (screens: {screen_names})"]}
+        return {
+            "status": "wired",
+            "files_wired": ["App.tsx"],
+            "notes": [f"Generated minimal App.tsx (screens: {screen_names})"],
+        }
 
     def _wire_flutter(self, work_dir: Path) -> dict:
         """Ensure lib/main.dart exists."""
         main_dart = work_dir / "lib" / "main.dart"
         if main_dart.exists():
-            return {"status": "trusted", "reason": "lib/main.dart exists", "files_wired": [], "notes": []}
+            return {
+                "status": "trusted",
+                "reason": "lib/main.dart exists",
+                "files_wired": [],
+                "notes": [],
+            }
 
         main_dart.parent.mkdir(parents=True, exist_ok=True)
         content = """\
@@ -341,7 +411,11 @@ class MyApp extends StatelessWidget {
 }
 """
         main_dart.write_text(content, encoding="utf-8")
-        return {"status": "wired", "files_wired": ["lib/main.dart"], "notes": ["Generated minimal main.dart"]}
+        return {
+            "status": "wired",
+            "files_wired": ["lib/main.dart"],
+            "notes": ["Generated minimal main.dart"],
+        }
 
     def _wire_go(self, work_dir: Path) -> dict:
         """Check main.go compiles; if missing, generate minimal stub."""
@@ -351,10 +425,19 @@ class MyApp extends StatelessWidget {
 
         cmd_main = work_dir / "cmd" / "main.go"
         if cmd_main.exists():
-            return {"status": "trusted", "reason": "cmd/main.go exists", "files_wired": [], "notes": []}
+            return {
+                "status": "trusted",
+                "reason": "cmd/main.go exists",
+                "files_wired": [],
+                "notes": [],
+            }
 
-        main_go.write_text('package main\n\nfunc main() {}\n', encoding="utf-8")
-        return {"status": "wired", "files_wired": ["main.go"], "notes": ["Generated minimal main.go stub"]}
+        main_go.write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+        return {
+            "status": "wired",
+            "files_wired": ["main.go"],
+            "notes": ["Generated minimal main.go stub"],
+        }
 
     # ─────────────────────────────────────────────────────────────────────────
     # LLM fallback
@@ -371,7 +454,10 @@ class MyApp extends StatelessWidget {
         files = sorted(
             str(f.relative_to(work_dir))
             for f in work_dir.rglob("*")
-            if f.is_file() and not any(p in f.parts for p in (".git", "__pycache__", "node_modules", "_verify", "_merged"))
+            if f.is_file()
+            and not any(
+                p in f.parts for p in (".git", "__pycache__", "node_modules", "_verify", "_merged")
+            )
         )[:80]
 
         task_descriptions = [t.title for t in builder_tasks if t.title]
@@ -384,7 +470,7 @@ Integration pattern: {profile.integration_pattern}
 Expected entry points: {profile.entry_points}
 
 Builder tasks completed:
-{chr(10).join(f'- {d}' for d in task_descriptions)}
+{chr(10).join(f"- {d}" for d in task_descriptions)}
 
 Files in workspace:
 {chr(10).join(files)}
@@ -418,13 +504,20 @@ Return ONLY a JSON object with this shape (no markdown):
             }
         except Exception as exc:
             self._log.warning("integration_wiring.llm_failed", error=str(exc))
-            return {"status": "skipped", "reason": f"LLM wiring failed: {exc}", "files_wired": [], "notes": []}
+            return {
+                "status": "skipped",
+                "reason": f"LLM wiring failed: {exc}",
+                "files_wired": [],
+                "notes": [],
+            }
 
     # ─────────────────────────────────────────────────────────────────────────
     # DB helpers
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _complete(self, status: str, output: dict, escalation_reason: str | None = None) -> None:
+    async def _complete(
+        self, status: str, output: dict, escalation_reason: str | None = None
+    ) -> None:
         async with get_db() as session:
             values: dict = {
                 "status": status,
@@ -433,9 +526,7 @@ Return ONLY a JSON object with this shape (no markdown):
             }
             if escalation_reason:
                 values["escalation_reason"] = escalation_reason
-            await session.execute(
-                update(Task).where(Task.id == str(self.task_id)).values(**values)
-            )
+            await session.execute(update(Task).where(Task.id == str(self.task_id)).values(**values))
             await session.commit()
 
 

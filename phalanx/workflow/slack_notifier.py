@@ -124,6 +124,7 @@ def _task_group(agent_role: str, phase_name: str | None) -> str:
 @dataclass
 class _BoardTask:
     """Immutable snapshot of a task captured at progress-board creation time."""
+
     id: str
     title: str
     sequence_num: int
@@ -157,9 +158,9 @@ class SlackNotifier:
         )
 
         # Progress board state — populated by post_progress_board()
-        self._progress_ts: str | None = None          # ts of the board message
-        self._board_tasks: list[_BoardTask] = []       # frozen task snapshots
-        self._task_statuses: dict[str, str] = {}       # task_id → status string
+        self._progress_ts: str | None = None  # ts of the board message
+        self._board_tasks: list[_BoardTask] = []  # frozen task snapshots
+        self._task_statuses: dict[str, str] = {}  # task_id → status string
 
     # ── Construction ──────────────────────────────────────────────────────────
 
@@ -179,10 +180,7 @@ class SlackNotifier:
         from phalanx.db.models import Channel, Run, WorkOrder  # noqa: PLC0415
 
         settings = get_settings()
-        enabled = (
-            settings.phalanx_enable_slack_threading
-            and bool(settings.slack_bot_token)
-        )
+        enabled = settings.phalanx_enable_slack_threading and bool(settings.slack_bot_token)
 
         if not enabled:
             return cls(channel_id=None, thread_ts=None, slack_token="", enabled=False)
@@ -238,8 +236,7 @@ class SlackNotifier:
         role_summary = "  ".join(f"{r}×{n}" for r, n in sorted(roles.items()))
 
         await self.post(
-            f"✅ *Plan approved* — {total} task{'s' if total != 1 else ''} queued\n"
-            f"{role_summary}"
+            f"✅ *Plan approved* — {total} task{'s' if total != 1 else ''} queued\n{role_summary}"
         )
 
     async def run_complete(self, run: Run, tasks: list[Task]) -> None:
@@ -254,9 +251,7 @@ class SlackNotifier:
         total = len(tasks)
 
         files_written = sum(
-            len((t.output or {}).get("files_written", []))
-            for t in tasks
-            if t.output
+            len((t.output or {}).get("files_written", [])) for t in tasks if t.output
         )
 
         elapsed_s = None
@@ -371,9 +366,7 @@ class SlackNotifier:
 
         for group_name, group_tasks in groups.items():
             icon = _group_icon(group_name)
-            group_done = sum(
-                1 for t in group_tasks if self._task_statuses.get(t.id) == "COMPLETED"
-            )
+            group_done = sum(1 for t in group_tasks if self._task_statuses.get(t.id) == "COMPLETED")
             group_total = len(group_tasks)
 
             task_lines = []
@@ -441,9 +434,7 @@ class SlackNotifier:
             return
         if task.id in self._task_statuses:
             is_non_fatal = task.agent_role in _NON_FATAL_ROLES
-            self._task_statuses[task.id] = (
-                "FAILED_NON_FATAL" if is_non_fatal else "FAILED"
-            )
+            self._task_statuses[task.id] = "FAILED_NON_FATAL" if is_non_fatal else "FAILED"
             await self._update_board()
 
     # ── Core post primitive ───────────────────────────────────────────────────

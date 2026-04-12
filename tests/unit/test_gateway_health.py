@@ -258,7 +258,10 @@ async def test_cleanup_runner_swallows_exception() -> None:
     await server.start()
     # Patch AppRunner.cleanup at class level to raise
     from aiohttp.web_runner import AppRunner
-    with patch.object(AppRunner, "cleanup", new=AsyncMock(side_effect=RuntimeError("cleanup failed"))):
+
+    with patch.object(
+        AppRunner, "cleanup", new=AsyncMock(side_effect=RuntimeError("cleanup failed"))
+    ):
         # Should not raise — exception is swallowed
         await server.stop()
     assert server._runner is None

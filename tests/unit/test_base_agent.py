@@ -178,22 +178,29 @@ class TestCallClaude:
 class TestCallClaudeCLI:
     """Tests for the Claude Code CLI primary path and API fallback logic."""
 
-    def _make_cli_response(self, result_text: str, input_tokens: int = 10, output_tokens: int = 5) -> str:
+    def _make_cli_response(
+        self, result_text: str, input_tokens: int = 10, output_tokens: int = 5
+    ) -> str:
         import json
-        return json.dumps({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "result": result_text,
-            "usage": {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cache_read_input_tokens": 0,
-                "cache_creation_input_tokens": 0,
-            },
-            "modelUsage": {"claude-opus-4-6": {"inputTokens": input_tokens, "outputTokens": output_tokens}},
-            "total_cost_usd": 0.01,
-        })
+
+        return json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": result_text,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                },
+                "modelUsage": {
+                    "claude-opus-4-6": {"inputTokens": input_tokens, "outputTokens": output_tokens}
+                },
+                "total_cost_usd": 0.01,
+            }
+        )
 
     def test_cli_used_when_available(self):
         """CLI path is taken when binary exists."""
@@ -279,6 +286,7 @@ class TestCallClaudeCLI:
     def test_cli_fallback_to_api_on_timeout(self):
         """Falls back to API when CLI subprocess times out."""
         import subprocess as sp
+
         agent = ConcreteAgent(run_id="r1", agent_id="tester", token_budget=100_000)
 
         mock_response = MagicMock()
@@ -291,7 +299,10 @@ class TestCallClaudeCLI:
 
         with (
             patch("phalanx.agents.base._claude_cli_path", "/fake/claude"),
-            patch("phalanx.agents.base.subprocess.run", side_effect=sp.TimeoutExpired(cmd="claude", timeout=300)),
+            patch(
+                "phalanx.agents.base.subprocess.run",
+                side_effect=sp.TimeoutExpired(cmd="claude", timeout=300),
+            ),
             patch("phalanx.agents.base.get_anthropic_client", return_value=mock_client),
         ):
             result = agent._call_claude(messages=[{"role": "user", "content": "Hi"}])
@@ -301,9 +312,12 @@ class TestCallClaudeCLI:
     def test_cli_fallback_to_api_on_is_error_response(self):
         """Falls back to API when CLI returns is_error=True."""
         import json
+
         agent = ConcreteAgent(run_id="r1", agent_id="tester", token_budget=100_000)
 
-        error_output = json.dumps({"type": "result", "subtype": "error", "is_error": True, "result": "oops"})
+        error_output = json.dumps(
+            {"type": "result", "subtype": "error", "is_error": True, "result": "oops"}
+        )
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.stdout = error_output
@@ -338,11 +352,13 @@ class TestCallClaudeCLI:
             patch("phalanx.agents.base._claude_cli_path", "/fake/claude"),
             patch("phalanx.agents.base.subprocess.run", return_value=mock_proc) as mock_run,
         ):
-            agent._call_claude(messages=[
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "reply"},
-                {"role": "user", "content": "follow up"},
-            ])
+            agent._call_claude(
+                messages=[
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "reply"},
+                    {"role": "user", "content": "follow up"},
+                ]
+            )
 
         prompt_sent = mock_run.call_args.kwargs["input"]
         assert "USER: first" in prompt_sent
@@ -352,6 +368,7 @@ class TestCallClaudeCLI:
     def test_find_claude_cli_returns_none_when_missing(self):
         """_find_claude_cli returns None when binary is nowhere."""
         import phalanx.agents.base as base_module
+
         with (
             patch("phalanx.agents.base.shutil.which", return_value=None),
             patch("phalanx.agents.base.os.path.isfile", return_value=False),
@@ -482,9 +499,7 @@ class TestRetryPolicy:
                 # InternalServerError needs a response object with status_code
                 mock_http_resp = MagicMock()
                 mock_http_resp.status_code = 500
-                raise InternalServerError(
-                    "Internal server error", response=mock_http_resp, body={}
-                )
+                raise InternalServerError("Internal server error", response=mock_http_resp, body={})
             return mock_response
 
         mock_client = MagicMock()
@@ -546,9 +561,7 @@ class TestRetryPolicy:
             call_count += 1
             mock_http_resp = MagicMock()
             mock_http_resp.status_code = 401
-            raise AuthenticationError(
-                "Invalid API key", response=mock_http_resp, body={}
-            )
+            raise AuthenticationError("Invalid API key", response=mock_http_resp, body={})
 
         mock_client = MagicMock()
         mock_client.messages.create.side_effect = _side_effect

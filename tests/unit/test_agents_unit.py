@@ -695,8 +695,14 @@ class TestCommanderAgent:
 
         task_plan = {
             "tasks": [
-                {"sequence_num": 1, "title": "T1", "description": "d", "agent_role": "builder",
-                 "depends_on": [], "files_likely_touched": []},
+                {
+                    "sequence_num": 1,
+                    "title": "T1",
+                    "description": "d",
+                    "agent_role": "builder",
+                    "depends_on": [],
+                    "files_likely_touched": [],
+                },
             ]
         }
 
@@ -790,7 +796,13 @@ class TestBuilderAgentJsonParsing:
         payload = {
             "summary": "Added component",
             "commit_message": "feat: component",
-            "files": [{"path": "App.tsx", "action": "create", "content": "function App() { return <div />; }"}],
+            "files": [
+                {
+                    "path": "App.tsx",
+                    "action": "create",
+                    "content": "function App() { return <div />; }",
+                }
+            ],
         }
         raw = json.dumps(payload)
         result = agent._parse_json_response(raw)

@@ -50,17 +50,45 @@ settings = get_settings()
 _DESIGN_MAX_TOKENS = 4096
 
 # Keywords that signal a UI/UX project — used by commander injection logic
-UI_SIGNAL_WORDS = frozenset({
-    "web", "webapp", "website", "app", "mobile", "ios", "android", "react",
-    "vue", "angular", "svelte", "flutter", "dashboard", "ui", "frontend",
-    "landing", "page", "portal", "interface", "screen", "form", "todo",
-    "chat", "feed", "profile", "shop", "store", "booking", "blog",
-})
+UI_SIGNAL_WORDS = frozenset(
+    {
+        "web",
+        "webapp",
+        "website",
+        "app",
+        "mobile",
+        "ios",
+        "android",
+        "react",
+        "vue",
+        "angular",
+        "svelte",
+        "flutter",
+        "dashboard",
+        "ui",
+        "frontend",
+        "landing",
+        "page",
+        "portal",
+        "interface",
+        "screen",
+        "form",
+        "todo",
+        "chat",
+        "feed",
+        "profile",
+        "shop",
+        "store",
+        "booking",
+        "blog",
+    }
+)
 
 
 def is_ui_project(title: str, description: str = "") -> bool:
     """Return True if the work order looks like a UI/UX project."""
     import re
+
     text = (title + " " + description).lower()
     words = set(re.findall(r"[a-z]+", text))
     return bool(words & UI_SIGNAL_WORDS)
@@ -83,9 +111,7 @@ class UXDesignerAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             run = await self._load_run(session)
 
         workspace = Path(settings.git_workspace) / run.project_id / self.run_id
@@ -116,10 +142,17 @@ class UXDesignerAgent(BaseAgent):
                 },
             )
             # Escalate if reflection surfaces genuine uncertainty
-            if any(phrase in reflection.lower() for phrase in [
-                "underspecified", "unclear", "ambiguous", "cannot determine",
-                "need clarification", "too vague",
-            ]):
+            if any(
+                phrase in reflection.lower()
+                for phrase in [
+                    "underspecified",
+                    "unclear",
+                    "ambiguous",
+                    "cannot determine",
+                    "need clarification",
+                    "too vague",
+                ]
+            ):
                 await self._trace(
                     "uncertainty",
                     f"UX design brief may be too vague to produce a good design:\n\n{reflection[:1000]}",
@@ -169,7 +202,9 @@ class UXDesignerAgent(BaseAgent):
         # ── Write DESIGN.md to workspace ───────────────────────────────────────
         design_path = workspace / design_file
         design_path.write_text(design_content, encoding="utf-8")
-        self._log.info("ux_designer.design_written", path=str(design_path), bytes=len(design_content))
+        self._log.info(
+            "ux_designer.design_written", path=str(design_path), bytes=len(design_content)
+        )
 
         # ── Handoff note for builders ──────────────────────────────────────────
         handoff = self._write_design_handoff(
@@ -223,11 +258,11 @@ class UXDesignerAgent(BaseAgent):
 
         planner_section = (
             f"\n\nARCHITECTURE CONTEXT (from planner):\n{planner_context[:2000]}"
-            if planner_context else ""
+            if planner_context
+            else ""
         )
         reflection_section = (
-            f"\n\nPRE-DESIGN REFLECTION:\n{reflection[:1000]}"
-            if reflection else ""
+            f"\n\nPRE-DESIGN REFLECTION:\n{reflection[:1000]}" if reflection else ""
         )
 
         user_message = (
@@ -294,10 +329,13 @@ class UXDesignerAgent(BaseAgent):
         design_content: str,
     ) -> str:
         """LLM-based self-check of the generated design."""
-        prompt = UX_DESIGNER_SELF_CHECK_PROMPT.format(
-            app_description=app_description[:500],
-            files_written=files_written,
-        ) + f"\n\nDESIGN CONTENT TO CHECK:\n{design_content[:3000]}"
+        prompt = (
+            UX_DESIGNER_SELF_CHECK_PROMPT.format(
+                app_description=app_description[:500],
+                files_written=files_written,
+            )
+            + f"\n\nDESIGN CONTENT TO CHECK:\n{design_content[:3000]}"
+        )
 
         try:
             result = self._call_claude(
@@ -346,13 +384,18 @@ class UXDesignerAgent(BaseAgent):
         preview = design_content[:600].replace("\n", " ")
         try:
             result = self._call_claude(
-                messages=[{"role": "user", "content": (
-                    f"Summarise this design spec in 3 sentences for a builder who is about to "
-                    f"implement it. Focus on: (1) the visual personality, (2) the primary/surface "
-                    f"colors and font, (3) any critical accessibility or consistency rules they "
-                    f"must follow.\n\nDESIGN PREVIEW:\n{preview}\n\n"
-                    f"APP: {app_description[:200]}"
-                )}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Summarise this design spec in 3 sentences for a builder who is about to "
+                            f"implement it. Focus on: (1) the visual personality, (2) the primary/surface "
+                            f"colors and font, (3) any critical accessibility or consistency rules they "
+                            f"must follow.\n\nDESIGN PREVIEW:\n{preview}\n\n"
+                            f"APP: {app_description[:200]}"
+                        ),
+                    }
+                ],
                 system=UX_DESIGNER_SOUL,
                 max_tokens=200,
             )

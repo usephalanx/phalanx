@@ -55,9 +55,7 @@ _LOCK_KEY = "advance:{run_id}"
 _LOCK_TTL = 30  # seconds — must be longer than the DB + Celery dispatch round-trip
 
 # Terminal states — advance_run exits immediately for these.
-_TERMINAL_STATES = frozenset(
-    {"FAILED", "CANCELLED", "SHIPPED", "MERGED", "READY_TO_MERGE"}
-)
+_TERMINAL_STATES = frozenset({"FAILED", "CANCELLED", "SHIPPED", "MERGED", "READY_TO_MERGE"})
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────
@@ -186,6 +184,7 @@ async def _step(run_id: str, logger, redis_client) -> dict:
         if completed_tasks:
             try:
                 from phalanx.workflow.slack_notifier import SlackNotifier  # noqa: PLC0415
+
                 notifier = await SlackNotifier.from_run(run_id, session)
                 for ct in completed_tasks:
                     await notifier.task_completed(ct)
@@ -200,6 +199,7 @@ async def _step(run_id: str, logger, redis_client) -> dict:
             logger.error("advance_run.task_failed", task_id=ft.id, agent_role=ft.agent_role)
             try:
                 from phalanx.workflow.slack_notifier import SlackNotifier  # noqa: PLC0415
+
                 notifier = await SlackNotifier.from_run(run_id, session)
                 await notifier.task_failed(ft)
             except Exception:
@@ -216,6 +216,7 @@ async def _step(run_id: str, logger, redis_client) -> dict:
                 logger.info("advance_run.all_tasks_complete")
                 try:
                     from phalanx.workflow.slack_notifier import SlackNotifier  # noqa: PLC0415
+
                     notifier = await SlackNotifier.from_run(run_id, session)
                     await notifier.task_completed(completed_tasks[-1])
                 except Exception:
@@ -241,15 +242,14 @@ async def _step(run_id: str, logger, redis_client) -> dict:
 
         # Mark IN_PROGRESS before dispatch (same pattern as old orchestrator)
         await session.execute(
-            update(Task)
-            .where(Task.id == next_task.id)
-            .values(status="IN_PROGRESS", started_at=now)
+            update(Task).where(Task.id == next_task.id).values(status="IN_PROGRESS", started_at=now)
         )
         await session.commit()
 
         # Slack: task started
         try:
             from phalanx.workflow.slack_notifier import SlackNotifier  # noqa: PLC0415
+
             notifier = await SlackNotifier.from_run(run_id, session)
             await notifier.task_started(next_task)
         except Exception:
@@ -277,7 +277,9 @@ async def _step(run_id: str, logger, redis_client) -> dict:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _transition(session, run_id: str, from_status: str, to_status: str, error: str | None = None) -> None:
+async def _transition(
+    session, run_id: str, from_status: str, to_status: str, error: str | None = None
+) -> None:
     """Validate + apply a Run status transition."""
     validate_transition(RunStatus(from_status), RunStatus(to_status))
     values: dict = {"status": to_status, "updated_at": datetime.now(UTC)}

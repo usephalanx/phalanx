@@ -93,6 +93,7 @@ class TestPlannerReflection:
 
         import phalanx.agents.planner as planner_mod
         from phalanx.agents.planner import PlannerAgent  # noqa: F401
+
         src = inspect.getsource(planner_mod)
         assert "PLANNER_SOUL" in src
 
@@ -101,6 +102,7 @@ class TestPlannerReflection:
         import inspect
 
         import phalanx.agents.planner as planner_mod
+
         src = inspect.getsource(planner_mod.PlannerAgent.execute)
         reflect_pos = src.find("_reflect(")
         generate_pos = src.find("_generate_plan(")
@@ -113,6 +115,7 @@ class TestPlannerReflection:
         import inspect
 
         import phalanx.agents.planner as planner_mod
+
         src = inspect.getsource(planner_mod.PlannerAgent.execute)
         assert "_trace" in src
         assert '"reflection"' in src
@@ -143,20 +146,24 @@ class TestPlannerReflection:
         @asynccontextmanager
         async def fake_db():
             s = AsyncMock()
-            s.execute = AsyncMock(return_value=MagicMock(
-                scalar_one_or_none=lambda: task,
-                scalar_one=lambda: run,
-                scalars=lambda: MagicMock(all=lambda: []),
-            ))
+            s.execute = AsyncMock(
+                return_value=MagicMock(
+                    scalar_one_or_none=lambda: task,
+                    scalar_one=lambda: run,
+                    scalars=lambda: MagicMock(all=lambda: []),
+                )
+            )
             s.commit = AsyncMock()
             yield s
 
-        with patch("phalanx.agents.planner.get_db", fake_db), \
-             patch.object(agent, "_reflect", return_value="reflection text") as mock_reflect, \
-             patch.object(agent, "_trace", new_callable=AsyncMock) as mock_trace, \
-             patch.object(agent, "_generate_plan", new_callable=AsyncMock, return_value=mock_plan), \
-             patch.object(agent, "_persist_artifact", new_callable=AsyncMock), \
-             patch.object(agent, "_audit", new_callable=AsyncMock):
+        with (
+            patch("phalanx.agents.planner.get_db", fake_db),
+            patch.object(agent, "_reflect", return_value="reflection text") as mock_reflect,
+            patch.object(agent, "_trace", new_callable=AsyncMock) as mock_trace,
+            patch.object(agent, "_generate_plan", new_callable=AsyncMock, return_value=mock_plan),
+            patch.object(agent, "_persist_artifact", new_callable=AsyncMock),
+            patch.object(agent, "_audit", new_callable=AsyncMock),
+        ):
             await agent.execute()
 
         mock_reflect.assert_called_once()
@@ -164,6 +171,7 @@ class TestPlannerReflection:
         call_args = mock_reflect.call_args[0] if mock_reflect.call_args[0] else ()
         # soul param should be PLANNER_SOUL
         from phalanx.agents.soul import PLANNER_SOUL
+
         soul_passed = call_kwargs.get("soul") or (call_args[2] if len(call_args) > 2 else None)
         assert soul_passed == PLANNER_SOUL
 
@@ -257,9 +265,7 @@ class TestBuilderHandoffNotes:
         @asynccontextmanager
         async def fake_db():
             s = AsyncMock()
-            s.execute = AsyncMock(
-                return_value=MagicMock(scalar_one_or_none=lambda: trace)
-            )
+            s.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: trace))
             yield s
 
         with patch("phalanx.agents.reviewer.get_db", fake_db):
@@ -275,9 +281,7 @@ class TestBuilderHandoffNotes:
         @asynccontextmanager
         async def fake_db():
             s = AsyncMock()
-            s.execute = AsyncMock(
-                return_value=MagicMock(scalar_one_or_none=lambda: None)
-            )
+            s.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=lambda: None))
             yield s
 
         with patch("phalanx.agents.reviewer.get_db", fake_db):
@@ -306,6 +310,7 @@ class TestBuilderHandoffNotes:
         import inspect
 
         import phalanx.agents.reviewer as rev_mod
+
         src = inspect.getsource(rev_mod.ReviewerAgent._run_review)
         assert "builder_handoff" in src
         assert "handoff_section" in src
@@ -315,6 +320,7 @@ class TestBuilderHandoffNotes:
         import inspect
 
         from phalanx.agents.reviewer import ReviewerAgent
+
         sig = inspect.signature(ReviewerAgent._run_review)
         assert "builder_handoff" in sig.parameters
 
@@ -356,6 +362,7 @@ class TestSelfCheckFixLoop:
 
         import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             fix_result = {
@@ -364,9 +371,13 @@ class TestSelfCheckFixLoop:
                 "files": [{"path": "app.py", "action": "modify", "content": "# fixed"}],
             }
             import json as _json
+
             with patch.object(agent, "_call_claude", return_value=_json.dumps(fix_result)):
                 result = await agent._fix_self_check_issues(
-                    task, plan, existing_files, workspace,
+                    task,
+                    plan,
+                    existing_files,
+                    workspace,
                     self_check_result="Import error in app.py",
                 )
             assert result["summary"] == "Fixed import"
@@ -379,11 +390,15 @@ class TestSelfCheckFixLoop:
         task = make_task_orm()
         import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             with patch.object(agent, "_call_claude", side_effect=Exception("API down")):
                 result = await agent._fix_self_check_issues(
-                    task, {}, {}, workspace,
+                    task,
+                    {},
+                    {},
+                    workspace,
                     self_check_result="Import error",
                 )
             assert result == {}
@@ -403,9 +418,15 @@ class TestSelfCheckFixLoop:
             captured["messages"] = kwargs["messages"]
             return _json.dumps({"summary": "fixed", "commit_message": "fix", "files": []})
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(agent, "_call_claude", side_effect=capture_call):
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(agent, "_call_claude", side_effect=capture_call),
+        ):
             await agent._fix_self_check_issues(
-                task, {}, {}, Path(tmpdir),
+                task,
+                {},
+                {},
+                Path(tmpdir),
                 self_check_result="Missing import for utils.py",
             )
 
@@ -417,6 +438,7 @@ class TestSelfCheckFixLoop:
         import inspect
 
         import phalanx.agents.builder as builder_mod
+
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_self_check_has_issues" in src
 
@@ -425,6 +447,7 @@ class TestSelfCheckFixLoop:
         import inspect
 
         import phalanx.agents.builder as builder_mod
+
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_fix_self_check_issues" in src
 
@@ -433,6 +456,7 @@ class TestSelfCheckFixLoop:
         import inspect
 
         import phalanx.agents.builder as builder_mod
+
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_write_handoff_note" in src
 
@@ -441,6 +465,7 @@ class TestSelfCheckFixLoop:
         import inspect
 
         import phalanx.agents.builder as builder_mod
+
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         # Exactly one call to _fix_self_check_issues (not in a while/for loop)
         assert src.count("_fix_self_check_issues") == 1
