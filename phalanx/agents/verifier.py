@@ -53,7 +53,7 @@ settings = get_settings()
     time_limit=360,
 )
 def execute_task(self, task_id: str, run_id: str, **kwargs) -> dict:
-    agent = VerifierAgent(run_id=run_id, task_id=task_id)
+    agent = VerifierAgent(run_id=run_id, agent_id="verifier", task_id=task_id)
     result = asyncio.run(agent.execute())
     return {"success": result.success, "output": result.output, "error": result.error}
 

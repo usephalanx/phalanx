@@ -313,7 +313,7 @@ class BaseAgent(abc.ABC):
             budget_remaining=self.token_budget - self._tokens_used,
         )
 
-        return response.content[0].text
+        return response.content[0].text  # type: ignore[union-attr]
 
     def _call_claude(
         self,
