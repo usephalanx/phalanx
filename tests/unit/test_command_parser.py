@@ -1,5 +1,5 @@
 """
-Unit tests for forge/gateway/command_parser.py.
+Unit tests for phalanx/gateway/command_parser.py.
 
 Pure-logic module — no I/O — so 100% reachable without mocks.
 """

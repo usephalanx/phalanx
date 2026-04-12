@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+*.pyo
+.venv
+.env
+.git
+.gitignore
+.pytest_cache
+.ruff_cache
+*.egg-info
+node_modules
+dist
+build
+.DS_Store

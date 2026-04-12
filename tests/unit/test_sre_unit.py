@@ -5,9 +5,6 @@ No Docker, no DB, no network — pure logic only.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -15,10 +12,9 @@ from phalanx.agents.sre import (
     _detect_app_type,
     _make_slug,
     _nginx_conf_for_slug,
-    _validate_dockerfile,
     _scan_repo,
+    _validate_dockerfile,
 )
-
 
 # ── _make_slug ─────────────────────────────────────────────────────────────────
 

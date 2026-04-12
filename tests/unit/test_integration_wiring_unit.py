@@ -13,14 +13,11 @@ Tests:
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from phalanx.agents.integration_wiring import IntegrationWiringAgent
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -234,7 +231,7 @@ async def test_wire_dispatches_to_nextjs(tmp_path):
     profile = get_profile("nextjs")
 
     with patch.object(agent, "_wire_nextjs", return_value={"status": "skipped", "files_wired": [], "notes": []}) as mock:
-        result = await agent._wire(tmp_path, profile, [])
+        await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
 
@@ -245,7 +242,7 @@ async def test_wire_dispatches_to_fastapi(tmp_path):
     profile = get_profile("fastapi")
 
     with patch.object(agent, "_wire_fastapi", return_value={"status": "skipped", "files_wired": [], "notes": []}) as mock:
-        result = await agent._wire(tmp_path, profile, [])
+        await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
 
@@ -256,7 +253,7 @@ async def test_wire_dispatches_to_flutter(tmp_path):
     profile = get_profile("flutter")
 
     with patch.object(agent, "_wire_flutter", return_value={"status": "trusted", "files_wired": [], "notes": []}) as mock:
-        result = await agent._wire(tmp_path, profile, [])
+        await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)
 
 
@@ -267,5 +264,5 @@ async def test_wire_dispatches_to_go(tmp_path):
     profile = get_profile("go")
 
     with patch.object(agent, "_wire_go", return_value={"status": "trusted", "files_wired": [], "notes": []}) as mock:
-        result = await agent._wire(tmp_path, profile, [])
+        await agent._wire(tmp_path, profile, [])
     mock.assert_called_once_with(tmp_path)

@@ -43,17 +43,14 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
-from phalanx.agents.base import BaseAgent, AgentResult
+from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.config.settings import get_settings
 from phalanx.db.models import Task, TaskDependency
 from phalanx.workflow.dag import DagNode, DagResolver
-
-if TYPE_CHECKING:
-    pass
 
 log = structlog.get_logger(__name__)
 

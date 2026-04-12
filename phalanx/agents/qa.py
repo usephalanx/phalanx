@@ -16,6 +16,7 @@ The agent never writes code. It reads, thinks, runs, reports.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -340,10 +341,8 @@ def _parse_team_brief(running_md: str) -> TeamBrief:
             elif key == "coverage_tool":
                 brief.coverage_tool = val
             elif key == "coverage_threshold":
-                try:
+                with contextlib.suppress(ValueError):
                     brief.coverage_threshold = float(val)
-                except ValueError:
-                    pass
             elif key == "coverage_applies":
                 brief.coverage_applies = val.lower() not in ("false", "no", "0")
 
@@ -375,9 +374,9 @@ class QAAgent:
 
     def __init__(
         self,
-        run_id: "UUID",
+        run_id: UUID,
         repo_path: Path,
-        task_id: "UUID | None" = None,
+        task_id: UUID | None = None,
         test_command: list[str] | None = None,
         coverage_threshold: float | None = None,
         task_description: str | None = None,
@@ -647,10 +646,8 @@ class QAAgent:
         if data.get("coverage_tool"):
             team_brief.coverage_tool = data["coverage_tool"]
         if data.get("coverage_threshold") is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 team_brief.coverage_threshold = float(data["coverage_threshold"])
-            except (TypeError, ValueError):
-                pass
         if data.get("coverage_applies") is not None:
             val = str(data["coverage_applies"]).lower()
             team_brief.coverage_applies = val not in ("false", "no", "0")
@@ -982,18 +979,17 @@ Produce the test plan JSON now."""
                                           reason="npm not installed in worker — skipping JS deps")
 
         # Go stacks
-        if "go" in stack or "golang" in stack:
-            if (self.repo_path / "go.mod").exists():
-                self._log.info("qa_agent.deps.install", file="go.mod")
-                try:
-                    rc, _, stderr = await _run(["go", "mod", "download"], cwd=self.repo_path)
-                    if rc != 0:
-                        self._log.warning("qa_agent.deps.install_failed", file="go.mod", stderr=stderr[:300])
-                    else:
-                        self._log.info("qa_agent.deps.installed", file="go.mod")
-                except FileNotFoundError:
-                    self._log.warning("qa_agent.deps.tool_missing", tool="go",
-                                      reason="go not installed in worker — skipping Go deps")
+        if ("go" in stack or "golang" in stack) and (self.repo_path / "go.mod").exists():
+            self._log.info("qa_agent.deps.install", file="go.mod")
+            try:
+                rc, _, stderr = await _run(["go", "mod", "download"], cwd=self.repo_path)
+                if rc != 0:
+                    self._log.warning("qa_agent.deps.install_failed", file="go.mod", stderr=stderr[:300])
+                else:
+                    self._log.info("qa_agent.deps.installed", file="go.mod")
+            except FileNotFoundError:
+                self._log.warning("qa_agent.deps.tool_missing", tool="go",
+                                  reason="go not installed in worker — skipping Go deps")
 
     def _apply_test_plan(self, test_plan: dict, context: dict, team_brief: TeamBrief) -> None:
         """
@@ -1050,9 +1046,8 @@ Produce the test plan JSON now."""
         # ── go test ───────────────────────────────────────────────────────────
         elif "go test" in test_runner:
             parts = test_runner.split()
-            if team_brief.coverage_applies:
-                if "-cover" not in parts:
-                    parts.append("-cover")
+            if team_brief.coverage_applies and "-cover" not in parts:
+                parts.append("-cover")
             self.test_command = parts
             self._log.info("qa_agent.coverage_scope", source="go test -cover")
 
@@ -1175,7 +1170,7 @@ Produce the test plan JSON now."""
         # ── ruff (Python) ─────────────────────────────────────────────────────
         if "ruff" in lint_tool:
             rc, stdout, _ = await _run(["ruff", "check", "."], cwd=self.repo_path)
-            violation_count = len([l for l in stdout.splitlines() if l.strip() and not l.startswith("Found")])
+            violation_count = len([ln for ln in stdout.splitlines() if ln.strip() and not ln.startswith("Found")])
             results.append(LintResult(tool="ruff-check", passed=rc == 0,
                                       violation_count=violation_count, output=stdout[:3000]))
 

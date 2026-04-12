@@ -19,7 +19,6 @@ from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.builder import BuilderAgent
 from phalanx.agents.reviewer import ReviewerAgent
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
@@ -126,16 +125,20 @@ class TestSlackEscalation:
             s = AsyncMock()
             yield s
 
-        with patch("phalanx.db.session.get_db", fake_db):
-            with patch("phalanx.agents.base.SlackNotifier", create=True) as mock_slack_cls:
-                # SlackNotifier is imported inside the method, patch the module-level import path
-                pass
+        with (
+            patch("phalanx.db.session.get_db", fake_db),
+            patch("phalanx.agents.base.SlackNotifier", create=True),
+        ):
+            # SlackNotifier is imported inside the method, patch the module-level import path
+            pass
 
         # Test via direct patch of from_run
         from phalanx.workflow.slack_notifier import SlackNotifier
-        with patch.object(SlackNotifier, "from_run", new_callable=AsyncMock, return_value=mock_notifier):
-            with patch("phalanx.db.session.get_db", fake_db):
-                await agent._escalate_trace_to_slack("uncertainty", "not sure about auth design")
+        with (
+            patch.object(SlackNotifier, "from_run", new_callable=AsyncMock, return_value=mock_notifier),
+            patch("phalanx.db.session.get_db", fake_db),
+        ):
+            await agent._escalate_trace_to_slack("uncertainty", "not sure about auth design")
 
         mock_notifier.post.assert_called_once()
         call_text = mock_notifier.post.call_args[0][0]
@@ -309,6 +312,7 @@ class TestCrossRunMemory:
     def test_builder_execute_loads_cross_run_memory(self):
         """BuilderAgent.execute() calls _load_cross_run_memory."""
         import inspect
+
         import phalanx.agents.builder as m
         src = inspect.getsource(m.BuilderAgent.execute)
         assert "_load_cross_run_memory" in src
@@ -316,6 +320,7 @@ class TestCrossRunMemory:
     def test_reviewer_execute_loads_cross_run_memory(self):
         """ReviewerAgent.execute() calls _load_cross_run_memory."""
         import inspect
+
         import phalanx.agents.reviewer as m
         src = inspect.getsource(m.ReviewerAgent.execute)
         assert "_load_cross_run_memory" in src
@@ -437,6 +442,7 @@ class TestComplexityCalibration:
     def test_builder_execute_calls_write_complexity_calibration(self):
         """BuilderAgent.execute() calls _write_complexity_calibration at end."""
         import inspect
+
         import phalanx.agents.builder as m
         src = inspect.getsource(m.BuilderAgent.execute)
         assert "_write_complexity_calibration" in src
@@ -444,6 +450,7 @@ class TestComplexityCalibration:
     def test_planner_generate_plan_injects_calibration(self):
         """PlannerAgent._generate_plan calls _load_complexity_calibration."""
         import inspect
+
         import phalanx.agents.planner as m
         src = inspect.getsource(m.PlannerAgent._generate_plan)
         assert "_load_complexity_calibration" in src
@@ -451,6 +458,7 @@ class TestComplexityCalibration:
     def test_planner_injects_calibration_ctx_into_message(self):
         """_generate_plan injects calibration_ctx into the user message."""
         import inspect
+
         import phalanx.agents.planner as m
         src = inspect.getsource(m.PlannerAgent._generate_plan)
         assert "calibration_ctx" in src
@@ -492,6 +500,7 @@ class TestTracesPortal:
     def test_portal_router_imported_in_main(self):
         """main.py imports and registers portal_router."""
         import inspect
+
         import phalanx.api.main as main_mod
         src = inspect.getsource(main_mod)
         assert "traces_portal_router" in src or "portal_router" in src

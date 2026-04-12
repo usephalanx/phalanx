@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,36 +224,40 @@ class TestOpenAIClient:
         success_resp.choices = [choice]
         success_resp.usage = None
 
-        with patch("openai.OpenAI") as mock_cls:
-            with patch("phalanx.agents.openai_client.time.sleep"):
-                mock_inner = MagicMock()
-                mock_cls.return_value = mock_inner
-                mock_inner.chat.completions.create.side_effect = [
-                    RuntimeError("rate limit"),
-                    RuntimeError("timeout"),
-                    success_resp,
-                ]
+        with (
+            patch("openai.OpenAI") as mock_cls,
+            patch("phalanx.agents.openai_client.time.sleep"),
+        ):
+            mock_inner = MagicMock()
+            mock_cls.return_value = mock_inner
+            mock_inner.chat.completions.create.side_effect = [
+                RuntimeError("rate limit"),
+                RuntimeError("timeout"),
+                success_resp,
+            ]
 
-                from phalanx.agents.openai_client import OpenAIClient
+            from phalanx.agents.openai_client import OpenAIClient
 
-                client = OpenAIClient()
-                result = client.call(messages=[], system="sys")
+            client = OpenAIClient()
+            result = client.call(messages=[], system="sys")
 
         assert result == {"ok": True}
         assert mock_inner.chat.completions.create.call_count == 3
 
     def test_call_raises_after_max_retries(self):
-        with patch("openai.OpenAI") as mock_cls:
-            with patch("phalanx.agents.openai_client.time.sleep"):
-                mock_inner = MagicMock()
-                mock_cls.return_value = mock_inner
-                mock_inner.chat.completions.create.side_effect = RuntimeError("persistent error")
+        with (
+            patch("openai.OpenAI") as mock_cls,
+            patch("phalanx.agents.openai_client.time.sleep"),
+        ):
+            mock_inner = MagicMock()
+            mock_cls.return_value = mock_inner
+            mock_inner.chat.completions.create.side_effect = RuntimeError("persistent error")
 
-                from phalanx.agents.openai_client import OpenAIClient
+            from phalanx.agents.openai_client import OpenAIClient
 
-                client = OpenAIClient()
-                with pytest.raises(RuntimeError, match="OpenAI call failed after"):
-                    client.call(messages=[], system="sys")
+            client = OpenAIClient()
+            with pytest.raises(RuntimeError, match="OpenAI call failed after"):
+                client.call(messages=[], system="sys")
 
     def test_call_raises_on_invalid_json(self):
         choice = MagicMock()

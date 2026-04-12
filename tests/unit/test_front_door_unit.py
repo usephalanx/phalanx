@@ -20,10 +20,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -1094,8 +1093,6 @@ class TestPromptEnricherExtras:
 
     def test_block_validation_returns_failure_immediately(self):
         """When validator returns 'block', run() must return success=False without retrying."""
-        from phalanx.agents.intent_router import RouterResult
-        from phalanx.agents.requirement_normalizer import NormalizedSpec
 
         router_result = _make_router_result()
         normalized = _make_normalized_spec()
@@ -1178,7 +1175,6 @@ class TestPromptEnricherExtras:
             captured_prompts.append(prompt)
             return _make_router_result()
 
-        router_result = _make_router_result()
         normalized = _make_normalized_spec()
         plan = _make_execution_plan(num_phases=1)
 
@@ -1198,7 +1194,7 @@ class TestPromptEnricherExtras:
             patch("phalanx.agents.dry_run_validator.DryRunValidator.validate", return_value=pass_val),
         ):
             from phalanx.agents.prompt_enricher import PromptEnricher
-            result = PromptEnricher("wo-id", "proj-id").run(
+            PromptEnricher("wo-id", "proj-id").run(
                 "add new booking screen",
                 context=context,
             )

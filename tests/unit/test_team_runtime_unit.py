@@ -1,5 +1,5 @@
 """
-Unit tests for forge/runtime/team_runtime.py.
+Unit tests for phalanx/runtime/team_runtime.py.
 """
 
 from __future__ import annotations

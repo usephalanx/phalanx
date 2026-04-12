@@ -170,7 +170,6 @@ async def _step(run_id: str, logger, redis_client) -> dict:
             tasks = list(tasks_result.scalars())
 
         # ── 5. Evaluate run state ─────────────────────────────────────────────
-        statuses = {t.status for t in tasks}
 
         # Something already in-flight and healthy — just reschedule poll
         in_progress = [t for t in tasks if t.status == "IN_PROGRESS"]

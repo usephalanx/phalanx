@@ -1,5 +1,5 @@
 """
-Unit tests for forge/gateway/slack_bot.py.
+Unit tests for phalanx/gateway/slack_bot.py.
 
 Tests the handler helper functions (_handle_build, _handle_status, _handle_cancel,
 _handle_approval_action) by mocking DB session and Slack client.

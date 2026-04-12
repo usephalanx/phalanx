@@ -7,18 +7,16 @@ All DB interactions are mocked — real connectivity is verified by integration 
 from __future__ import annotations
 
 import asyncio
-import json
+from collections.abc import AsyncIterator  # noqa: TC003
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import web  # noqa: TC002
 from aiohttp.test_utils import TestClient, TestServer
 
 import phalanx
 from phalanx.gateway.health import GatewayHealthServer
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

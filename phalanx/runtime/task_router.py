@@ -71,7 +71,7 @@ class TaskRouter:
             agent_role="builder",
             task_id="uuid",
             run_id="uuid",
-            payload={"repo_path": "/tmp/forge-repos/proj"},
+            payload={"repo_path": "/tmp/phalanx-repos/proj"},
         )
     """
 

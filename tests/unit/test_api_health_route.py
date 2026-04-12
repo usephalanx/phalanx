@@ -196,11 +196,11 @@ async def test_api_routes_health_degraded_on_redis_error():
 @pytest.mark.asyncio
 async def test_api_routes_health_db_timeout():
     """Health endpoint marks DB as unhealthy on timeout."""
-    import asyncio
+
     from phalanx.api.routes.health import health as health_handler
 
     with (
-        patch("phalanx.api.routes.health._check_db", side_effect=asyncio.TimeoutError()),
+        patch("phalanx.api.routes.health._check_db", side_effect=TimeoutError()),
         patch("redis.asyncio.from_url", side_effect=Exception("redis down")),
     ):
         response = await health_handler()
@@ -214,7 +214,7 @@ async def test_api_routes_health_db_timeout():
 @pytest.mark.asyncio
 async def test_api_routes_health_redis_timeout():
     """Health endpoint marks Redis as degraded on timeout."""
-    import asyncio
+
     from phalanx.api.routes.health import health as health_handler
 
     mock_conn = AsyncMock()
@@ -226,7 +226,7 @@ async def test_api_routes_health_redis_timeout():
 
     with (
         patch("phalanx.db.session.engine", mock_engine),
-        patch("phalanx.api.routes.health._check_redis", side_effect=asyncio.TimeoutError()),
+        patch("phalanx.api.routes.health._check_redis", side_effect=TimeoutError()),
     ):
         response = await health_handler()
 

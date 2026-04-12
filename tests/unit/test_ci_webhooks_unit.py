@@ -6,28 +6,26 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import zipfile
 import io
+import zipfile
 
 import pytest
 
 from phalanx.api.routes.ci_webhooks import (
-    _verify_github_signature,
-    _verify_buildkite_signature,
     _parse_repo_name,
+    _verify_buildkite_signature,
+    _verify_github_signature,
 )
 from phalanx.ci_fixer.log_fetcher import (
-    _extract_failure_section,
-    _extract_failed_step_from_zip,
-    _truncate,
-    get_log_fetcher,
-    GitHubActionsLogFetcher,
     BuildkiteLogFetcher,
     CircleCILogFetcher,
+    GitHubActionsLogFetcher,
     JenkinsLogFetcher,
+    _extract_failed_step_from_zip,
+    _extract_failure_section,
+    _truncate,
+    get_log_fetcher,
 )
-
 
 # ── _verify_github_signature ───────────────────────────────────────────────────
 
@@ -218,9 +216,7 @@ class TestTruncateLogFetcher:
 
 # ── Stub fetchers (CircleCI, Jenkins) ─────────────────────────────────────────
 
-import asyncio
-import pytest
-from phalanx.ci_fixer.events import CIFailureEvent
+from phalanx.ci_fixer.events import CIFailureEvent  # noqa: E402
 
 
 def _make_event():
@@ -295,7 +291,7 @@ class TestTruncateEdge:
 
 # ── GitHubActionsLogFetcher (mocked httpx) ─────────────────────────────────────
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: E402
 
 
 def _make_mock_client(responses: list):
@@ -322,7 +318,8 @@ class TestGitHubActionsLogFetcher:
 
     @pytest.mark.asyncio
     async def test_fetch_with_annotations_and_logs(self):
-        import io, zipfile
+        import io
+        import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("unit-tests/1_run.txt", "ok\nError: test failed\ndone")
@@ -401,7 +398,8 @@ class TestGitHubActionsLogFetcher:
 
     @pytest.mark.asyncio
     async def test_fetch_no_failed_jobs_uses_all_files(self):
-        import io, zipfile
+        import io
+        import zipfile
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("other-job/1_run.txt", "Error: crash")
@@ -532,13 +530,15 @@ class TestBuildkiteLogFetcher:
 
 # ── Webhook route integration (early-return paths, no DB) ──────────────────────
 
-import json as _json
-from fastapi.testclient import TestClient
-from unittest.mock import patch as _patch
+import json as _json  # noqa: E402
+from unittest.mock import patch as _patch  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 def _make_app():
     from fastapi import FastAPI
+
     from phalanx.api.routes.ci_webhooks import router
     app = FastAPI()
     app.include_router(router)

@@ -1,5 +1,5 @@
 """
-Unit tests for forge/agents/qa.py data model and helper functions.
+Unit tests for phalanx/agents/qa.py data model and helper functions.
 
 Tests QAOutcome, TestSuiteResult, CoverageResult, LintResult, QAReport,
 _parse_junit_xml, and _parse_coverage_xml — all without needing a live process.
@@ -396,8 +396,8 @@ class TestParseCoverageXml:
               <packages>
                 <package name="forge">
                   <classes>
-                    <class name="module_a" filename="forge/a.py" line-rate="0.90"/>
-                    <class name="module_b" filename="forge/b.py" line-rate="0.80"/>
+                    <class name="module_a" filename="phalanx/a.py" line-rate="0.90"/>
+                    <class name="module_b" filename="phalanx/b.py" line-rate="0.80"/>
                   </classes>
                 </package>
               </packages>
@@ -418,7 +418,7 @@ class TestParseCoverageXml:
               <packages>
                 <package name="forge">
                   <classes>
-                    <class name="low_cov" filename="forge/low.py" line-rate="0.40"/>
+                    <class name="low_cov" filename="phalanx/low.py" line-rate="0.40"/>
                   </classes>
                 </package>
               </packages>
@@ -463,8 +463,9 @@ class TestParseQAMd:
     """Tests for QAAgent._parse_qa_md() — parses YAML written by last builder task."""
 
     def _make_agent(self, repo_path):
-        from phalanx.agents.qa import QAAgent
         import uuid
+
+        from phalanx.agents.qa import QAAgent
         return QAAgent(run_id=uuid.uuid4(), repo_path=repo_path)
 
     def test_parses_valid_yaml(self, tmp_path):
@@ -543,8 +544,9 @@ class TestMergeQAMdIntoBrief:
     """Tests for QAAgent._merge_qa_md_into_brief()."""
 
     def _make_agent(self, tmp_path):
-        from phalanx.agents.qa import QAAgent
         import uuid
+
+        from phalanx.agents.qa import QAAgent
         return QAAgent(run_id=uuid.uuid4(), repo_path=tmp_path)
 
     def _make_brief(self):
@@ -587,9 +589,10 @@ class TestWorkspaceIsolation:
     """Tests for BuilderAgent workspace path helpers."""
 
     def _make_agent(self):
-        from unittest.mock import MagicMock
-        from phalanx.agents.builder import BuilderAgent
         import uuid
+        from unittest.mock import MagicMock
+
+        from phalanx.agents.builder import BuilderAgent
         run_id = str(uuid.uuid4())
         task_id = str(uuid.uuid4())
         agent = BuilderAgent.__new__(BuilderAgent)
@@ -600,9 +603,7 @@ class TestWorkspaceIsolation:
         return agent, run_id
 
     def test_make_workspace_path_uses_title_slug(self, tmp_path):
-        from phalanx.agents.builder import BuilderAgent
-        from unittest.mock import patch, MagicMock
-        import uuid
+        from unittest.mock import MagicMock, patch
 
         agent, run_id = self._make_agent()
         run = MagicMock()
@@ -617,7 +618,7 @@ class TestWorkspaceIsolation:
         assert path.parent == tmp_path
 
     def test_make_workspace_path_fallback_without_title(self, tmp_path):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         agent, run_id = self._make_agent()
         run = MagicMock()
@@ -630,7 +631,7 @@ class TestWorkspaceIsolation:
         assert path.name == f"run-{run_short}"
 
     def test_make_workspace_path_truncates_long_title(self, tmp_path):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         agent, run_id = self._make_agent()
         run = MagicMock()
@@ -645,7 +646,6 @@ class TestWorkspaceIsolation:
         assert len(slug_part) <= 40
 
     def test_validate_qa_md_removes_nonexistent_files(self, tmp_path):
-        from phalanx.agents.builder import BuilderAgent
         import yaml
 
         agent, _ = self._make_agent()
@@ -669,7 +669,6 @@ class TestWorkspaceIsolation:
         assert "tests/test_ghost.py" not in data["test_files"]
 
     def test_validate_qa_md_returns_none_on_invalid_yaml(self, tmp_path):
-        from phalanx.agents.builder import BuilderAgent
 
         agent, _ = self._make_agent()
         result = agent._validate_qa_md("not: valid: yaml: :::broken", tmp_path)
@@ -677,7 +676,6 @@ class TestWorkspaceIsolation:
         assert result is None or isinstance(result, str)
 
     def test_validate_qa_md_injects_workspace_path(self, tmp_path):
-        from phalanx.agents.builder import BuilderAgent
         import yaml
 
         agent, _ = self._make_agent()

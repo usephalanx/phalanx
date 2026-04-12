@@ -45,14 +45,14 @@ docker compose version
 
 # ── App directory structure ───────────────────────────────────────────────
 echo "▶ Creating app directory structure..."
-mkdir -p /home/ubuntu/forge/nginx
-mkdir -p /home/ubuntu/forge/skill-registry
-mkdir -p /home/ubuntu/forge/configs
-mkdir -p /home/ubuntu/forge/forge-repos
-mkdir -p /home/ubuntu/forge/postgres-data
+mkdir -p /home/ubuntu/phalanx/nginx
+mkdir -p /home/ubuntu/phalanx/skill-registry
+mkdir -p /home/ubuntu/phalanx/configs
+mkdir -p /home/ubuntu/phalanx/phalanx-repos
+mkdir -p /home/ubuntu/phalanx/postgres-data
 
-chown -R ubuntu:ubuntu /home/ubuntu/forge
-echo "  ✓ /home/ubuntu/forge/ created"
+chown -R ubuntu:ubuntu /home/ubuntu/phalanx
+echo "  ✓ /home/ubuntu/phalanx/ created"
 
 # ── Swap (needed for 1GB instances) ──────────────────────────────────────
 SWAP_EXISTS=$(swapon --show | wc -l)

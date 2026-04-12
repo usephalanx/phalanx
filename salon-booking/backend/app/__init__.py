@@ -1,0 +1,1 @@
+"""Salon booking backend application."""

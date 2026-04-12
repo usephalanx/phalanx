@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import phalanx
 from phalanx.api.main import app
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -143,25 +142,24 @@ async def test_api_healthz_returns_200(aiosqlite_engine) -> None:
 @pytest.mark.asyncio
 async def test_gateway_health_200_with_real_db(aiosqlite_engine) -> None:
     """Gateway GET /health returns 200 with {status: 'ok', version} against a real DB."""
+    from collections.abc import AsyncIterator  # noqa: TC003
     from contextlib import asynccontextmanager
-    from collections.abc import AsyncIterator
     from unittest.mock import MagicMock
 
     from aiohttp.test_utils import TestClient, TestServer
-    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from phalanx.gateway.health import GatewayHealthServer
 
     # Build a real async session factory backed by the aiosqlite engine.
-    _SessionLocal = async_sessionmaker(
+    _session_local = async_sessionmaker(
         aiosqlite_engine, class_=AsyncSession, expire_on_commit=False,
     )
 
     @asynccontextmanager
     async def _real_get_db() -> AsyncIterator[AsyncSession]:
         """Real session context manager using aiosqlite."""
-        async with _SessionLocal() as session:
+        async with _session_local() as session:
             yield session
 
     with patch("phalanx.gateway.health.get_settings") as mock_settings:
@@ -207,8 +205,8 @@ async def test_api_health_content_type_is_json(aiosqlite_engine) -> None:
 @pytest.mark.asyncio
 async def test_gateway_health_content_type_is_json(aiosqlite_engine) -> None:
     """Edge case: Gateway GET /health Content-Type is application/json with a real DB."""
+    from collections.abc import AsyncIterator  # noqa: TC003
     from contextlib import asynccontextmanager
-    from collections.abc import AsyncIterator
     from unittest.mock import MagicMock
 
     from aiohttp.test_utils import TestClient, TestServer
@@ -216,14 +214,14 @@ async def test_gateway_health_content_type_is_json(aiosqlite_engine) -> None:
 
     from phalanx.gateway.health import GatewayHealthServer
 
-    _SessionLocal = async_sessionmaker(
+    _session_local = async_sessionmaker(
         aiosqlite_engine, class_=AsyncSession, expire_on_commit=False,
     )
 
     @asynccontextmanager
     async def _real_get_db() -> AsyncIterator[AsyncSession]:
         """Real session context manager using aiosqlite."""
-        async with _SessionLocal() as session:
+        async with _session_local() as session:
             yield session
 
     with patch("phalanx.gateway.health.get_settings") as mock_settings:

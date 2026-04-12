@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from phalanx.workflow.dag import DagNode, DagPlan, DagResolver
+from phalanx.workflow.dag import DagNode, DagResolver
 
 
 def _node(task_id, role="builder", mins=30, deps=None):

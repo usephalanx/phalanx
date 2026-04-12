@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luxe Salon — Booking &amp; Management</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-brand">
+            <span class="brand-icon">✦</span>
+            <span class="brand-name">Luxe Salon</span>
+        </div>
+        <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+            <span></span><span></span><span></span>
+        </button>
+        <ul class="nav-links" id="nav-links">
+            <li><a href="#dashboard" class="nav-link active" data-page="dashboard">Dashboard</a></li>
+            <li><a href="#booking" class="nav-link" data-page="booking">Book Appointment</a></li>
+            <li><a href="#staff" class="nav-link" data-page="staff">Staff</a></li>
+            <li><a href="#services" class="nav-link" data-page="services">Services</a></li>
+        </ul>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content" id="app">
+        <!-- Pages are rendered here by the router -->
+    </main>
+
+    <!-- Modal Overlay -->
+    <div class="modal-overlay" id="modal-overlay" hidden>
+        <div class="modal" id="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="modal-title"></h2>
+                <button class="modal-close" id="modal-close" aria-label="Close modal">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/pages/dashboard.js"></script>
+    <script src="/static/js/pages/booking.js"></script>
+    <script src="/static/js/pages/staff.js"></script>
+    <script src="/static/js/pages/services.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

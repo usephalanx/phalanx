@@ -1,5 +1,5 @@
 """
-Unit tests for forge/workflow/approval_gate.py.
+Unit tests for phalanx/workflow/approval_gate.py.
 """
 
 from __future__ import annotations

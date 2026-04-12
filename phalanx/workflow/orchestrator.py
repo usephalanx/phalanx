@@ -82,7 +82,7 @@ class WorkflowOrchestrator:
         run_id: str,
         task_router: TaskRouter,
         approval_timeout_hours: int = 24,
-        notifier: "SlackNotifier | None" = None,
+        notifier: SlackNotifier | None = None,
     ) -> None:
         self._session = session
         self.run_id = run_id

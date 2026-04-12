@@ -53,17 +53,17 @@ jobs:
 
       - name: Lint (ruff)
         run: |
-          ruff check forge/ tests/ --output-format=github
+          ruff check phalanx/ tests/ --output-format=github
           echo "✅ Lint passed"
 
       - name: Format check (ruff format)
         run: |
-          ruff format --check forge/ tests/
+          ruff format --check phalanx/ tests/
           echo "✅ Format check passed"
 
       - name: Type check (mypy)
         run: |
-          mypy forge/ \
+          mypy phalanx/ \
             --ignore-missing-imports \
             --no-error-summary \
             --show-error-codes
@@ -72,7 +72,7 @@ jobs:
       - name: Check for debug artifacts
         run: |
           # Fail if any breakpoint(), pdb, or print() in production code
-          if grep -rn "breakpoint()\|import pdb\|pdb.set_trace()" forge/; then
+          if grep -rn "breakpoint()\|import pdb\|pdb.set_trace()" phalanx/; then
             echo "❌ Debug artifacts found in production code"
             exit 1
           fi
@@ -81,7 +81,7 @@ jobs:
       - name: Check for hardcoded secrets patterns
         run: |
           pip install detect-secrets
-          detect-secrets scan forge/ \
+          detect-secrets scan phalanx/ \
             --exclude-files "\.pyc$" \
             --baseline /dev/null \
             | python -c "
@@ -202,11 +202,11 @@ jobs:
 
       - name: SAST — Bandit
         run: |
-          bandit -r forge/ \
+          bandit -r phalanx/ \
             -f json \
             -o bandit-report.json \
             -ll \
-            --exclude forge/tests \
+            --exclude phalanx/tests \
             || true  # capture output even on findings
 
           python -c "
@@ -316,7 +316,7 @@ jobs:
           pytest tests/unit/ \
             -v \
             --tb=short \
-            --cov=forge \
+            --cov=phalanx \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov \
@@ -332,9 +332,9 @@ jobs:
           root = tree.getroot()
           low_coverage = []
           critical_modules = [
-              'forge/workflow/state_machine',
-              'forge/db/models',
-              'forge/guardrails',
+              'phalanx/workflow/state_machine',
+              'phalanx/db/models',
+              'phalanx/guardrails',
           ]
           for pkg in root.findall('.//class'):
               name = pkg.get('filename', '')

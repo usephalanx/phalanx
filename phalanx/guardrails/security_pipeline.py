@@ -410,7 +410,7 @@ class SecurityPipeline:
     Runs all security scans for a given run before ship approval.
 
     Usage:
-        pipeline = SecurityPipeline(run_id=..., repo_path=Path("/forge-repos/my-project"))
+        pipeline = SecurityPipeline(run_id=..., repo_path=Path("/phalanx-repos/my-project"))
         result = await pipeline.run()
         if not result.overall_passed:
             raise SecurityGateBlockedError(result.blocking_reason)

@@ -1,5 +1,5 @@
 """
-Unit tests for forge/agents/base.py.
+Unit tests for phalanx/agents/base.py.
 """
 
 from __future__ import annotations

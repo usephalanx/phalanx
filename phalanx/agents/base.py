@@ -23,6 +23,7 @@ Design decisions (evidence in EXECUTION_PLAN.md §B):
 from __future__ import annotations
 
 import abc
+import contextlib
 import glob
 import json
 import os
@@ -240,7 +241,7 @@ class BaseAgent(abc.ABC):
                 timeout=300,  # 5 min hard timeout per call
             )
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"Claude CLI timed out after 300s") from exc
+            raise RuntimeError("Claude CLI timed out after 300s") from exc
         except Exception as exc:
             raise RuntimeError(f"Claude CLI subprocess error: {exc}") from exc
 
@@ -676,10 +677,8 @@ class BaseAgent(abc.ABC):
 
             out = []
             for f in facts:
-                try:
+                with contextlib.suppress(Exception):
                     out.append(_json.loads(f.body))
-                except Exception:
-                    pass
             return out
         except Exception as exc:
             self._log.warning("agent.load_complexity_calibration_failed", error=str(exc))

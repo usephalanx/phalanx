@@ -19,8 +19,8 @@ import json
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path  # noqa: TC003
 
 import structlog
 
@@ -408,7 +408,7 @@ def run_profile_checks(profile: VerificationProfile, work_dir: Path) -> list[str
         ok, stdout, stderr = _run(profile.build_cmd, work_dir, profile.build_timeout)
         if not ok:
             raw = (stdout + stderr).splitlines()
-            errs = [l for l in raw if "error" in l.lower()][:10]
+            errs = [ln for ln in raw if "error" in ln.lower()][:10]
             errors.extend(errs or [f"[build] command failed: {' '.join(profile.build_cmd)}"])
 
     # Typecheck (non-fatal contribution — collect but don't early-exit)
@@ -416,7 +416,7 @@ def run_profile_checks(profile: VerificationProfile, work_dir: Path) -> list[str
         ok, stdout, stderr = _run(profile.typecheck_cmd, work_dir, profile.build_timeout)
         if not ok:
             raw = (stdout + stderr).splitlines()
-            errs = [l for l in raw if "error" in l.lower() or "Error" in l][:5]
+            errs = [ln for ln in raw if "error" in ln.lower() or "Error" in ln][:5]
             errors.extend(errs or [f"[typecheck] {' '.join(profile.typecheck_cmd)} failed"])
 
     # Validate entry points exist

@@ -19,8 +19,7 @@ the NullPool invariant — sessions are never reused across calls.
 from __future__ import annotations
 
 import asyncio
-import logging
-from typing import Any
+import contextlib
 
 import structlog
 from aiohttp import web
@@ -88,10 +87,8 @@ class GatewayHealthServer:
     async def _cleanup_runner(self) -> None:
         """Internal helper: tear down runner if it exists."""
         if self._runner is not None:
-            try:
+            with contextlib.suppress(Exception):  # noqa: BLE001
                 await self._runner.cleanup()
-            except Exception:  # noqa: BLE001
-                pass
             self._runner = None
             self._site = None
 

@@ -90,9 +90,9 @@ class PromptEnricher:
             context_type=getattr(context, "context_type", "none"),
         )
 
-        from phalanx.agents.dry_run_validator import DryRunValidator        # noqa: PLC0415
-        from phalanx.agents.execution_planner import ExecutionPlanner       # noqa: PLC0415
-        from phalanx.agents.intent_router import IntentRouter               # noqa: PLC0415
+        from phalanx.agents.dry_run_validator import DryRunValidator  # noqa: PLC0415
+        from phalanx.agents.execution_planner import ExecutionPlanner  # noqa: PLC0415
+        from phalanx.agents.intent_router import IntentRouter  # noqa: PLC0415
         from phalanx.agents.requirement_normalizer import RequirementNormalizer  # noqa: PLC0415
 
         # ── Stage 0: Route ────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ class PromptEnricher:
         from sqlalchemy import update  # noqa: PLC0415
 
         from phalanx.db.models import WorkOrder  # noqa: PLC0415
-        from phalanx.db.session import get_db    # noqa: PLC0415
+        from phalanx.db.session import get_db  # noqa: PLC0415
 
         async with get_db() as session:
             await session.execute(

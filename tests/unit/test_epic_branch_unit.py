@@ -25,13 +25,9 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from phalanx.agents.tech_lead import TechLeadAgent, _epic_branch_name
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _epic_branch_name
@@ -382,7 +378,6 @@ class TestBuilderEnsureWorkspace:
 
 class TestBuilderCommitBranch:
     async def test_uses_explicit_branch_param(self, tmp_path):
-        from phalanx.agents.builder import BuilderAgent
 
         agent = _make_builder()
         run = _make_run(active_branch="feat/old")
@@ -417,8 +412,6 @@ class TestBuilderCommitBranch:
         task = MagicMock()
 
         # Patch git import to verify the branch variable resolved correctly
-        branch_used = []
-
         try:
             from git import Repo
             original_init = Repo.init

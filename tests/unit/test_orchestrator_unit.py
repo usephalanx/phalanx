@@ -1,5 +1,5 @@
 """
-Unit tests for forge/workflow/orchestrator.py.
+Unit tests for phalanx/workflow/orchestrator.py.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from phalanx.workflow.orchestrator import (
+    _STALE_TASK_TIMEOUT_SECONDS,
     OrchestratorError,
     WorkflowOrchestrator,
-    _STALE_TASK_TIMEOUT_SECONDS,
 )
 from phalanx.workflow.state_machine import RunStatus
 

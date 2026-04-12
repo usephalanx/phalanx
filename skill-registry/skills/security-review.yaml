@@ -27,7 +27,7 @@ principles:
 
 procedures:
   proficient:
-    - "Run `bandit -r forge/ -ll` and fix HIGH+ findings before marking complete."
+    - "Run `bandit -r phalanx/ -ll` and fix HIGH+ findings before marking complete."
     - "Run `pip-audit` and assess any CVEs — patch or document accepted risk."
     - "Check all API endpoints: authentication header required? Authorization scoped correctly?"
     - "Scan for hardcoded secrets using `detect-secrets scan`."

@@ -12,10 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-from phalanx.workflow.advance_run import _advance_run_async, _STALE_TASK_TIMEOUT_SECONDS
-
+from phalanx.workflow.advance_run import _STALE_TASK_TIMEOUT_SECONDS, _advance_run_async
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

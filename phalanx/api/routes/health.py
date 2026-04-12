@@ -94,7 +94,7 @@ async def health() -> JSONResponse:
             _check_db(),
             timeout=_CHECK_TIMEOUT_SECONDS,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         db_status = "timeout"
         overall = "unhealthy"
         log.warning("health.db_timeout", timeout=_CHECK_TIMEOUT_SECONDS)
@@ -109,7 +109,7 @@ async def health() -> JSONResponse:
             _check_redis(settings.redis_url),
             timeout=_CHECK_TIMEOUT_SECONDS,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         redis_status = "timeout"
         if overall != "unhealthy":
             overall = "degraded"

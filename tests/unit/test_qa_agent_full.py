@@ -30,28 +30,22 @@ Coverage matrix:
 
 from __future__ import annotations
 
-import asyncio
 import textwrap
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, call
-import xml.etree.ElementTree as ET
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from phalanx.agents.qa import (
-    QAAgent,
-    QAOutcome,
-    QAReport,
     CoverageResult,
     LintResult,
-    TestSuiteResult,
+    QAAgent,
+    QAOutcome,
     TeamBrief,
-    _parse_junit_xml,
+    TestSuiteResult,
     _parse_coverage_xml,
-    _parse_team_brief,
+    _parse_junit_xml,
 )
 
 # Default Python TeamBrief used in tests that don't care about stack
@@ -449,7 +443,6 @@ def _fake_run_factory(responses: dict[str, tuple[int, str, str]]):
     based on the first element of the command list.
     """
     async def fake_run(cmd, cwd=None):
-        key = cmd[0] if cmd else ""
         # Match by any substring in command
         for pattern, response in responses.items():
             if pattern in " ".join(cmd):

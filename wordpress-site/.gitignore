@@ -1,0 +1,66 @@
+# WordPress core (pulled via Docker, not committed)
+wp-admin/
+wp-includes/
+wp-*.php
+!wp-content/
+xmlrpc.php
+license.txt
+readme.html
+
+# Uploads (user-generated content)
+wp-content/uploads/*
+!wp-content/uploads/.gitkeep
+
+# Plugins managed via composer/admin (not committed)
+wp-content/plugins/*
+!wp-content/plugins/.gitkeep
+!wp-content/plugins/teamworks-*
+
+# Must-use plugins
+wp-content/mu-plugins/
+
+# WordPress cache & upgrade
+wp-content/cache/
+wp-content/upgrade/
+wp-content/backup-db/
+wp-content/backups/
+wp-content/blogs.dir/
+wp-content/advanced-cache.php
+wp-content/wp-cache-config.php
+wp-content/db.php
+
+# Default/bundled themes (we only track our custom theme)
+wp-content/themes/twenty*/
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+wp-config-local.php
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker volumes
+db_data/
+redis_data/
+
+# Node (if using build tools for theme assets)
+node_modules/
+package-lock.json
+
+# PHP
+vendor/
+composer.lock
+*.log
+
+# Test artifacts
+.phpunit.result.cache
+coverage/

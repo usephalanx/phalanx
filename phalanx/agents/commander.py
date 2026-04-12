@@ -36,12 +36,12 @@ from phalanx.memory.assembler import MemoryAssembler
 from phalanx.memory.reader import MemoryReader
 from phalanx.queue.celery_app import celery_app
 from phalanx.runtime.task_router import TaskRouter
+from phalanx.workflow.advance_run import advance_run as advance_run_task
 from phalanx.workflow.approval_gate import (
     ApprovalGate,
     ApprovalRejectedError,
     ApprovalTimeoutError,
 )
-from phalanx.workflow.advance_run import advance_run as advance_run_task
 from phalanx.workflow.orchestrator import WorkflowOrchestrator
 from phalanx.workflow.slack_notifier import SlackNotifier
 

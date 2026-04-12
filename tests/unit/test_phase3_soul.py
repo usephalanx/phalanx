@@ -16,7 +16,6 @@ from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.builder import BuilderAgent
 from phalanx.agents.reviewer import ReviewerAgent
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
@@ -90,15 +89,17 @@ def make_trace_orm(
 class TestPlannerReflection:
     def test_planner_has_planner_soul_import(self):
         """PlannerAgent imports PLANNER_SOUL."""
-        from phalanx.agents.planner import PlannerAgent  # noqa: F401
         import inspect
+
         import phalanx.agents.planner as planner_mod
+        from phalanx.agents.planner import PlannerAgent  # noqa: F401
         src = inspect.getsource(planner_mod)
         assert "PLANNER_SOUL" in src
 
     def test_planner_calls_reflect_before_generate_plan(self):
         """PlannerAgent.execute() calls _reflect() before _generate_plan()."""
         import inspect
+
         import phalanx.agents.planner as planner_mod
         src = inspect.getsource(planner_mod.PlannerAgent.execute)
         reflect_pos = src.find("_reflect(")
@@ -110,6 +111,7 @@ class TestPlannerReflection:
     def test_planner_traces_reflection_when_result(self):
         """execute() calls _trace('reflection', ...) when reflection non-empty."""
         import inspect
+
         import phalanx.agents.planner as planner_mod
         src = inspect.getsource(planner_mod.PlannerAgent.execute)
         assert "_trace" in src
@@ -302,6 +304,7 @@ class TestBuilderHandoffNotes:
     def test_run_review_includes_handoff_section(self):
         """_run_review injects builder_handoff into the user message."""
         import inspect
+
         import phalanx.agents.reviewer as rev_mod
         src = inspect.getsource(rev_mod.ReviewerAgent._run_review)
         assert "builder_handoff" in src
@@ -310,6 +313,7 @@ class TestBuilderHandoffNotes:
     def test_run_review_signature_accepts_handoff(self):
         """_run_review accepts builder_handoff param (default '')."""
         import inspect
+
         from phalanx.agents.reviewer import ReviewerAgent
         sig = inspect.signature(ReviewerAgent._run_review)
         assert "builder_handoff" in sig.parameters
@@ -350,7 +354,7 @@ class TestSelfCheckFixLoop:
         plan = {"approach": "simple"}
         existing_files = {"app.py": "# content"}
 
-        import tempfile, os
+        import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -391,19 +395,19 @@ class TestSelfCheckFixLoop:
         task = make_task_orm()
         captured = {}
 
-        import json as _json, tempfile
+        import json as _json
+        import tempfile
         from pathlib import Path
 
         def capture_call(**kwargs):
             captured["messages"] = kwargs["messages"]
             return _json.dumps({"summary": "fixed", "commit_message": "fix", "files": []})
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(agent, "_call_claude", side_effect=capture_call):
-                await agent._fix_self_check_issues(
-                    task, {}, {}, Path(tmpdir),
-                    self_check_result="Missing import for utils.py",
-                )
+        with tempfile.TemporaryDirectory() as tmpdir, patch.object(agent, "_call_claude", side_effect=capture_call):
+            await agent._fix_self_check_issues(
+                task, {}, {}, Path(tmpdir),
+                self_check_result="Missing import for utils.py",
+            )
 
         user_content = captured["messages"][-1]["content"]
         assert "Missing import for utils.py" in user_content
@@ -411,6 +415,7 @@ class TestSelfCheckFixLoop:
     def test_execute_calls_self_check_has_issues(self):
         """execute() references _self_check_has_issues — verify it's in source."""
         import inspect
+
         import phalanx.agents.builder as builder_mod
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_self_check_has_issues" in src
@@ -418,6 +423,7 @@ class TestSelfCheckFixLoop:
     def test_execute_calls_fix_self_check_issues(self):
         """execute() calls _fix_self_check_issues when issues found."""
         import inspect
+
         import phalanx.agents.builder as builder_mod
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_fix_self_check_issues" in src
@@ -425,6 +431,7 @@ class TestSelfCheckFixLoop:
     def test_execute_calls_write_handoff_note(self):
         """execute() calls _write_handoff_note after self-check."""
         import inspect
+
         import phalanx.agents.builder as builder_mod
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         assert "_write_handoff_note" in src
@@ -432,6 +439,7 @@ class TestSelfCheckFixLoop:
     def test_fix_loop_limited_to_one_attempt(self):
         """_fix_self_check_issues is called at most once in execute() (no loop)."""
         import inspect
+
         import phalanx.agents.builder as builder_mod
         src = inspect.getsource(builder_mod.BuilderAgent.execute)
         # Exactly one call to _fix_self_check_issues (not in a while/for loop)

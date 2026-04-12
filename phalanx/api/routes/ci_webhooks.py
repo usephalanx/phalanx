@@ -43,7 +43,9 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
     Look up the CIIntegration for this repo, create a CIFixRun, dispatch task.
     Returns None if no integration found or max_attempts reached.
     """
-    from phalanx.agents.ci_fixer import execute_task  # noqa: PLC0415 (avoid circular at module level)
+    from phalanx.agents.ci_fixer import (
+        execute_task,  # noqa: PLC0415 (avoid circular at module level)
+    )
 
     async with get_db() as session:
         # Find matching integration
@@ -64,15 +66,14 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
             return None
 
         # Author filter — if allowed_authors is set, skip PRs not in the list
-        if integration.allowed_authors and event.pr_author:
-            if event.pr_author not in integration.allowed_authors:
-                log.info(
-                    "ci_webhook.author_filtered",
-                    repo=event.repo_full_name,
-                    author=event.pr_author,
-                    allowed=integration.allowed_authors,
-                )
-                return None
+        if integration.allowed_authors and event.pr_author and event.pr_author not in integration.allowed_authors:
+            log.info(
+                "ci_webhook.author_filtered",
+                repo=event.repo_full_name,
+                author=event.pr_author,
+                allowed=integration.allowed_authors,
+            )
+            return None
 
         # Guard: don't re-fix the same build
         result = await session.execute(

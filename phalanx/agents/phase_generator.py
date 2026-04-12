@@ -136,7 +136,6 @@ class PhaseGenerator:
             dict with key "phases": list of PhaseSpec dicts
         """
         execution_mode = intent_doc.get("_execution_mode", "mvp_build")
-        request_type = intent_doc.get("_request_type", "vague_request")
 
         self._log.info(
             "phase_generator.start",

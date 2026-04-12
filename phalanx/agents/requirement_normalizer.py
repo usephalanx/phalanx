@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from phalanx.agents.intent_router import RouterResult
 from phalanx.agents.openai_client import OpenAIClient
+
+if TYPE_CHECKING:
+    from phalanx.agents.intent_router import RouterResult
 
 log = structlog.get_logger(__name__)
 

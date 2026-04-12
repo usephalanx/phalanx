@@ -42,14 +42,14 @@ class DagResolver:
         if not nodes:
             return DagPlan(groups=[], critical_path_minutes=0)
 
-        in_degree: dict[str, int] = {tid: 0 for tid in nodes}
+        in_degree: dict[str, int] = dict.fromkeys(nodes, 0)
         for node in nodes.values():
             for dep_id in node.deps:
                 if dep_id in in_degree:
                     in_degree[node.task_id] = in_degree[node.task_id] + 1
 
         # Recalculate properly
-        in_degree = {tid: 0 for tid in nodes}
+        in_degree = dict.fromkeys(nodes, 0)
         for node in nodes.values():
             for dep_id in node.deps:
                 if dep_id in nodes:

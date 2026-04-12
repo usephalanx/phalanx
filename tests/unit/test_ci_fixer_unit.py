@@ -11,7 +11,6 @@ from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import _extract_failure_section, _truncate
 from phalanx.gateway.command_parser import CommandType, parse_command
 
-
 # ── CIFailureEvent ─────────────────────────────────────────────────────────────
 
 class TestCIFailureEvent:
@@ -295,7 +294,7 @@ class TestCIFixerAgentHelpers:
 
 class TestCIFixerSoul:
     def test_soul_registered(self):
-        from phalanx.agents.soul import get_soul, CI_FIXER_SOUL
+        from phalanx.agents.soul import CI_FIXER_SOUL, get_soul
         assert get_soul("ci_fixer") == CI_FIXER_SOUL
 
     def test_soul_mentions_never_change_tests(self):
@@ -313,10 +312,8 @@ class TestCIFixerSoul:
 
 # ── _generate_fix — JSON parsing (mocked _call_claude) ────────────────────────
 
-import asyncio
-from unittest.mock import patch
+from unittest.mock import patch  # noqa: E402
 
-import pytest
 
 class TestGenerateFix:
     def _make_agent(self):

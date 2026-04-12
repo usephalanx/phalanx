@@ -28,15 +28,14 @@ Queue:      "sre"
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select, update
@@ -47,9 +46,6 @@ from phalanx.db.models import Demo, Project, Run, Task, WorkOrder
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
 from phalanx.workflow.slack_notifier import SlackNotifier
-
-if TYPE_CHECKING:
-    pass
 
 log = structlog.get_logger(__name__)
 
@@ -278,7 +274,7 @@ def _validate_dockerfile(content: str) -> None:
       - First non-comment line doesn't start with FROM/ARG
       - No CMD or ENTRYPOINT found (container won't start)
     """
-    lines = [l.strip() for l in content.splitlines() if l.strip() and not l.strip().startswith("#")]
+    lines = [ln.strip() for ln in content.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     if not lines:
         raise ValueError("Dockerfile is empty after stripping comments")
     first_keyword = lines[0].split()[0].upper() if lines[0].split() else ""
@@ -389,10 +385,9 @@ def _detect_app_type(repo_path: str) -> tuple[str, int]:
     pyproject_path = os.path.join(repo_path, "pyproject.toml")
     if os.path.exists(req_path) or os.path.exists(pyproject_path):
         try:
-            content = (
-                open(req_path).read().lower() if os.path.exists(req_path)
-                else open(pyproject_path).read().lower()
-            )
+            chosen = req_path if os.path.exists(req_path) else pyproject_path
+            with open(chosen) as fh:
+                content = fh.read().lower()
         except OSError:
             content = ""
         if "django" in content:
@@ -769,7 +764,7 @@ class SREAgent(BaseAgent):
         builder_context = ""
         if files_produced:
             builder_context = (
-                f"\nBUILDER FILES PRODUCED\n"
+                "\nBUILDER FILES PRODUCED\n"
                 + "\n".join(f"  {f}" for f in files_produced[:60])
                 + "\n"
             )
@@ -1246,29 +1241,29 @@ Rules:
         except Exception:
             pass  # doesn't exist — fine
 
-        _FALLBACK_COMMANDS: dict[str, list[str]] = {
+        _fallback_commands: dict[str, list[str]] = {
             "fastapi": ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
             "flask":   ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
             "express": ["node", "server.js"],
         }
-        fallback_cmd = _FALLBACK_COMMANDS.get(slug.split("-")[0], None) if slug else None
+        fallback_cmd = _fallback_commands.get(slug.split("-")[0]) if slug else None
 
         self._log.info("sre.docker.run", image=image_name, container=container_name)
-        run_kwargs: dict = dict(
-            image=image_name,
-            name=container_name,
-            detach=True,
-            network=settings.demo_docker_network,
-            labels={
+        run_kwargs: dict = {
+            "image": image_name,
+            "name": container_name,
+            "detach": True,
+            "network": settings.demo_docker_network,
+            "labels": {
                 "phalanx.demo": "true",
                 "phalanx.slug": slug,
                 "phalanx.run_id": self.run_id,
                 "phalanx.started_at": datetime.now(UTC).isoformat(),
             },
-            mem_limit="512m",
-            nano_cpus=500_000_000,  # 0.5 CPUs
-            restart_policy={"Name": "no"},
-        )
+            "mem_limit": "512m",
+            "nano_cpus": 500_000_000,  # 0.5 CPUs
+            "restart_policy": {"Name": "no"},
+        }
         try:
             container = client.containers.run(**run_kwargs)
         except Exception as exc:
@@ -1357,16 +1352,16 @@ Rules:
             # Ensure the demos conf dir exists inside nginx container
             nginx.exec_run("mkdir -p /etc/nginx/conf.d/demos")
             # docker cp the file in
-            with open(tmp_path, "rb") as fh:
-                import tarfile, io  # noqa: PLC0415
-                buf = io.BytesIO()
-                with tarfile.open(fileobj=buf, mode="w") as tar:
-                    info = tarfile.TarInfo(name=f"{slug}.conf")
-                    data = conf_content.encode()
-                    info.size = len(data)
-                    tar.addfile(info, io.BytesIO(data))
-                buf.seek(0)
-                nginx.put_archive("/etc/nginx/conf.d/demos", buf.read())
+            import io  # noqa: PLC0415
+            import tarfile
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                info = tarfile.TarInfo(name=f"{slug}.conf")
+                data = conf_content.encode()
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            buf.seek(0)
+            nginx.put_archive("/etc/nginx/conf.d/demos", buf.read())
 
             self._log.info("sre.nginx.conf_written", slug=slug, container_ip=container_ip)
         except Exception as exc:
@@ -1466,6 +1461,46 @@ Rules:
 # ── Portal helpers (called from API) ─────────────────────────────────────────
 
 
+async def _health_check(container_name: str, internal_port: int) -> bool:
+    """
+    Module-level health check used by portal helpers.
+    Polls the container's /health endpoint until it responds 200 or retries exhausted.
+    """
+    import docker  # noqa: PLC0415
+
+    client = docker.from_env()
+
+    for attempt in range(_HEALTH_CHECK_RETRIES):
+        await asyncio.sleep(_HEALTH_CHECK_INTERVAL)
+        try:
+            container = client.containers.get(container_name)
+            if container.status != "running":
+                log.warning("sre.health.not_running", attempt=attempt, status=container.status)
+                continue
+            exit_code, _ = container.exec_run(
+                f"sh -c '"
+                f"curl -sf http://localhost:{internal_port}/health 2>/dev/null || "
+                f"curl -sf http://localhost:{internal_port}/ 2>/dev/null || "
+                f"python3 -c \""
+                f"import urllib.request; urllib.request.urlopen("
+                f"\\\"http://localhost:{internal_port}/health\\\""
+                f").read()\" 2>/dev/null || "
+                f"python3 -c \""
+                f"import urllib.request; urllib.request.urlopen("
+                f"\\\"http://localhost:{internal_port}/\\\""
+                f").read()\" 2>/dev/null"
+                f"'"
+            )
+            if exit_code == 0:
+                log.info("sre.health.ok", attempt=attempt)
+                return True
+        except Exception as exc:
+            log.debug("sre.health.check_error", attempt=attempt, error=str(exc))
+
+    log.warning("sre.health.failed", retries=_HEALTH_CHECK_RETRIES)
+    return False
+
+
 async def start_demo_by_id(demo_id: str) -> None:
     """
     Start a STOPPED/FAILED demo container and re-wire nginx.
@@ -1500,11 +1535,11 @@ async def start_demo_by_id(demo_id: str) -> None:
             raise ValueError("Demo has no image — it must be rebuilt by re-submitting the work order.")
         try:
             client.images.get(demo.image_name)
-        except docker.errors.ImageNotFound:
+        except docker.errors.ImageNotFound as exc:
             raise ValueError(
                 f"Docker image '{demo.image_name}' no longer exists (pruned after deploy). "
                 "Re-submit the work order to rebuild."
-            )
+            ) from exc
 
         # ── LRU eviction ─────────────────────────────────────────────────────
         running = await _get_running_demos_for_portal()
@@ -1512,10 +1547,8 @@ async def start_demo_by_id(demo_id: str) -> None:
             lru = min(running, key=lambda d: d.last_accessed_at or d.created_at)
             log.info("sre.portal.lru_evict", slug=lru.slug, running=len(running), max=settings.demo_max_running)
             if lru.container_name:
-                try:
+                with contextlib.suppress(Exception):
                     client.containers.get(lru.container_name).stop(timeout=15)
-                except Exception:
-                    pass
             async with get_db() as session:
                 await session.execute(
                     update(Demo).where(Demo.id == lru.id).values(status="STOPPED", container_id=None)
@@ -1532,7 +1565,7 @@ async def start_demo_by_id(demo_id: str) -> None:
                 pass  # Normal — container doesn't exist yet
 
         # ── Start container ───────────────────────────────────────────────────
-        _FALLBACK_COMMANDS: dict[str, list[str]] = {
+        _fallback_commands: dict[str, list[str]] = {
             "fastapi":    ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
             "flask":      ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5000"],
             "express":    ["node", "server.js"],
@@ -1540,25 +1573,25 @@ async def start_demo_by_id(demo_id: str) -> None:
             "django":     ["python", "manage.py", "runserver", "0.0.0.0:8000"],
             "rails":      ["bundle", "exec", "ruby", "app.rb", "-o", "0.0.0.0", "-p", "3000"],
         }
-        fallback_cmd = _FALLBACK_COMMANDS.get(demo.app_type or "") if demo.app_type else None
+        fallback_cmd = _fallback_commands.get(demo.app_type or "") if demo.app_type else None
         internal_port = demo.internal_port or 80
-        run_kwargs: dict = dict(
-            image=demo.image_name,
-            name=demo.container_name,
-            detach=True,
-            network=settings.demo_docker_network,
-            labels={"phalanx.demo": "true", "phalanx.slug": demo.slug},
-            mem_limit="512m",
-            nano_cpus=500_000_000,
-            restart_policy={"Name": "no"},
-            environment={
+        run_kwargs: dict = {
+            "image": demo.image_name,
+            "name": demo.container_name,
+            "detach": True,
+            "network": settings.demo_docker_network,
+            "labels": {"phalanx.demo": "true", "phalanx.slug": demo.slug},
+            "mem_limit": "512m",
+            "nano_cpus": 500_000_000,
+            "restart_policy": {"Name": "no"},
+            "environment": {
                 "DEMO_BASE_PATH": f"/{demo.slug}",
                 "PORT": str(internal_port),
                 "PUBLIC_URL": f"/{demo.slug}",
                 "BASE_URL": f"/{demo.slug}",
                 "VITE_BASE": f"/{demo.slug}/",
             },
-        )
+        }
         try:
             container = client.containers.run(**run_kwargs)
         except docker.errors.APIError as exc:
@@ -1578,7 +1611,8 @@ async def start_demo_by_id(demo_id: str) -> None:
         )
         if container_ip:
             try:
-                import io, tarfile  # noqa: PLC0415
+                import io
+                import tarfile  # noqa: PLC0415
                 conf_content = _nginx_conf_for_slug(demo.slug, container_ip, internal_port)
                 nginx = client.containers.get(settings.demo_nginx_container)
                 nginx.exec_run("mkdir -p /etc/nginx/conf.d/demos")
@@ -1649,10 +1683,8 @@ async def stop_demo_by_id(demo_id: str) -> None:
     try:
         client = docker.from_env()
         if demo.container_name:
-            try:
+            with contextlib.suppress(Exception):
                 client.containers.get(demo.container_name).stop(timeout=15)
-            except Exception:
-                pass
 
         # Remove nginx config snippet
         conf_path = os.path.join(settings.demo_nginx_conf_dir, f"{demo.slug}.conf")
@@ -1791,7 +1823,8 @@ async def _rewire_nginx() -> dict:  # pragma: no cover
                     results["errors"].append(f"{demo.slug}: no container IP")
                     continue
 
-                import io, tarfile  # noqa: PLC0415
+                import io
+                import tarfile  # noqa: PLC0415
 
                 conf_content = _nginx_conf_for_slug(
                     demo.slug, container_ip, demo.internal_port or 80

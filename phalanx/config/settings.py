@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     forge_s3_bucket: str = "forge-artifacts-dev"
 
     # ── Git ops ───────────────────────────────────────────────────────────────
-    git_workspace: str = "/tmp/forge-repos"
+    git_workspace: str = "/tmp/phalanx-repos"
     git_author_name: str = "FORGE"
     git_author_email: str = "forge-bot@acme.com"
 

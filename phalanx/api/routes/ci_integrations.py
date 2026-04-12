@@ -66,7 +66,7 @@ class CIIntegrationResponse(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def from_orm(cls, obj: CIIntegration) -> "CIIntegrationResponse":
+    def from_orm(cls, obj: CIIntegration) -> CIIntegrationResponse:
         return cls(
             id=obj.id,
             repo_full_name=obj.repo_full_name,

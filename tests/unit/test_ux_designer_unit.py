@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from phalanx.agents.ux_designer import UXDesignerAgent, is_ui_project
 from phalanx.agents.commander import _inject_ux_designer_task
-
+from phalanx.agents.ux_designer import UXDesignerAgent, is_ui_project
 
 # ── is_ui_project ─────────────────────────────────────────────────────────────
 
@@ -182,7 +181,7 @@ class TestSoulIntegration:
         assert UXDesignerAgent.AGENT_ROLE == "ux_designer"
 
     def test_soul_prompts_registered(self):
-        from phalanx.agents.soul import get_soul, get_reflection_prompt, UX_DESIGNER_SOUL
+        from phalanx.agents.soul import UX_DESIGNER_SOUL, get_reflection_prompt, get_soul
         assert get_soul("ux_designer") == UX_DESIGNER_SOUL
         assert get_reflection_prompt("ux_designer") is not None
 
@@ -207,7 +206,6 @@ class TestSoulIntegration:
     async def test_execute_writes_design_md(self):
         """execute() writes DESIGN.md to workspace and marks task COMPLETED."""
         import tempfile
-        from pathlib import Path
 
         agent = _make_agent()
 
@@ -233,22 +231,22 @@ class TestSoulIntegration:
         async def mock_get_db():
             yield mock_session
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with (
-                patch("phalanx.agents.ux_designer.settings") as mock_settings,
-                patch("phalanx.agents.ux_designer.get_db", mock_get_db),
-                patch.object(agent, "_load_task", return_value=mock_task),
-                patch.object(agent, "_load_run", return_value=mock_run),
-                patch.object(agent, "_load_planner_context", return_value=""),
-                patch.object(agent, "_reflect", return_value="This is a web todo app."),
-                patch.object(agent, "_trace", new_callable=AsyncMock),
-                patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 1. Brand Identity\nApp: Todo\n## 6. Logo\n<svg></svg>"),
-                patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
-                patch.object(agent, "_write_design_handoff", return_value="Clean minimal design."),
-                patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
-            ):
-                mock_settings.git_workspace = tmpdir
-                result = await agent.execute()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("phalanx.agents.ux_designer.settings") as mock_settings,
+            patch("phalanx.agents.ux_designer.get_db", mock_get_db),
+            patch.object(agent, "_load_task", return_value=mock_task),
+            patch.object(agent, "_load_run", return_value=mock_run),
+            patch.object(agent, "_load_planner_context", return_value=""),
+            patch.object(agent, "_reflect", return_value="This is a web todo app."),
+            patch.object(agent, "_trace", new_callable=AsyncMock),
+            patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 1. Brand Identity\nApp: Todo\n## 6. Logo\n<svg></svg>"),
+            patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
+            patch.object(agent, "_write_design_handoff", return_value="Clean minimal design."),
+            patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
+        ):
+            mock_settings.git_workspace = tmpdir
+            result = await agent.execute()
 
         assert result.success is True
         assert "files_written" in result.output
@@ -284,21 +282,21 @@ class TestSoulIntegration:
             yield mock_session
 
         import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with (
-                patch("phalanx.agents.ux_designer.settings") as mock_settings,
-                patch("phalanx.agents.ux_designer.get_db", mock_get_db),
-                patch.object(agent, "_load_task", return_value=mock_task),
-                patch.object(agent, "_load_run", return_value=mock_run),
-                patch.object(agent, "_load_planner_context", return_value=""),
-                patch.object(agent, "_reflect", return_value="This brief is underspecified — I cannot determine the target audience."),
-                patch.object(agent, "_trace", side_effect=capture_trace),
-                patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 6. Logo\n<svg></svg>"),
-                patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
-                patch.object(agent, "_write_design_handoff", return_value=""),
-                patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
-            ):
-                mock_settings.git_workspace = tmpdir
-                await agent.execute()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("phalanx.agents.ux_designer.settings") as mock_settings,
+            patch("phalanx.agents.ux_designer.get_db", mock_get_db),
+            patch.object(agent, "_load_task", return_value=mock_task),
+            patch.object(agent, "_load_run", return_value=mock_run),
+            patch.object(agent, "_load_planner_context", return_value=""),
+            patch.object(agent, "_reflect", return_value="This brief is underspecified — I cannot determine the target audience."),
+            patch.object(agent, "_trace", side_effect=capture_trace),
+            patch.object(agent, "_generate_design", return_value="# DESIGN.md\n## 6. Logo\n<svg></svg>"),
+            patch.object(agent, "_self_check_design", return_value="Design self-check passed."),
+            patch.object(agent, "_write_design_handoff", return_value=""),
+            patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
+        ):
+            mock_settings.git_workspace = tmpdir
+            await agent.execute()
 
         assert "uncertainty" in traces_emitted

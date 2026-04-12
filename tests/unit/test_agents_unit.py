@@ -104,7 +104,7 @@ class TestPlannerAgent:
         plan = {
             "task_title": "Implement auth",
             "approach": "Use JWT tokens",
-            "files": ["forge/auth.py"],
+            "files": ["phalanx/auth.py"],
             "implementation_steps": ["Create JWT handler"],
             "test_strategy": "Unit tests",
             "acceptance_criteria": ["Auth works"],

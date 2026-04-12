@@ -34,11 +34,10 @@ from typing import Any
 import structlog
 from sqlalchemy import select, update
 
-from phalanx.agents.base import AgentResult, BaseAgent, get_anthropic_client, mark_task_failed
+from phalanx.agents.base import AgentResult, BaseAgent, mark_task_failed
 from phalanx.agents.soul import (
     UX_DESIGNER_SELF_CHECK_PROMPT,
     UX_DESIGNER_SOUL,
-    UX_DESIGNER_REFLECTION_PROMPT,
 )
 from phalanx.config.settings import get_settings
 from phalanx.db.models import Artifact, Run, Task
@@ -530,7 +529,7 @@ def execute_task(self: Any, task_id: str, run_id: str, **kwargs: Any) -> dict:
     except Exception as exc:
         log.exception("ux_designer.celery_task_unhandled", task_id=task_id, run_id=run_id)
         asyncio.run(mark_task_failed(task_id, str(exc)))
-        raise self.retry(exc=exc, countdown=30)
+        raise self.retry(exc=exc, countdown=30) from exc
 
     if not result.success:
         log.error("ux_designer.task_failed", task_id=task_id, run_id=run_id, error=result.error)

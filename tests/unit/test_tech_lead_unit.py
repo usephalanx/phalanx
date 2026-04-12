@@ -25,7 +25,6 @@ import pytest
 
 from phalanx.agents.tech_lead import TechLeadAgent
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,9 +245,11 @@ class TestTechLeadAgent:
         wo = _make_work_order()
         pm_output = {"epics": _make_epics(2), "app_type": "web"}
 
-        with patch.object(agent, "_call_claude", return_value=_valid_response()):
-            with patch("phalanx.agents.tech_lead.DagResolver.resolve", side_effect=Exception("cycle!")):
-                result = await agent.execute_for_run(session, wo, pm_output)
+        with (
+            patch.object(agent, "_call_claude", return_value=_valid_response()),
+            patch("phalanx.agents.tech_lead.DagResolver.resolve", side_effect=Exception("cycle!")),
+        ):
+            result = await agent.execute_for_run(session, wo, pm_output)
 
         assert result.success is True
         # fallback = sum of all task estimated_minutes = 30 + 45 + 3 + 5 = 83
@@ -285,4 +286,4 @@ class TestTechLeadAgent:
         agent = _make_agent()
         import asyncio
         with pytest.raises(NotImplementedError):
-            asyncio.get_event_loop().run_until_complete(agent.execute())
+            asyncio.run(agent.execute())

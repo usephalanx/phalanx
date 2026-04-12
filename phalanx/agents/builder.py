@@ -22,6 +22,7 @@ Design (AD-001):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -292,8 +293,8 @@ class BuilderAgent(BaseAgent):
     def _workspace_path(self, run: Run, branch_name: str | None = None) -> Path:
         """
         Flat, human-readable, run-isolated workspace path.
-        Format: /tmp/forge-repos/{project_id}/{run_id}/{branch_slug}/ (with branch_name)
-                /tmp/forge-repos/{project_id}/{run_id}/              (legacy)
+        Format: /tmp/phalanx-repos/{project_id}/{run_id}/{branch_slug}/ (with branch_name)
+                /tmp/phalanx-repos/{project_id}/{run_id}/              (legacy)
         """
         import re  # noqa: PLC0415
         base = Path(settings.git_workspace)
@@ -307,7 +308,7 @@ class BuilderAgent(BaseAgent):
     def _make_workspace_path(self, run: Run, work_order_title: str = "") -> Path:
         """
         Build the isolated workspace path using the work order title as app slug.
-        Format: /tmp/forge-repos/{app-slug}-{run_id[:8]}/
+        Format: /tmp/phalanx-repos/{app-slug}-{run_id[:8]}/
         """
         import re  # noqa: PLC0415
         base = Path(settings.git_workspace)
@@ -425,7 +426,7 @@ class BuilderAgent(BaseAgent):
                     pass
 
         # Always include shared data/type files if they exist (critical for cross-task consistency)
-        _SHARED_FILES = [
+        _SHARED_FILES = [  # noqa: N806
             "lib/data.ts", "lib/types.ts", "lib/constants.ts",
             "src/lib/data.ts", "src/lib/types.ts",
             "app/page.tsx", "app/layout.tsx",
@@ -631,28 +632,24 @@ Return ONLY valid JSON — no markdown fences.
         """
         import asyncio as _asyncio  # noqa: PLC0415
 
-        _VAGUE_CHECK_SYSTEM = """\
-You are a pre-flight checker for a code-writing AI agent.
+        _VAGUE_CHECK_SYSTEM = (  # noqa: N806
+            "You are a pre-flight checker for a code-writing AI agent.\n\n"
+            "Given a task title and description, decide whether the description is specific\n"
+            "enough for a code writer to implement without making technology or design choices.\n\n"
+            "A description is VAGUE if it:\n"
+            "- Does not mention the stack, framework, or language\n"
+            '- Uses vague terms like "simple", "basic", "nice", "modern" without specifics\n'
+            "- Leaves key technical decisions (file structure, API shape, state management) undefined\n"
+            "- Is a single sentence with no file paths, function names, or concrete requirements\n\n"
+            "A description is SPECIFIC enough if it mentions framework, file paths or components\n"
+            "to create, or concrete acceptance criteria.\n\n"
+            "Return ONLY valid JSON:\n"
+            '{"is_vague": true, "reason": "one sentence why"}\n'
+            "or\n"
+            '{"is_vague": false, "reason": ""}\n'
+        )
 
-Given a task title and description, decide whether the description is specific
-enough for a code writer to implement without making technology or design choices.
-
-A description is VAGUE if it:
-- Does not mention the stack, framework, or language
-- Uses vague terms like "simple", "basic", "nice", "modern" without specifics
-- Leaves key technical decisions (file structure, API shape, state management) undefined
-- Is a single sentence with no file paths, function names, or concrete requirements
-
-A description is SPECIFIC enough if it mentions framework, file paths or components
-to create, or concrete acceptance criteria.
-
-Return ONLY valid JSON:
-{"is_vague": true, "reason": "one sentence why"}
-or
-{"is_vague": false, "reason": ""}
-"""
-
-        _ENRICHMENT_SYSTEM = """\
+        _enrichment_system = """\
 You are a task clarifier for a code-writing AI agent.
 
 A builder agent has a vague task description. You have access to the planner's
@@ -724,7 +721,7 @@ Return ONLY valid JSON:
                 None,
                 lambda: self._call_claude(
                     messages=enrich_messages,
-                    system=_ENRICHMENT_SYSTEM,
+                    system=_enrichment_system,
                     max_tokens=512,
                 ),
             )
@@ -853,7 +850,7 @@ Return ONLY valid JSON:
             "commit_message": f"feat: {task.title[:60]}",
             "files": [
                 {
-                    "path": "forge/_generated/output.txt",
+                    "path": "phalanx/_generated/output.txt",
                     "action": "create",
                     "content": raw,
                 }
@@ -1078,7 +1075,7 @@ Rules:
     async def _write_qa_md(
         self,
         workspace: Path,
-        task: "Task",
+        task: Task,
         plan: dict,
         files_written: list[str],
     ) -> Path | None:
@@ -1093,10 +1090,8 @@ Rules:
             all_files: list[str] = []
             for p in sorted(workspace.rglob("*")):
                 if p.is_file() and ".git" not in str(p) and "node_modules" not in str(p):
-                    try:
+                    with contextlib.suppress(ValueError):
                         all_files.append(str(p.relative_to(workspace)))
-                    except ValueError:
-                        pass
 
             # Also read RUNNING.md if it exists for stack hints
             running_md = ""
@@ -1111,7 +1106,7 @@ Rules:
                 f"RUNNING.md:\n{running_md or '(not found)'}\n\n"
                 f"All files in workspace:\n"
                 + "\n".join(all_files[:150])
-                + f"\n\nFiles written in this final task:\n"
+                + "\n\nFiles written in this final task:\n"
                 + "\n".join(files_written[:50])
                 + "\n\nProduce the QA.md YAML now."
             )
@@ -1260,10 +1255,8 @@ Rules:
                             "builder.git.push_conflict_unresolvable",
                             error=str(rebase_exc),
                         )
-                        try:
+                        with contextlib.suppress(Exception):
                             repo.git.rebase("--abort")
-                        except Exception:
-                            pass
 
             return {"branch": branch, "sha": sha, "message": commit_message.split("\n")[0]}
 
@@ -1383,10 +1376,8 @@ Rules:
         if _re.fullmatch(r"self[\-\s]check[\s:]+(passed\.?)", normalized):
             return False
         # Contains pass phrase somewhere but also has other content → check for issues
-        if "self-check passed" in normalized and len(normalized) < 50:
-            return False
         # Any other non-empty content is treated as issues
-        return True
+        return not ("self-check passed" in normalized and len(normalized) < 50)
 
     async def _fix_self_check_issues(
         self,
@@ -1401,7 +1392,6 @@ Rules:
         Returns {} on failure (non-fatal). Returns parsed changes dict on success.
         """
         try:
-            import json as _json  # noqa: PLC0415
 
             system, messages = self._build_prompt(task, plan, existing_files)
             fix_instruction = (

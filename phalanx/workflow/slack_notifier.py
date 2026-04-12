@@ -28,7 +28,7 @@ Usage (in Commander / Orchestrator):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -164,7 +164,7 @@ class SlackNotifier:
     # ── Construction ──────────────────────────────────────────────────────────
 
     @classmethod
-    async def from_run(cls, run_id: str, session: AsyncSession) -> "SlackNotifier":
+    async def from_run(cls, run_id: str, session: AsyncSession) -> SlackNotifier:
         """
         Load Slack context for the given run_id and return a configured notifier.
 

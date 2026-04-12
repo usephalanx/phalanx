@@ -11,21 +11,16 @@ Tests:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from phalanx.agents.verification_profiles import (
     PROFILES,
-    VerificationProfile,
+    _discover_fastapi_routers,
+    _discover_react_components,
     detect_tech_stack,
     get_profile,
     run_profile_checks,
-    _discover_react_components,
-    _discover_fastapi_routers,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Profile registry sanity
@@ -213,7 +208,7 @@ def test_run_profile_skips_install_when_cmd_empty(tmp_path):
     with patch("phalanx.agents.verification_profiles._run", return_value=(True, "", "")) as mock_run:
         # Create entry point
         (tmp_path / "main.go").write_text("package main\nfunc main() {}\n")
-        errors = run_profile_checks(profile, tmp_path)
+        run_profile_checks(profile, tmp_path)
     # install should not have been called with empty list
     calls = [c for c in mock_run.call_args_list if c[0][0] == []]
     assert len(calls) == 0

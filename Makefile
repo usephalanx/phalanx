@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# FORGE — Developer Makefile
+# PHALANX — Developer Makefile
 # Run `make help` to see all commands
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -8,12 +8,12 @@
         flower clean reset deploy deploy-migrate ssh-server logs-server status-server
 
 COMPOSE = docker compose
-FORGE_API = $(COMPOSE) exec forge-api
-FORGE_WORKER = $(COMPOSE) exec forge-worker
+PHALANX_API = $(COMPOSE) exec phalanx-api
+PHALANX_WORKER = $(COMPOSE) exec phalanx-worker
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 help:
-	@echo "FORGE Development Commands"
+	@echo "PHALANX Development Commands"
 	@echo ""
 	@echo "  SETUP"
 	@echo "  make setup          Copy .env.example → .env, pull images, build"
@@ -31,7 +31,7 @@ help:
 	@echo "  make logs           Tail all service logs"
 	@echo "  make logs-api       Tail API logs only"
 	@echo "  make logs-worker    Tail worker logs"
-	@echo "  make shell          Open shell in forge-api container"
+	@echo "  make shell          Open shell in phalanx-api container"
 	@echo "  make flower         Open Flower UI (Celery monitor)"
 	@echo ""
 	@echo "  QUALITY"
@@ -68,7 +68,7 @@ setup:
 # ── Services ──────────────────────────────────────────────────────────────────
 up:
 	$(COMPOSE) up -d
-	@echo "✅ FORGE running. API: http://localhost:8000 | Flower: http://localhost:5555"
+	@echo "✅ PHALANX running. API: http://localhost:8000 | Flower: http://localhost:5555"
 
 down:
 	$(COMPOSE) down
@@ -90,28 +90,28 @@ reset:
 
 # ── Database ──────────────────────────────────────────────────────────────────
 migrate:
-	$(FORGE_API) alembic upgrade head
+	$(PHALANX_API) alembic upgrade head
 
 migrate-new:
 	@[ -n "$(m)" ] || (echo "Usage: make migrate-new m=migration_name" && exit 1)
-	$(FORGE_API) alembic revision --autogenerate -m "$(m)"
+	$(PHALANX_API) alembic revision --autogenerate -m "$(m)"
 
 seed:
-	$(FORGE_API) python scripts/seed_team.py
+	$(PHALANX_API) python scripts/seed_team.py
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
 logs:
 	$(COMPOSE) logs -f --tail=100
 
 logs-api:
-	$(COMPOSE) logs -f forge-api --tail=100
+	$(COMPOSE) logs -f phalanx-api --tail=100
 
 logs-worker:
-	$(COMPOSE) logs -f forge-worker forge-worker-builder --tail=100
+	$(COMPOSE) logs -f phalanx-worker phalanx-worker-builder --tail=100
 
 # ── Dev tools ─────────────────────────────────────────────────────────────────
 shell:
-	$(FORGE_API) /bin/bash
+	$(PHALANX_API) /bin/bash
 
 flower:
 	@echo "Opening Flower at http://localhost:5555"
@@ -119,47 +119,47 @@ flower:
 
 # ── Testing ───────────────────────────────────────────────────────────────────
 test:
-	$(FORGE_API) pytest tests/ -v
+	$(PHALANX_API) pytest tests/ -v
 
 test-unit:
-	$(FORGE_API) pytest tests/unit/ -v
+	$(PHALANX_API) pytest tests/unit/ -v
 
 test-e2e:
-	$(FORGE_API) pytest tests/integration/ -v -s
+	$(PHALANX_API) pytest tests/integration/ -v -s
 
 test-skills:
-	$(FORGE_API) pytest tests/skill_tests/ -v
+	$(PHALANX_API) pytest tests/skill_tests/ -v
 
 # ── Quality ───────────────────────────────────────────────────────────────────
 lint:
-	$(FORGE_API) ruff check forge/ tests/
+	$(PHALANX_API) ruff check phalanx/ tests/
 
 format:
-	$(FORGE_API) ruff format forge/ tests/
-	$(FORGE_API) ruff check --fix forge/ tests/
+	$(PHALANX_API) ruff format phalanx/ tests/
+	$(PHALANX_API) ruff check --fix phalanx/ tests/
 
 typecheck:
-	$(FORGE_API) mypy forge/
+	$(PHALANX_API) mypy phalanx/
 
 # ── Config + Skills ───────────────────────────────────────────────────────────
 validate-config:
-	$(FORGE_API) python scripts/validate_config.py
+	$(PHALANX_API) python scripts/validate_config.py
 
 validate-skills:
-	$(FORGE_API) python scripts/validate_skills.py
+	$(PHALANX_API) python scripts/validate_skills.py
 
 skill-gaps:
 	@[ -n "$(team)" ] || (echo "Usage: make skill-gaps team=website-alpha project=acme-website" && exit 1)
-	$(FORGE_API) python scripts/skill_gap_report.py --team $(team) --project $(project)
+	$(PHALANX_API) python scripts/skill_gap_report.py --team $(team) --project $(project)
 
 # ── Project ops ───────────────────────────────────────────────────────────────
 onboard:
 	@[ -n "$(project)" ] || (echo "Usage: make onboard project=acme-website" && exit 1)
-	$(FORGE_API) python scripts/onboard_project.py --project $(project)
+	$(PHALANX_API) python scripts/onboard_project.py --project $(project)
 
 status:
 	@[ -n "$(project)" ] || (echo "Usage: make status project=acme-website" && exit 1)
-	$(FORGE_API) python scripts/project_status.py --project $(project)
+	$(PHALANX_API) python scripts/project_status.py --project $(project)
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 SERVER_IP = 44.233.157.41
@@ -179,7 +179,7 @@ ssh-server:
 	$(SSH_CMD)
 
 logs-server:
-	$(SSH_CMD) 'cd /home/ubuntu/forge && docker compose logs -f --tail=100'
+	$(SSH_CMD) 'cd /home/ubuntu/phalanx && docker compose logs -f --tail=100'
 
 status-server:
-	$(SSH_CMD) 'cd /home/ubuntu/forge && docker compose ps && echo "" && docker stats --no-stream'
+	$(SSH_CMD) 'cd /home/ubuntu/phalanx && docker compose ps && echo "" && docker stats --no-stream'

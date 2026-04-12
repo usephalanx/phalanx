@@ -16,12 +16,13 @@ from __future__ import annotations
 import io
 import re
 import zipfile
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import httpx
 import structlog
 
-from phalanx.ci_fixer.events import CIFailureEvent
+if TYPE_CHECKING:
+    from phalanx.ci_fixer.events import CIFailureEvent
 
 log = structlog.get_logger(__name__)
 

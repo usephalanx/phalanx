@@ -30,7 +30,7 @@ command.upgrade(cfg,'head')
 "
 
 # 4. Run tests (must pass ≥70% coverage)
-pytest --cov=forge --cov-report=term-missing --cov-fail-under=70 -x -q
+pytest --cov=phalanx --cov-report=term-missing --cov-fail-under=70 -x -q
 ```
 
 ## Code Standards
@@ -40,13 +40,13 @@ pytest --cov=forge --cov-report=term-missing --cov-fail-under=70 -x -q
 - Celery workers must set `FORGE_WORKER=1` (enforces NullPool)
 - All new agents inherit from `BaseAgent` and register a Celery task
 - PRs must not drop test coverage below 70%
-- Run `ruff check forge/` and `ruff format forge/` before submitting
+- Run `ruff check phalanx/` and `ruff format phalanx/` before submitting
 
 ## PR Process
 
 1. Fork the repo and create a feature branch: `git checkout -b feat/your-feature`
 2. Make your changes with tests
-3. Ensure `pytest --cov=forge --cov-fail-under=70 -x -q` passes
+3. Ensure `pytest --cov=phalanx --cov-fail-under=70 -x -q` passes
 4. Open a PR against `main` with a clear description of what and why
 5. A maintainer will review within a few days
 

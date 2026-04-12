@@ -19,14 +19,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from phalanx.workflow.slack_notifier import (
-    SlackNotifier,
-    _NON_FATAL_ROLES,
-    _GROUP_ICONS,
     _DEFAULT_GROUP_ICON,
+    _GROUP_ICONS,
+    _NON_FATAL_ROLES,
+    SlackNotifier,
     _group_icon,
     _task_group,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

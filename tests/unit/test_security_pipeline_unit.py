@@ -1,5 +1,5 @@
 """
-Unit tests for forge/guardrails/security_pipeline.py.
+Unit tests for phalanx/guardrails/security_pipeline.py.
 
 Tests the data types and individual scanner functions with mocked subprocess calls.
 """
@@ -48,7 +48,7 @@ class TestScanFinding:
             tool="bandit",
             severity=ScanSeverity.HIGH,
             title="B101",
-            location="forge/auth.py:42",
+            location="phalanx/auth.py:42",
             detail="Use of assert statement",
             cve=None,
         )
@@ -56,7 +56,7 @@ class TestScanFinding:
         assert d["tool"] == "bandit"
         assert d["severity"] == ScanSeverity.HIGH
         assert d["title"] == "B101"
-        assert d["location"] == "forge/auth.py:42"
+        assert d["location"] == "phalanx/auth.py:42"
         assert d["cve"] is None
 
     def test_finding_with_cve(self):

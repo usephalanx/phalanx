@@ -4,8 +4,6 @@ Unit tests for phalanx/agents/soul.py — character definitions and prompt templ
 
 from __future__ import annotations
 
-import pytest
-
 from phalanx.agents.soul import (
     BUILDER_REFLECTION_PROMPT,
     BUILDER_SELF_CHECK_PROMPT,

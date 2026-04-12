@@ -28,14 +28,13 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import structlog
 from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.verification_profiles import (
-    PROFILES,
+    VerificationProfile,
     _discover_fastapi_routers,
     _discover_react_components,
     detect_tech_stack,
@@ -143,7 +142,7 @@ class IntegrationWiringAgent(BaseAgent):
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _wire(
-        self, work_dir: Path, profile: "VerificationProfile", builder_tasks: list
+        self, work_dir: Path, profile: VerificationProfile, builder_tasks: list
     ) -> dict:
         pattern = profile.integration_pattern
 
@@ -362,7 +361,7 @@ class MyApp extends StatelessWidget {
     # ─────────────────────────────────────────────────────────────────────────
 
     async def _wire_with_llm(
-        self, work_dir: Path, profile: "VerificationProfile", builder_tasks: list
+        self, work_dir: Path, profile: VerificationProfile, builder_tasks: list
     ) -> dict:
         """
         Use Claude (haiku) to generate the entry-point wiring when no
