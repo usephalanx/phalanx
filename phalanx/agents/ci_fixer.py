@@ -75,7 +75,9 @@ RULES — non-negotiable:
 6. If you cannot determine a HIGH-confidence fix from the log, return empty files.
 7. Return ONLY files that need to change — not the full project.
 
-Return a JSON object (no markdown, no explanation outside the JSON):
+YOUR RESPONSE MUST BE VALID JSON AND NOTHING ELSE. No explanation, no markdown, no preamble.
+Start your response with {{ and end with }}.
+
 {{
   "confidence": "high" | "medium" | "low",
   "root_cause": "<one sentence>",
@@ -84,8 +86,8 @@ Return a JSON object (no markdown, no explanation outside the JSON):
   ]
 }}
 
-If confidence is "low", set files to [].
-If you return medium confidence and the caller has max_attempts=1, it will not be committed.
+If confidence is "low" or you cannot determine the fix, return:
+{{"confidence": "low", "root_cause": "<reason>", "files": []}}
 """
 
 

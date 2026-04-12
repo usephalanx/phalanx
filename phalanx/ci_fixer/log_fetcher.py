@@ -77,41 +77,25 @@ class GitHubActionsLogFetcher:
             except Exception as exc:
                 log.warning("ci_fixer.github.annotations_failed", error=str(exc))
 
-            # 2. Log zip — find the failed step
+            # 2. Job logs — fetch directly via the Jobs API (more reliable than log zip)
             log_text = ""
             try:
-                # Get the check suite ID from the check run, then find the workflow run
+                # The check_run ID == the job ID in GitHub Actions
+                # GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs returns plain text
                 r = await client.get(
-                    f"{base}/check-runs/{event.build_id}",
-                    headers=headers,
-                )
-                r.raise_for_status()
-                check_data = r.json()
-                check_suite_id = check_data.get("check_suite", {}).get("id")
-
-                # Look up the workflow run associated with this check suite
-                workflow_run_id = None
-                if check_suite_id:
-                    r2 = await client.get(
-                        f"{base}/actions/runs",
-                        headers=headers,
-                        params={"check_suite_id": check_suite_id},
-                    )
-                    if r2.status_code == 200:
-                        runs = r2.json().get("workflow_runs", [])
-                        if runs:
-                            workflow_run_id = runs[0]["id"]
-
-                run_id = workflow_run_id or check_suite_id or event.build_id
-
-                # Download log zip
-                r = await client.get(
-                    f"{base}/actions/runs/{run_id}/logs",
+                    f"{base}/actions/jobs/{event.build_id}/logs",
                     headers=headers,
                     follow_redirects=True,
                 )
                 if r.status_code == 200:
-                    log_text = _extract_failed_step_from_zip(r.content, event.failed_jobs)
+                    raw_log = r.text
+                    lines = raw_log.splitlines()
+                    log_text = _extract_failure_section(lines)
+                    log.info(
+                        "ci_fixer.github.job_logs_fetched",
+                        job_id=event.build_id,
+                        lines=len(lines),
+                    )
             except Exception as exc:
                 log.warning("ci_fixer.github.logs_failed", error=str(exc))
 
