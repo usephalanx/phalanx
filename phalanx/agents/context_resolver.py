@@ -1,3 +1,5 @@
+import os  # intentional lint failure for CI fixer demo — DO NOT SHIP
+
 """
 ContextResolver — pre-Stage 0 of the PromptEnricher pipeline.
 
