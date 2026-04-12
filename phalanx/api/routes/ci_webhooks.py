@@ -320,6 +320,28 @@ async def jenkins_webhook(request: Request):
     return {"status": "coming_soon", "provider": "jenkins"}
 
 
+# ── Short-path aliases (router is mounted at /webhook, so /github → /webhook/github) ───────────
+
+
+@router.post("/github", status_code=status.HTTP_200_OK)
+async def github_webhook_alias(
+    request: Request,
+    x_hub_signature_256: str = Header(default=""),
+    x_github_event: str = Header(default=""),
+):
+    """Alias for /webhook/github — correct path when router is mounted at /webhook prefix."""
+    return await github_webhook(request, x_hub_signature_256, x_github_event)
+
+
+@router.post("/buildkite", status_code=status.HTTP_200_OK)
+async def buildkite_webhook_alias(
+    request: Request,
+    x_buildkite_token: str = Header(default=""),
+):
+    """Alias for /webhook/buildkite."""
+    return await buildkite_webhook(request, x_buildkite_token)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
