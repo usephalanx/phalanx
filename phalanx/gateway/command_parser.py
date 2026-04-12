@@ -29,6 +29,7 @@ class CommandType(StrEnum):
     STATUS = "status"
     CANCEL = "cancel"
     HELP = "help"
+    FIX = "fix"
     UNKNOWN = "unknown"
 
 
@@ -58,6 +59,10 @@ class ParsedCommand:
     run_id: str | None = None
     tags: list[str] = field(default_factory=list)
     parse_error: str | None = None
+    # fix command fields
+    fix_repo: str | None = None        # e.g. "acme/backend"
+    fix_pr_number: int | None = None   # PR number to fix
+    fix_branch: str | None = None      # branch to fix (alternative to PR)
 
     @property
     def is_valid(self) -> bool:
@@ -142,6 +147,56 @@ def parse_command(text: str) -> ParsedCommand:
             command_type=CommandType.CANCEL,
             raw_text=raw_text,
             run_id=rest,
+        )
+
+    if verb == "fix":
+        # Formats:
+        #   fix <repo>#<pr_number>   e.g. "fix acme/backend#42"
+        #   fix <repo> <pr_number>   e.g. "fix acme/backend 42"
+        #   fix <repo> <branch>      e.g. "fix acme/api fix/auth-bug"
+        fix_parts = rest.split() if rest else []
+        if not fix_parts:
+            return ParsedCommand(
+                command_type=CommandType.FIX,
+                raw_text=raw_text,
+                parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
+            )
+        # Support "owner/repo#pr_number" shorthand
+        first_part = fix_parts[0]
+        fix_pr_number: int | None = None
+        fix_branch: str | None = None
+        if "#" in first_part:
+            repo_part, pr_part = first_part.split("#", 1)
+            if "/" not in repo_part:
+                return ParsedCommand(
+                    command_type=CommandType.FIX,
+                    raw_text=raw_text,
+                    parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
+                )
+            fix_repo = repo_part
+            try:
+                fix_pr_number = int(pr_part)
+            except ValueError:
+                fix_branch = pr_part
+        else:
+            if "/" not in first_part:
+                return ParsedCommand(
+                    command_type=CommandType.FIX,
+                    raw_text=raw_text,
+                    parse_error="Usage: /forge fix <owner/repo> [<pr_number>|<branch>]",
+                )
+            fix_repo = first_part
+            if len(fix_parts) > 1:
+                try:
+                    fix_pr_number = int(fix_parts[1])
+                except ValueError:
+                    fix_branch = fix_parts[1]
+        return ParsedCommand(
+            command_type=CommandType.FIX,
+            raw_text=raw_text,
+            fix_repo=fix_repo,
+            fix_pr_number=fix_pr_number,
+            fix_branch=fix_branch,
         )
 
     if verb == "help":

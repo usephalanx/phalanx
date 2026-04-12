@@ -76,6 +76,9 @@ class ReviewerAgent(BaseAgent):
         )
         code_context = self._read_changed_files(workspace, builder_output)
 
+        # Load cross-run memory for context
+        _cross_run_memory = await self._load_cross_run_memory(run.project_id)
+
         # Run the review
         review = await self._run_review(task, builder_output, code_context)
 
@@ -181,7 +184,7 @@ class ReviewerAgent(BaseAgent):
 
     # ── Review logic ──────────────────────────────────────────────────────────
 
-    async def _run_review(self, task: Task, builder_output: dict, code_context: str) -> dict:
+    async def _run_review(self, task: Task, builder_output: dict, code_context: str, builder_handoff: str = "") -> dict:
         """Call Claude to review the code changes."""
 
         summary = builder_output.get("summary", "No builder summary available.")
@@ -228,6 +231,12 @@ Return ONLY valid JSON — no markdown fences.
             else "\n\nNo code context available — reviewing based on task description."
         )
 
+        handoff_section = (
+            f"\n\nBuilder handoff note:\n{builder_handoff}"
+            if builder_handoff
+            else ""
+        )
+
         messages = [
             {
                 "role": "user",
@@ -236,13 +245,14 @@ Return ONLY valid JSON — no markdown fences.
                     f"Description: {task.description}\n"
                     f"Builder summary: {summary}\n"
                     f"Commit: {commit.get('message', 'N/A')}"
-                    f"{code_section}\n\n"
+                    f"{code_section}"
+                    f"{handoff_section}\n\n"
                     "Review these changes. Be thorough but fair."
                 ),
             }
         ]
 
-        raw = self._call_openai(messages=messages, system=system, max_tokens=_REVIEW_MAX_TOKENS)
+        raw = self._call_claude(messages=messages, system=system, max_tokens=_REVIEW_MAX_TOKENS)
 
         try:
             start = raw.find("{")
@@ -287,6 +297,59 @@ Return ONLY valid JSON — no markdown fences.
             await session.commit()
         except Exception as exc:
             self._log.warning("reviewer.artifact_persist_failed", error=str(exc))
+
+    async def _load_builder_handoff(self, before_seq: int = 9999) -> str:
+        """
+        Load the most recent builder handoff trace for this run.
+        Returns '' when no handoff exists or on error (non-fatal).
+        """
+        try:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            from phalanx.db.models import AgentTrace  # noqa: PLC0415
+
+            async with get_db() as session:
+                stmt = (
+                    select(AgentTrace)
+                    .where(
+                        AgentTrace.run_id == self.run_id,
+                        AgentTrace.trace_type == "handoff",
+                    )
+                    .order_by(AgentTrace.created_at.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                trace = result.scalar_one_or_none()
+
+            return trace.content if trace else ""
+        except Exception as exc:
+            self._log.warning("reviewer.load_builder_handoff_failed", error=str(exc))
+            return ""
+
+    async def _write_cross_run_review_pattern(self, review: dict, project_id: str) -> None:
+        """
+        Persist a cross-run review pattern when issues were found.
+        Skips if review has no issues. Non-fatal.
+        """
+        issues = review.get("issues", [])
+        if not issues:
+            return
+
+        verdict = review.get("verdict", "CHANGES_REQUESTED")
+        summary = review.get("summary", "")
+        confidence = 0.75 if verdict == "CHANGES_REQUESTED" else 0.9
+
+        title = f"Review pattern: {summary[:80]}" if summary else "Review pattern"
+        import json as _json  # noqa: PLC0415
+
+        body = _json.dumps({"verdict": verdict, "summary": summary, "issues": issues[:5]})
+        await self._write_cross_run_pattern(
+            project_id=project_id,
+            title=title,
+            body=body,
+            fact_type="review_pattern",
+            confidence=confidence,
+        )
 
 
 # ── Celery task entry point ───────────────────────────────────────────────────

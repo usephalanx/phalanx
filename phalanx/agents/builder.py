@@ -134,6 +134,9 @@ class BuilderAgent(BaseAgent):
         # Read relevant existing files for context
         existing_files = self._read_existing_files(workspace, task)
 
+        # Load cross-run learned patterns for context
+        _cross_run_memory = await self._load_cross_run_memory(run.project_id)
+
         # Pre-flight: enrich vague task descriptions using the planner plan
         task = await self._enrich_if_vague(task, plan)
 
@@ -142,6 +145,26 @@ class BuilderAgent(BaseAgent):
 
         # Apply changes to disk
         files_written = self._apply_changes(workspace, changes)
+
+        # Self-check: run lightweight validation and fix issues once if found
+        self_check_result = changes.get("self_check", "")
+        if self._self_check_has_issues(self_check_result):
+            fix_changes = await self._fix_self_check_issues(
+                task, plan, existing_files, workspace, self_check_result
+            )
+            if fix_changes.get("files"):
+                files_written = self._apply_changes(workspace, fix_changes)
+                self_check_result = fix_changes.get("self_check", self_check_result)
+
+        # Write handoff note for reviewer
+        handoff_note = self._write_handoff_note(
+            task_description=task.description,
+            files_written=files_written,
+            summary=changes.get("summary", ""),
+            self_check_result=self_check_result,
+        )
+        if handoff_note:
+            await self._trace("handoff", handoff_note)
 
         # Last builder task: generate + validate QA.md before commit
         if is_last:
@@ -197,6 +220,14 @@ class BuilderAgent(BaseAgent):
                 "files_written": len(files_written),
                 "has_commit": bool(commit_info.get("sha")),
             },
+        )
+
+        # Record complexity calibration data for future runs
+        await self._write_complexity_calibration(
+            task_title=task.title,
+            estimated_complexity=task.estimated_complexity or 1,
+            tokens_used=self._tokens_used,
+            project_id=run.project_id,
         )
 
         self._log.info(
@@ -258,18 +289,20 @@ class BuilderAgent(BaseAgent):
 
     # ── Workspace helpers ─────────────────────────────────────────────────────
 
-    def _workspace_path(self, run: Run) -> Path:
+    def _workspace_path(self, run: Run, branch_name: str | None = None) -> Path:
         """
         Flat, human-readable, run-isolated workspace path.
-        Format: /tmp/forge-repos/{app-slug}-{run_id[:8]}/
-        All builder tasks for the same run share this directory.
+        Format: /tmp/forge-repos/{project_id}/{run_id}/{branch_slug}/ (with branch_name)
+                /tmp/forge-repos/{project_id}/{run_id}/              (legacy)
         """
         import re  # noqa: PLC0415
         base = Path(settings.git_workspace)
-        # Derive app slug from run_id (run title not available here; use run_id prefix)
-        # The full slug is set in execute() using the work order title
+        project_id = str(run.project_id) if hasattr(run, "project_id") else "unknown"
         run_short = str(self.run_id)[:8]
-        return base / f"run-{run_short}"
+        if branch_name:
+            branch_slug = re.sub(r"[^a-z0-9\-]", "_", branch_name.lower())
+            return base / project_id / run_short / branch_slug
+        return base / project_id / run_short
 
     def _make_workspace_path(self, run: Run, work_order_title: str = "") -> Path:
         """
@@ -304,15 +337,14 @@ class BuilderAgent(BaseAgent):
         workspace.mkdir(parents=True, exist_ok=True)
 
         if settings.github_token:
-            await self._setup_git_workspace(workspace, run, resolved_branch, force_clone=is_first)
+            await self._setup_git_workspace(workspace, run, resolved_branch)
         else:
             self._log.info("builder.workspace.local", path=str(workspace))
 
-    async def _setup_git_workspace(self, workspace: Path, run: Run, branch: str, force_clone: bool = False) -> None:
+    async def _setup_git_workspace(self, workspace: Path, run: Run, branch: str) -> None:
         """
         Clone or update the repo, then checkout/create the working branch.
-        force_clone=True (first builder task): always clone fresh from origin/main.
-        force_clone=False (subsequent tasks): fetch + checkout branch to continue work.
+        Fresh clone when workspace has no .git dir; fetch+checkout when it does.
         """
         try:
             from git import Repo  # noqa: PLC0415
@@ -334,7 +366,7 @@ class BuilderAgent(BaseAgent):
             auth_url = repo_url.replace("https://", f"https://{settings.github_token}@")
 
             git_dir = workspace / ".git"
-            if force_clone or not git_dir.exists():
+            if not git_dir.exists():
                 # First builder task: always clone fresh from origin/main (depth=1 for speed)
                 repo = Repo.clone_from(auth_url, str(workspace), depth=1)
                 self._log.info("builder.git.cloned_fresh", url=repo_url, branch="main")
@@ -648,7 +680,7 @@ Return ONLY valid JSON:
             )}]
             vague_raw = await loop.run_in_executor(
                 None,
-                lambda: self._call_openai(
+                lambda: self._call_claude(
                     messages=vague_messages,
                     system=_VAGUE_CHECK_SYSTEM,
                     max_tokens=256,
@@ -690,7 +722,7 @@ Return ONLY valid JSON:
             )}]
             enrich_raw = await loop.run_in_executor(
                 None,
-                lambda: self._call_openai(
+                lambda: self._call_claude(
                     messages=enrich_messages,
                     system=_ENRICHMENT_SYSTEM,
                     max_tokens=512,
@@ -735,6 +767,7 @@ Return ONLY valid JSON:
         task: Task,
         plan: dict,
         existing_files: dict[str, str],
+        reviewer_feedback: dict | None = None,
     ) -> tuple[str, list[dict]]:
         """Build the system prompt and messages list shared by both generation paths."""
         file_context = ""
@@ -747,6 +780,22 @@ Return ONLY valid JSON:
             if plan
             else "No explicit plan — use task description."
         )
+
+        reflexion_section = ""
+        if reviewer_feedback:
+            verdict = reviewer_feedback.get("verdict", "")
+            fb_summary = reviewer_feedback.get("summary", "")
+            issues = reviewer_feedback.get("issues", [])
+            issues_text = "\n".join(
+                f"- [{i.get('severity','?')}] {i.get('location','?')}: {i.get('description','?')} → {i.get('suggestion','?')}"
+                for i in issues[:10]
+            )
+            reflexion_section = (
+                f"\n\n--- PRIOR REVIEW FEEDBACK ---\n"
+                f"Verdict: {verdict}\nSummary: {fb_summary}\n"
+                + (f"Issues (MUST address):\n{issues_text}" if issues_text else "")
+                + "\n--- END PRIOR REVIEW ---\n"
+            )
 
         system = self._get_system_prompt(task)
         messages = [
@@ -761,6 +810,7 @@ Return ONLY valid JSON:
                         if file_context
                         else "No existing files — create everything from scratch.\n\n"
                     )
+                    + reflexion_section
                     + "Implement ALL deliverables. Write complete, production-ready code."
                 ),
             }
@@ -773,10 +823,25 @@ Return ONLY valid JSON:
         plan: dict,
         existing_files: dict[str, str],
         workspace: Path,
+        complexity: int = 1,
     ) -> dict[str, Any]:
-        """Blocking path: single API call, parse entire JSON response."""
+        """Blocking path: single API call, parse entire JSON response.
+        Uses extended thinking for high-complexity tasks (complexity >= 4).
+        """
         system, messages = self._build_prompt(task, plan, existing_files)
-        raw = self._call_claude(messages=messages, system=system, max_tokens=_BUILD_MAX_TOKENS)
+
+        # Use extended thinking for complex tasks
+        if complexity >= 4:
+            raw, thinking = self._call_claude_with_thinking(
+                messages=messages,
+                system=system,
+                budget_tokens=8_000,
+                max_tokens=_BUILD_MAX_TOKENS,
+            )
+            if thinking:
+                await self._trace("decision", thinking[:3000], context={"complexity": complexity})
+        else:
+            raw = self._call_claude(messages=messages, system=system, max_tokens=_BUILD_MAX_TOKENS)
 
         parsed = self._parse_json_response(raw)
         if parsed is not None:
@@ -1055,7 +1120,7 @@ Rules:
             loop = _asyncio.get_event_loop()
             raw = await loop.run_in_executor(
                 None,
-                lambda: self._call_openai(
+                lambda: self._call_claude(
                     messages=messages,
                     system=self._QA_MD_SYSTEM,
                     max_tokens=1024,
@@ -1235,6 +1300,122 @@ Rules:
             await session.commit()
         except Exception as exc:
             self._log.warning("builder.artifact_persist_failed", error=str(exc))
+
+    # ── Soul methods ──────────────────────────────────────────────────────────
+
+    async def _load_reviewer_feedback(self, session, before_seq: int) -> dict | None:
+        """
+        Load the most recent reviewer task output before before_seq.
+        Returns None if no reviewer feedback or verdict is APPROVED.
+        """
+        try:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            stmt = (
+                select(Task)
+                .where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role == "reviewer",
+                    Task.sequence_num < before_seq,
+                    Task.status == "COMPLETED",
+                )
+                .order_by(Task.sequence_num.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            reviewer_task = result.scalar_one_or_none()
+            if reviewer_task is None:
+                return None
+
+            output = reviewer_task.output or {}
+            verdict = output.get("verdict", "")
+            if verdict not in ("CHANGES_REQUESTED", "CRITICAL_ISSUES"):
+                return None
+            return output
+        except Exception as exc:
+            self._log.warning("builder.load_reviewer_feedback_failed", error=str(exc))
+            return None
+
+    def _write_handoff_note(
+        self,
+        task_description: str,
+        files_written: list[str],
+        summary: str,
+        self_check_result: str,
+    ) -> str:
+        """
+        Generate a handoff note from builder to reviewer using Claude.
+        Returns '' if no files written or on Claude failure. Non-fatal.
+        """
+        if not files_written:
+            return ""
+        try:
+            sc_label = (
+                "Self-check: passed."
+                if self_check_result and "passed" in self_check_result.lower()
+                else (f"Self-check issues: {self_check_result[:400]}" if self_check_result else "")
+            )
+            content = (
+                f"Task: {task_description[:300]}\n"
+                f"Files written: {', '.join(files_written[:20])}\n"
+                f"Summary: {summary[:300]}\n"
+                f"{sc_label}\n\n"
+                "Write a concise builder handoff note for the reviewer. "
+                "What was built, key decisions, known issues or risks."
+            )
+            messages = [{"role": "user", "content": content}]
+            return self._call_claude(messages=messages, max_tokens=512)
+        except Exception as exc:
+            self._log.warning("builder.write_handoff_note_failed", error=str(exc))
+            return ""
+
+    def _self_check_has_issues(self, self_check_result: str) -> bool:
+        """
+        Returns True if the self-check result indicates real issues.
+        Returns False for empty result or 'self-check passed' (case-insensitive).
+        """
+        if not self_check_result:
+            return False
+        import re as _re  # noqa: PLC0415
+        # If the result is purely a pass phrase, no issues
+        normalized = self_check_result.strip().lower()
+        # Purely passing result: only contains "self-check passed" or similar
+        if _re.fullmatch(r"self[\-\s]check[\s:]+(passed\.?)", normalized):
+            return False
+        # Contains pass phrase somewhere but also has other content → check for issues
+        if "self-check passed" in normalized and len(normalized) < 50:
+            return False
+        # Any other non-empty content is treated as issues
+        return True
+
+    async def _fix_self_check_issues(
+        self,
+        task,
+        plan: dict,
+        existing_files: dict[str, str],
+        workspace,
+        self_check_result: str,
+    ) -> dict:
+        """
+        Ask Claude to fix the issues found in the self-check.
+        Returns {} on failure (non-fatal). Returns parsed changes dict on success.
+        """
+        try:
+            import json as _json  # noqa: PLC0415
+
+            system, messages = self._build_prompt(task, plan, existing_files)
+            fix_instruction = (
+                f"\n\nSELF-CHECK ISSUES FOUND (must fix):\n{self_check_result[:1000]}\n\n"
+                "Fix the above issues in the generated code. Return the corrected files in the same JSON format."
+            )
+            messages[-1]["content"] += fix_instruction
+
+            raw = self._call_claude(messages=messages, system=system, max_tokens=_BUILD_MAX_TOKENS)
+            parsed = self._parse_json_response(raw)
+            return parsed if parsed is not None else {}
+        except Exception as exc:
+            self._log.warning("builder.fix_self_check_issues_failed", error=str(exc))
+            return {}
 
 
 # ── Celery task entry point ───────────────────────────────────────────────────

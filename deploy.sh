@@ -195,6 +195,12 @@ else
   echo "  ✗ API health: $HTTP_HEALTH — deployment may need investigation"
 fi
 
+# ── Step 5b: Regenerate sitemap with today's date ────────────────────────────
+echo ""
+echo "▶ [5b] Regenerating sitemap.xml..."
+$SCP "$REPO_DIR/scripts/generate_sitemap.py" "$SERVER:/tmp/generate_sitemap.py"
+$SSH "$SERVER" "python3 /tmp/generate_sitemap.py --output $APP_DIR/site/sitemap.xml && rm /tmp/generate_sitemap.py"
+
 # ── Step 6: Tag release ───────────────────────────────────────────────────────
 echo ""
 echo "▶ [6/6] Tagging release $RELEASE_TAG..."

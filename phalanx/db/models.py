@@ -435,6 +435,39 @@ class Interrupt(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT TRACES
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AgentTrace(Base):
+    """
+    Soul-layer reasoning trace. Captures reflections, decisions, uncertainty,
+    disagreements, self-checks, and handoff notes emitted by agents.
+    Read-only after insert — never updated or deleted.
+    """
+
+    __tablename__ = "agent_traces"
+    __table_args__ = (
+        Index("idx_agent_traces_run", "run_id", "created_at"),
+        Index("idx_agent_traces_task", "task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(36))
+    agent_role: Mapped[str] = mapped_column(String(100), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    trace_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # reflection | decision | uncertainty | disagreement | self_check | handoff
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    tokens_used: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+    run: Mapped[Run] = relationship()
+
+
 class MemoryFact(Base):
     """
     Durable project knowledge. Versioned, deduplicated, confidence-scored.

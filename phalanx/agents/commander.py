@@ -97,6 +97,71 @@ def _inject_sre_task(task_plan: dict) -> dict:
     return {"tasks": [*tasks, sre_task]}
 
 
+def _inject_ux_designer_task(
+    task_plan: dict,
+    title: str = "",
+    description: str = "",
+) -> dict:
+    """
+    If the work order is a UI/UX project, insert a ux_designer task immediately
+    before the first builder task. All subsequent sequence_nums are shifted up
+    by 1 to make room.
+
+    Non-UI projects (REST APIs, CLI tools, etc.) are returned unchanged.
+    """
+    from phalanx.agents.ux_designer import is_ui_project  # noqa: PLC0415
+
+    tasks = task_plan.get("tasks", [])
+    if not tasks:
+        return task_plan
+
+    if not is_ui_project(title, description):
+        return task_plan
+
+    # Find first builder task
+    builder_tasks = [t for t in tasks if t.get("agent_role") == "builder"]
+    if not builder_tasks:
+        return task_plan
+
+    first_builder_seq = min(t.get("sequence_num", 1) for t in builder_tasks)
+
+    # Shift all tasks at or after first_builder_seq up by 1
+    shifted = []
+    for t in tasks:
+        seq = t.get("sequence_num", 1)
+        if seq >= first_builder_seq:
+            shifted.append({**t, "sequence_num": seq + 1})
+        else:
+            shifted.append(t)
+
+    # Build ux_designer task — depends on whatever the first builder depended on (seq < first_builder)
+    planner_seqs = [
+        t.get("sequence_num", 1)
+        for t in tasks
+        if t.get("agent_role") == "planner"
+    ]
+    ux_depends_on = planner_seqs if planner_seqs else []
+
+    ux_task = {
+        "sequence_num": first_builder_seq,
+        "title": "Design System and UX Spec",
+        "description": (
+            "Produce a complete DESIGN.md: brand identity, color palette (WCAG AA), "
+            "typography scale, spacing system, component taxonomy, and state definitions. "
+            "No code — this is the design contract all builders will follow."
+        ),
+        "agent_role": "ux_designer",
+        "phase_name": "Design",
+        "depends_on": ux_depends_on,
+        "files_likely_touched": ["DESIGN.md"],
+        "estimated_complexity": 2,
+    }
+
+    # Insert ux task and sort by sequence_num
+    new_tasks = sorted([*shifted, ux_task], key=lambda t: t.get("sequence_num", 0))
+    return {"tasks": new_tasks}
+
+
 class CommanderAgent(BaseAgent):
     """
     IC6-level orchestrator. Creates and drives a single Run to completion.
@@ -543,7 +608,7 @@ phase_name rules:
             }
         ]
 
-        response_text = self._call_openai(
+        response_text = self._call_claude(
             messages=messages,
             system=system,
             max_tokens=8192,

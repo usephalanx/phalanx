@@ -29,6 +29,7 @@ import structlog
 from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent, mark_task_failed
+from phalanx.agents.soul import PLANNER_SOUL
 from phalanx.db.models import Artifact, Run, Task
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
@@ -64,6 +65,15 @@ class PlannerAgent(BaseAgent):
 
             run = await self._load_run(session)
             prior_outputs = await self._load_prior_outputs(session, task.sequence_num)
+
+        # Reflect before planning — soul-layer pre-task reasoning
+        reflection = self._reflect(
+            task_description=task.description,
+            context=f"Task: {task.title}",
+            soul=PLANNER_SOUL,
+        )
+        if reflection:
+            await self._trace("reflection", reflection)
 
         # Generate plan (outside DB session — Claude call can be slow)
         plan = await self._generate_plan(task, run, prior_outputs)
@@ -207,6 +217,17 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON o
   "estimated_complexity": 3
 }"""
 
+        # Load complexity calibration data for informed estimation
+        calibration_data = await self._load_complexity_calibration(run.project_id)
+        calibration_ctx = ""
+        if calibration_data:
+            avg_ratio = sum(c.get("burn_ratio", 1.0) for c in calibration_data[-5:]) / min(len(calibration_data), 5)
+            calibration_ctx = (
+                f"\n\nHistorical complexity calibration: average burn_ratio={avg_ratio:.2f} "
+                f"(>1.0 = tasks harder than estimated, <1.0 = easier). "
+                "Adjust estimated_complexity accordingly."
+            )
+
         messages = [
             {
                 "role": "user",
@@ -214,14 +235,15 @@ Return ONLY valid JSON — no markdown fences, no explanation outside the JSON o
                     f"Task: {task.title}\n\n"
                     f"Description: {task.description}"
                     f"{files_hint}"
-                    f"{prior_ctx}\n\n"
+                    f"{prior_ctx}"
+                    f"{calibration_ctx}\n\n"
                     "Produce a complete, implementation-ready plan. Be specific about "
                     "file paths, function names, and test cases."
                 ),
             }
         ]
 
-        raw = self._call_openai(messages=messages, system=system, max_tokens=_PLAN_MAX_TOKENS)
+        raw = self._call_claude(messages=messages, system=system, max_tokens=_PLAN_MAX_TOKENS)
 
         try:
             start = raw.find("{")
