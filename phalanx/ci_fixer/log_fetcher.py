@@ -80,14 +80,29 @@ class GitHubActionsLogFetcher:
             # 2. Log zip — find the failed step
             log_text = ""
             try:
-                # Get the workflow run ID from the check run
+                # Get the check suite ID from the check run, then find the workflow run
                 r = await client.get(
                     f"{base}/check-runs/{event.build_id}",
                     headers=headers,
                 )
                 r.raise_for_status()
                 check_data = r.json()
-                run_id = check_data.get("check_suite", {}).get("id") or event.build_id
+                check_suite_id = check_data.get("check_suite", {}).get("id")
+
+                # Look up the workflow run associated with this check suite
+                workflow_run_id = None
+                if check_suite_id:
+                    r2 = await client.get(
+                        f"{base}/actions/runs",
+                        headers=headers,
+                        params={"check_suite_id": check_suite_id},
+                    )
+                    if r2.status_code == 200:
+                        runs = r2.json().get("workflow_runs", [])
+                        if runs:
+                            workflow_run_id = runs[0]["id"]
+
+                run_id = workflow_run_id or check_suite_id or event.build_id
 
                 # Download log zip
                 r = await client.get(

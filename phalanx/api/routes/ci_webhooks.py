@@ -199,6 +199,13 @@ async def github_webhook(
         check_run = payload["check_run"]
         repo = payload["repository"]
 
+        # Skip infrastructure/runner check runs (Node.js deprecation warnings, etc.)
+        # Only process named CI gates that represent actual code failures
+        check_name = check_run.get("name", "")
+        skip_patterns = ("node", "set up job", "complete job", "post ", "initialize ")
+        if any(check_name.lower().startswith(p) for p in skip_patterns):
+            return {"status": "ignored", "reason": f"infrastructure check_run: {check_name}"}
+
         # Extract PR number and author from check_suite pull_requests
         pr_number: int | None = None
         pull_requests = check_run.get("check_suite", {}).get("pull_requests", [])
