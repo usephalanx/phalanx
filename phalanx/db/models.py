@@ -791,6 +791,10 @@ class CIIntegration(Base):
     allowed_authors: Mapped[list] = mapped_column(ARRAY(String), default=list)
     """If non-empty, only trigger fixes for PRs authored by these GitHub logins."""
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_merge: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    """Phase 4: when True, CIFixerAgent opens a real PR and enables auto-merge for trusted fingerprints."""
+    min_success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
+    """Phase 4: auto-merge only triggered after a fingerprint has >= this many successful fixes."""
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
@@ -814,11 +818,172 @@ class CIFixRun(Base):
     failure_category: Mapped[str | None] = mapped_column(String(30))
     fix_commit_sha: Mapped[str | None] = mapped_column(String(40))
     fix_pr_number: Mapped[int | None] = mapped_column(Integer)
+    fix_branch: Mapped[str | None] = mapped_column(String(255))
+    """Branch Phalanx pushed the fix to — always phalanx/ci-fix/{run_id}, never the author's branch."""
+    fingerprint_hash: Mapped[str | None] = mapped_column(String(16))
+    """sha256[:16] of normalised errors — stable identity for this failure class (V2 history)."""
+    validation_tool_version: Mapped[str | None] = mapped_column(String(100))
+    """e.g. 'ruff 0.4.1' — captured at validation time, surfaced in PR for env-parity visibility."""
+    outcome_checked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    """False until OutcomeTracker has classified this run's fix outcome (V2)."""
+    tool_version_parity_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    """Phase 4: True when tool version at fix time matches failure-time version (within minor version)."""
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     error: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIFailureFingerprint(Base):
+    """
+    Stable identity for a CI failure class.
+
+    One row per (fingerprint_hash, repo_full_name) pair — upserted whenever
+    a CIFixerAgent run completes.  success_count / failure_count drive Phase 3
+    history-based fix reuse.
+    """
+
+    __tablename__ = "ci_failure_fingerprints"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    fingerprint_hash: Mapped[str] = mapped_column(String(16), nullable=False)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    sample_errors: Mapped[str | None] = mapped_column(Text)
+    """Short human-readable summary of the errors in this class."""
+    seen_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_good_patch_json: Mapped[str | None] = mapped_column(Text)
+    """JSON-serialised list[FilePatch] from the most-recent successful fix. Phase 3 reuse."""
+    last_good_tool_version: Mapped[str | None] = mapped_column(String(100))
+    first_seen_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIFixOutcome(Base):
+    """
+    One outcome poll record per (ci_fix_run_id, poll_number).
+
+    OutcomeTracker writes one row at each of the 3 polling checkpoints
+    (4h, 24h, 72h after fix PR creation).  outcome='merged' → success_count++
+    on the corresponding CIFailureFingerprint row.
+    """
+
+    __tablename__ = "ci_fix_outcomes"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    ci_fix_run_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("ci_fix_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    poll_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    """1 = 4h, 2 = 24h, 3 = 72h"""
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False)
+    """'merged' | 'closed_unmerged' | 'open' | 'not_found'"""
+    pr_state: Mapped[str | None] = mapped_column(String(20))
+    """GitHub PR state at poll time: 'open' | 'closed'"""
+    merged_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    closed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    polled_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIPatternRegistry(Base):
+    """
+    Cross-repo fix pattern registry — Phase 5.
+
+    A pattern is promoted here when it has been validated in >= 2 different repos.
+    Other repos query this to find proven fixes for new failures.
+    """
+
+    __tablename__ = "ci_pattern_registry"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    fingerprint_hash: Mapped[str] = mapped_column(String(16), nullable=False, unique=True)
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    error_codes: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    description: Mapped[str | None] = mapped_column(Text)
+    """Human-readable description of what this pattern fixes"""
+    patch_template_json: Mapped[str | None] = mapped_column(Text)
+    """JSON template of the fix — relative to error location, not absolute lines"""
+    repo_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    """Number of distinct repos where this fix has succeeded"""
+    total_success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    promoted_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIProactiveScan(Base):
+    """
+    Tracks proactive PR scans — Phase 5.
+
+    When a PR is opened, Phalanx scans for known patterns that would fail
+    and comments proactively before CI runs.
+    """
+
+    __tablename__ = "ci_proactive_scans"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    findings_json: Mapped[str | None] = mapped_column(Text)
+    """JSON list of {fingerprint_hash, description, severity} findings"""
+    comment_posted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    comment_id: Mapped[int | None] = mapped_column(BigInteger)
+    scan_duration_ms: Mapped[int | None] = mapped_column(Integer)
+    scanned_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class CIFlakyPattern(Base):
+    """
+    Tracks CI error patterns that are historically flaky (self-heal without a fix).
+
+    Phase 3 flaky suppressor: if flaky_count / total_count >= 0.5, suppress
+    fix attempts for this pattern — it's more likely to self-heal than need code change.
+    """
+
+    __tablename__ = "ci_flaky_patterns"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool: Mapped[str] = mapped_column(String(50), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(50))
+    """e.g. 'F401', 'E501', or None for pytest failures"""
+    error_file: Mapped[str | None] = mapped_column(String(500))
+    """Normalised file path — stripped of line numbers for stable matching"""
+    flaky_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    """Times this pattern appeared and self-healed (no fix needed)"""
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    """Total times seen — flaky_rate = flaky_count / total_count"""
+    first_seen_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+    @property
+    def flaky_rate(self) -> float:
+        if self.total_count == 0:
+            return 0.0
+        return self.flaky_count / self.total_count
+
+
+class Epic(Base):
+    """
+    Product Manager decomposition of a WorkOrder into epics.
+    Created during the Strategy phase before builders start.
+    """
+
+    __tablename__ = "epics"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    sequence_num: Mapped[int] = mapped_column(Integer, default=1)
+    estimated_minutes: Mapped[int] = mapped_column(Integer, default=30)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 

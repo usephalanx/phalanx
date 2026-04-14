@@ -19,16 +19,22 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import and_, select
 
 from phalanx.ci_fixer.classifier import classify_failure
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.config.settings import get_settings
 from phalanx.db.models import CIFixRun, CIIntegration
 from phalanx.db.session import get_db
+
+# Phase 3: commit-window dedup — if the same (repo, commit_sha) triggered a fix
+# run within this window, suppress the duplicate.  Prevents webhook retries from
+# spawning multiple fix runs for the same commit.
+_COMMIT_DEDUP_WINDOW_MINUTES = 5
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -89,6 +95,27 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         )
         if result.scalar_one_or_none():
             log.info("ci_webhook.already_processing", build_id=event.build_id)
+            return None
+
+        # Phase 3: commit-window dedup — prevent retried webhooks from spawning
+        # duplicate runs for the same (repo, commit_sha) within 5 minutes.
+        window_start = datetime.now(UTC) - timedelta(minutes=_COMMIT_DEDUP_WINDOW_MINUTES)
+        result = await session.execute(
+            select(CIFixRun).where(
+                and_(
+                    CIFixRun.repo_full_name == event.repo_full_name,
+                    CIFixRun.commit_sha == event.commit_sha,
+                    CIFixRun.created_at >= window_start,
+                )
+            )
+        )
+        if result.scalar_one_or_none():
+            log.info(
+                "ci_webhook.commit_window_dedup",
+                repo=event.repo_full_name,
+                commit_sha=event.commit_sha,
+                window_minutes=_COMMIT_DEDUP_WINDOW_MINUTES,
+            )
             return None
 
         # Check attempt count for this branch — max_attempts guard

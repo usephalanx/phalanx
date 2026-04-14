@@ -97,6 +97,14 @@ celery_app.config_from_object(
                 "task": "phalanx.skills.tasks.check_staleness",
                 "schedule": 86400 * 3,  # every 3 days
             },
+            "poll-fix-outcomes": {
+                "task": "phalanx.ci_fixer.outcome_tracker.poll_fix_outcomes",
+                "schedule": 1800,  # every 30 minutes
+            },
+            "promote-fix-patterns": {
+                "task": "phalanx.ci_fixer.pattern_promoter.promote_patterns",
+                "schedule": 3600,  # every hour
+            },
         },
         # Soft time limit: warn at 5 min, hard kill at 10 min
         # Builder tasks get longer limits
@@ -120,6 +128,9 @@ celery_app.autodiscover_tasks(
         "phalanx.agents.release",
         "phalanx.agents.sre",
         "phalanx.agents.ci_fixer",
+        "phalanx.ci_fixer.outcome_tracker",
+        "phalanx.ci_fixer.pattern_promoter",
+        "phalanx.ci_fixer.proactive_scanner",
         "phalanx.workflow",
         "phalanx.maintenance",
         "phalanx.memory",
