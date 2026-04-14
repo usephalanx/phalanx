@@ -224,6 +224,9 @@ def clean_log(raw: str) -> str:
     """Strip timestamps, ANSI codes and noise from a raw CI log."""
     text = _TIMESTAMP_RE.sub("", raw)
     text = _ANSI_RE.sub("", text)
+    # Strip GitHub Actions annotation prefixes so tool patterns match normally
+    # e.g. "##[error]path/file.py:1:2: F401 ..." → "path/file.py:1:2: F401 ..."
+    text = re.sub(r"^##\[(?:error|warning|notice)\]", "", text, flags=re.MULTILINE)
     # Remove lines matching noise patterns
     lines = [line for line in text.splitlines() if not _NOISE_RE.search(line)]
     return "\n".join(lines)
