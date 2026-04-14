@@ -165,6 +165,18 @@ async def test_execute_inner_low_confidence_no_pr():
     )
     low_conf_plan = FixPlan(confidence="low", root_cause="can't fix this")
 
+    from phalanx.ci_fixer.classifier import ClassificationResult
+    from phalanx.ci_fixer.repair_agent import RepairResult
+
+    clf = ClassificationResult(
+        failure_type="lint", language="python", tool="ruff",
+        complexity_tier="L2", confidence=0.9, root_cause_hypothesis="unused import",
+    )
+    repair_result = RepairResult(
+        success=False, fix_plan=low_conf_plan, iteration=1,
+        reason="low_confidence", state_trace=["GATHER_CONTEXT", "GENERATE_PATCH", "ESCALATE"],
+    )
+
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"), \
          patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors), \
@@ -172,12 +184,13 @@ async def test_execute_inner_low_confidence_no_pr():
          patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark, \
-         patch("phalanx.ci_fixer.analyst.FixPlan"):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = low_conf_plan
-        MockAnalyst.return_value = mock_analyst_inst
+         patch.object(agent, "_trace", new_callable=AsyncMock), \
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark:
+        MockClf.return_value.classify.return_value = clf
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is False

@@ -264,16 +264,25 @@ class TestParseAndValidatePatches:
         assert patches[0].start_line == 2
         assert patches[0].end_line == 6
 
-    def test_line_range_beyond_tolerance_clamped(self):
-        """start/end off by >2 lines → clamped to window bounds."""
+    def test_line_range_beyond_tolerance_rejected(self):
+        """start/end entirely outside window → rejected (not clamped)."""
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/foo.py", "start_line": 10, "end_line": 20,  # way off
+        raw = [{"path": "src/foo.py", "start_line": 10, "end_line": 20,  # entirely outside
                 "corrected_lines": ["a\n", "b\n"], "reason": "way off"}]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
-        # Clamped to window bounds (1..5)
+        # Rejected — patch range doesn't overlap window at all
+        assert len(patches) == 0
+
+    def test_line_range_subrange_accepted(self):
+        """start/end within a larger window → accepted as-is (sub-range patch)."""
+        w = self._window("src/foo.py", 1, 80, 80)
+        raw = [{"path": "src/foo.py", "start_line": 26, "end_line": 57,
+                "corrected_lines": ["a\n"] * 30, "reason": "import cleanup"}]
+        patches = self._analyst()._parse_and_validate_patches(raw, [w])
+        # Accepted — valid sub-range of the window, delta = -2 (32 → 30 lines)
         assert len(patches) == 1
-        assert patches[0].start_line == 1
-        assert patches[0].end_line == 5
+        assert patches[0].start_line == 26
+        assert patches[0].end_line == 57
 
 
 # ── analyze (full integration) ─────────────────────────────────────────────────

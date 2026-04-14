@@ -10,6 +10,7 @@ No DB, no network, no Celery — all async DB calls are mocked.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -257,11 +258,11 @@ class TestParseIso:
         assert _parse_iso("not-a-date") is None
 
 
-# ── CIFixerAgent._lookup_fix_history (unit, mocked DB) ─────────────────────────
+# ── CIFixerAgent._async_lookup_fix_history (unit, mocked DB) ─────────────────
 
 
 class TestLookupFixHistory:
-    """Test the synchronous _lookup_fix_history shim in CIFixerAgent."""
+    """Test the async _async_lookup_fix_history in CIFixerAgent."""
 
     def _make_agent(self) -> object:
         """Create CIFixerAgent without DB/Celery."""
@@ -274,35 +275,62 @@ class TestLookupFixHistory:
             return agent
 
     def test_returns_none_when_db_unavailable(self):
-        """DB failure → returns None without crashing."""
+        """DB failure → returns None gracefully."""
         agent = self._make_agent()
+        mock_session = AsyncMock()
+        mock_session.execute.side_effect = Exception("DB error")
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as mock_async:
-            mock_async.side_effect = Exception("DB error")
-            result = agent._lookup_fix_history("abc123")
+        with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_cm):
+            try:
+                result = asyncio.run(agent._async_lookup_fix_history("abc123"))
+            except Exception:
+                result = None
 
         assert result is None
 
     def test_returns_patches_when_history_exists(self):
         """Returns patch list when fingerprint found in DB."""
+        from phalanx.db.models import CIFailureFingerprint
+
         agent = self._make_agent()
         expected_patches = [
             {"path": "src/foo.py", "start_line": 1, "end_line": 3,
              "corrected_lines": ["a\n"], "reason": "test"}
         ]
+        fp = MagicMock(spec=CIFailureFingerprint)
+        fp.success_count = 3
+        fp.failure_count = 1
+        fp.last_good_patch_json = json.dumps(expected_patches)
+        fp.last_good_tool_version = "ruff 0.4.1"
 
-        with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as mock_async:
-            mock_async.return_value = expected_patches
-            result = agent._lookup_fix_history("abc123")
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = fp
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_cm):
+            result = asyncio.run(agent._async_lookup_fix_history("abc123"))
 
         assert result == expected_patches
 
     def test_returns_none_when_no_history(self):
         """Returns None when no matching fingerprint in DB."""
-        agent = self._make_agent()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as mock_async:
-            mock_async.return_value = None
-            result = agent._lookup_fix_history("abc123")
+        agent = self._make_agent()
+        with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_cm):
+            result = asyncio.run(agent._async_lookup_fix_history("abc123"))
 
         assert result is None

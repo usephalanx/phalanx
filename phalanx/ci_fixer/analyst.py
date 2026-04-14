@@ -37,7 +37,9 @@ log = structlog.get_logger(__name__)
 _WINDOW = 40
 # Maximum line-count delta between original window and corrected window.
 # If the LLM returns more/fewer lines than this it is rejected.
-_MAX_LINE_DELTA = 5
+# Import-block reorganization (I001/F401) can remove several lines at once;
+# 15 gives enough room without allowing full-file rewrites.
+_MAX_LINE_DELTA = 15
 # Maximum files we will read and send to the LLM.
 _MAX_FILES = 4
 
@@ -239,6 +241,11 @@ class RootCauseAnalyst:
         try:
             raw = self._call_llm(
                 messages=[{"role": "user", "content": prompt}],
+                system=(
+                    "You are a JSON-only API. Your entire response must be a single "
+                    "valid JSON object matching the schema in the user prompt. "
+                    "No prose, no markdown, no explanation outside the JSON."
+                ),
                 max_tokens=4096,
             )
         except Exception as exc:
@@ -246,16 +253,17 @@ class RootCauseAnalyst:
             return FixPlan(confidence="low", root_cause=f"LLM call failed: {exc}")
 
         raw = raw.strip()
-        # Strip markdown fences if the LLM wrapped the JSON anyway
+        # Strip markdown fences
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         log.debug("ci_analyst.raw_response", preview=raw[:400])
 
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            log.warning("ci_analyst.json_parse_failed", error=str(exc), raw=raw[:500])
+        # Extract the JSON object from the response — the model sometimes writes
+        # reasoning prose before or after the JSON block.  Find the outermost { }.
+        data = _extract_json(raw)
+        if data is None:
+            log.warning("ci_analyst.json_parse_failed", raw=raw[:500])
             return FixPlan(confidence="low", root_cause="LLM returned non-JSON response")
 
         patches = self._parse_and_validate_patches(data.get("patches", []), windows)
@@ -384,7 +392,12 @@ class RootCauseAnalyst:
                 log.warning("ci_analyst.patch_missing_line_range", path=path)
                 continue
 
-            if abs(start - window.start_line) > 2 or abs(end - window.end_line) > 2:
+            # Guard: patch range must overlap the window we sent.
+            # A sub-range patch (LLM fixes only the import block within an 80-line
+            # window) is fine.  A patch that falls entirely outside the window we
+            # sent (start > window.end or end < window.start) is rejected.
+            # ±2 lines of slop allowed on each boundary for LLM off-by-one drift.
+            if start > window.end_line + 2 or end < window.start_line - 2:
                 log.warning(
                     "ci_analyst.patch_line_range_mismatch",
                     path=path,
@@ -393,9 +406,7 @@ class RootCauseAnalyst:
                     got_start=start,
                     got_end=end,
                 )
-                # Clamp to the window we actually sent — safer than rejecting
-                start = window.start_line
-                end = window.end_line
+                continue
 
             original_size = end - start + 1
             delta = len(corrected) - original_size
@@ -488,3 +499,42 @@ _TEST_FILE_RE = re.compile(r"(^|/)tests?[_/]|test_[^/]+\.py$", re.IGNORECASE)
 def _is_test_file(path: str) -> bool:
     """Return True if the path looks like a test file."""
     return bool(_TEST_FILE_RE.search(path))
+
+
+def _extract_json(text: str) -> dict | None:
+    """
+    Extract the first valid JSON object from text that may contain prose.
+
+    The model sometimes writes reasoning before or after the JSON block.
+    We scan for the outermost { } pair and attempt to parse it.
+    Returns the parsed dict, or None if no valid JSON object is found.
+    """
+    # Fast path: the whole string is already valid JSON
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Find the first '{' and try progressively larger substrings
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    # Walk from the end looking for the matching closing brace
+    depth = 0
+    for i, ch in enumerate(text[start:], start=start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start : i + 1])
+                except json.JSONDecodeError:
+                    # Malformed — keep scanning for another candidate
+                    depth = 0
+                    start = text.find("{", i + 1)
+                    if start == -1:
+                        return None
+
+    return None

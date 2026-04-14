@@ -454,7 +454,7 @@ class AgentTrace(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
-    task_id: Mapped[str | None] = mapped_column(String(36))
+    task_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     agent_role: Mapped[str] = mapped_column(String(100), nullable=False)
     agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
     trace_type: Mapped[str] = mapped_column(String(50), nullable=False)

@@ -1,17 +1,18 @@
 """
-Tests for the analyst loop in _execute_inner (lines 243-458):
-  - Delta guard: total_delta > _MAX_TOTAL_LINE_DELTA → low_confidence
-  - Too many files guard: > _MAX_FILES_CHANGED → low_confidence
-  - No files written → low_confidence
-  - Validation failure path + retry with re-parsed errors
-  - Full success path: validation passes → commit → PR → FIXED
-  - Commit failed (sha=None) → mark failed
-  - Low confidence with PR → posts unable_to_fix comment
+Tests for _execute_inner pipeline — validates the 3-stage pipeline wiring:
+  classify → retrieve context → run_repair → commit/PR/mark.
+
+All three pipeline stages are mocked at the ci_fixer module level.
+Tests verify:
+  - repair failed (various reasons) → mark_failed + optional PR comment
+  - repair success → commit → PR → FIXED
+  - commit failed → mark failed
+  - push_failed=True → no PR but still FIXED
+  - full success path with PR comment
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -89,86 +90,93 @@ def _make_parsed_with_lint():
     )
 
 
-def _make_fix_plan_with_patches(n_patches=1, delta_per_patch=1):
-    """Return a high-confidence FixPlan with n_patches patches."""
-    from phalanx.ci_fixer.analyst import FilePatch, FixPlan
+def _make_classification(tier="L2"):
+    from phalanx.ci_fixer.classifier import ClassificationResult
 
-    patches = [
-        FilePatch(
-            path=f"src/file{i}.py",
-            start_line=1,
-            end_line=1 + delta_per_patch,
-            corrected_lines=["fixed\n"] * delta_per_patch,
-            reason="fix",
-        )
-        for i in range(n_patches)
-    ]
-    return FixPlan(confidence="high", root_cause="unused import", patches=patches)
-
-
-# ── analyst loop: delta guard ─────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_execute_inner_delta_guard_exceeded():
-    """total_delta > _MAX_TOTAL_LINE_DELTA → low_confidence, mark failed."""
-    agent = _make_agent()
-    mock_run = _make_ci_run()
-    mock_integration = _make_integration()
-
-    mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
-    parsed = _make_parsed_with_lint()
-
-    # Create a fix plan with large delta
-    from phalanx.ci_fixer.analyst import FilePatch, FixPlan
-
-    big_plan = FixPlan(
-        confidence="high",
-        root_cause="big change",
-        patches=[
-            FilePatch(
-                path="src/foo.py",
-                start_line=1,
-                end_line=1,
-                corrected_lines=["x\n"] * (_MAX_TOTAL_LINE_DELTA + 5),
-                reason="big",
-            )
-        ],
+    return ClassificationResult(
+        failure_type="lint",
+        language="python",
+        tool="ruff",
+        complexity_tier=tier,
+        confidence=0.9,
+        root_cause_hypothesis="unused import os",
     )
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
-         patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
-         patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
-         patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = big_plan
-        MockAnalyst.return_value = mock_analyst_inst
-        result = await agent._execute_inner()
 
-    assert result.success is False
-    assert "large" in result.output.get("root_cause", "").lower() or result.output.get("reason") in ("low_confidence",)
+def _make_fix_plan(n_patches=1):
+    from phalanx.ci_fixer.analyst import FilePatch, FixPlan
+
+    return FixPlan(
+        confidence="high",
+        root_cause="unused import os",
+        patches=[FilePatch(f"src/file{i}.py", 1, 1, ["x = 1\n"]) for i in range(n_patches)],
+    )
 
 
-# ── analyst loop: too many files guard ────────────────────────────────────────
+def _make_repair_result(success=True, reason="", fix_plan=None, validation=None, escalate=False):
+    from phalanx.ci_fixer.repair_agent import RepairResult
+
+    return RepairResult(
+        success=success,
+        fix_plan=fix_plan or _make_fix_plan(),
+        validation=validation,
+        iteration=1,
+        escalate=escalate,
+        reason=reason,
+        state_trace=["GATHER_CONTEXT", "GENERATE_PATCH", "VALIDATE_PATCH", "SUBMIT" if success else "GIVE_UP"],
+    )
+
+
+def _make_validation(passed=True, tool_version="ruff 0.4.0"):
+    from phalanx.ci_fixer.validator import ValidationResult
+
+    return ValidationResult(passed=passed, tool="ruff", output="" if passed else "still failing",
+                            tool_version=tool_version)
+
+
+def _make_parity(ok=True):
+    from phalanx.ci_fixer.version_parity import VersionParityResult
+
+    return VersionParityResult(ok=ok, local_version="ruff 0.4.0", failure_version="", reason="ok")
+
+
+def _base_patches(agent, mock_ctx, parsed, classification=None, repair_result=None, context_bundle=None):
+    """Return common patches needed for _execute_inner to reach the pipeline stage."""
+    classification = classification or _make_classification()
+    repair_result = repair_result or _make_repair_result()
+    mock_bundle = context_bundle or MagicMock()
+    mock_bundle.log_excerpt = ""
+
+    return [
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"),
+        patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed),
+        patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock),
+        patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]),
+        patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False),
+        patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True),
+        patch.object(agent, "_trace", new_callable=AsyncMock),
+        # Mock the 3 pipeline stages
+        patch("phalanx.agents.ci_fixer.LLMClassifier") ,
+        patch("phalanx.agents.ci_fixer.ContextRetriever"),
+        patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result),
+    ]
+
+
+# ── repair failed: low confidence ─────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_execute_inner_too_many_files():
-    """> _MAX_FILES_CHANGED patches → low_confidence."""
+async def test_execute_inner_repair_failed_low_confidence():
+    """repair_result.success=False → mark_failed called, returns failure."""
     agent = _make_agent()
     mock_run = _make_ci_run()
     mock_integration = _make_integration()
-
     mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
     parsed = _make_parsed_with_lint()
 
-    big_plan = _make_fix_plan_with_patches(n_patches=_MAX_FILES_CHANGED + 2)
+    classification = _make_classification()
+    repair_result = _make_repair_result(success=False, reason="low_confidence")
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
@@ -178,70 +186,33 @@ async def test_execute_inner_too_many_files():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = big_plan
-        MockAnalyst.return_value = mock_analyst_inst
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark:
+        MockClf.return_value.classify.return_value = classification
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is False
-    assert result.output.get("reason") == "low_confidence"
+    assert result.output["reason"] == "low_confidence"
+    mock_mark.assert_called_once()
 
 
-# ── analyst loop: no files written ───────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_execute_inner_no_files_written():
-    """_apply_patches returns empty → low_confidence."""
-    agent = _make_agent()
-    mock_run = _make_ci_run()
-    mock_integration = _make_integration()
-
-    mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
-    parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
-
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
-         patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
-         patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
-         patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=[]), \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
-        result = await agent._execute_inner()
-
-    assert result.success is False
-    assert result.output.get("reason") == "low_confidence"
-
-
-# ── analyst loop: validation failure, low_confidence with PR comment ──────────
+# ── repair failed + PR → comment_unable_to_fix ────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_execute_inner_validation_failed_with_pr():
-    """validation.passed=False after all iterations + pr_number → comment_unable_to_fix called."""
+    """repair fails with validation_failed + pr_number → comment_unable_to_fix called."""
     agent = _make_agent()
     mock_run = _make_ci_run(pr_number=7)
     mock_integration = _make_integration()
-
     mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
     parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
 
-    mock_validation = MagicMock()
-    mock_validation.passed = False
-    mock_validation.tool = "ruff"
-    mock_validation.tool_version = "ruff 0.4.0"
-    mock_validation.output = "still failing"
+    classification = _make_classification()
+    repair_result = _make_repair_result(success=False, reason="max_iterations_exhausted")
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
@@ -251,44 +222,36 @@ async def test_execute_inner_validation_failed_with_pr():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=["src/foo.py"]), \
-         patch("phalanx.agents.ci_fixer.validate_fix", return_value=mock_validation), \
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
          patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock), \
          patch.object(agent, "_comment_unable_to_fix", new_callable=AsyncMock) as mock_unable:
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
+        MockClf.return_value.classify.return_value = classification
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is False
-    assert result.output.get("reason") == "validation_failed"
+    assert result.output.get("reason") == "max_iterations_exhausted"
     mock_unable.assert_called_once()
 
 
-# ── analyst loop: validation passed → commit failed → mark failed ─────────────
+# ── repair success → commit failed → mark failed ──────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_execute_inner_commit_failed():
-    """validation passes but commit returns sha=None → mark failed."""
+    """repair succeeds but commit returns sha=None → mark failed."""
     agent = _make_agent()
     mock_run = _make_ci_run()
     mock_integration = _make_integration()
-
     mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
     parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
 
-    mock_validation = MagicMock()
-    mock_validation.passed = True
-    mock_validation.tool = "ruff"
-    mock_validation.tool_version = "ruff 0.4.0"
-    mock_validation.output = ""
-
-    from phalanx.ci_fixer.version_parity import VersionParityResult
-
-    mock_parity = VersionParityResult(ok=True, local_version="ruff 0.4.0", failure_version="", reason="ok")
+    classification = _make_classification()
+    validation = _make_validation(passed=True)
+    repair_result = _make_repair_result(success=True, validation=validation)
+    mock_parity = _make_parity()
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
@@ -298,16 +261,15 @@ async def test_execute_inner_commit_failed():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=["src/foo.py"]), \
-         patch("phalanx.agents.ci_fixer.validate_fix", return_value=mock_validation), \
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
                       return_value={"sha": None, "error": "commit failed"}), \
          patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
+        MockClf.return_value.classify.return_value = classification
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is False
@@ -319,7 +281,7 @@ async def test_execute_inner_commit_failed():
 
 @pytest.mark.asyncio
 async def test_execute_inner_success_path():
-    """Full success: validation passes → commit OK → PR opened → FIXED status."""
+    """Full success: repair OK → commit → PR opened → FIXED status."""
     agent = _make_agent()
     mock_run = _make_ci_run(pr_number=3)
     mock_integration = _make_integration()
@@ -346,17 +308,10 @@ async def test_execute_inner_success_path():
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
     parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
-
-    mock_validation = MagicMock()
-    mock_validation.passed = True
-    mock_validation.tool = "ruff"
-    mock_validation.tool_version = "ruff 0.4.0"
-    mock_validation.output = ""
-
-    from phalanx.ci_fixer.version_parity import VersionParityResult
-
-    mock_parity = VersionParityResult(ok=True, local_version="ruff 0.4.0", failure_version="", reason="ok")
+    classification = _make_classification()
+    validation = _make_validation(passed=True)
+    repair_result = _make_repair_result(success=True, validation=validation)
+    mock_parity = _make_parity()
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
@@ -366,9 +321,9 @@ async def test_execute_inner_success_path():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=["src/foo.py"]), \
-         patch("phalanx.agents.ci_fixer.validate_fix", return_value=mock_validation), \
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_get_fingerprint_success_count", new_callable=AsyncMock, return_value=0), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
@@ -376,9 +331,8 @@ async def test_execute_inner_success_path():
          patch.object(agent, "_open_draft_pr", new_callable=AsyncMock, return_value=42), \
          patch.object(agent, "_comment_on_pr", new_callable=AsyncMock), \
          patch.object(agent, "_update_fingerprint_on_success", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
+        MockClf.return_value.classify.return_value = classification
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is True
@@ -415,17 +369,10 @@ async def test_execute_inner_success_push_failed_no_pr():
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
     parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
-
-    mock_validation = MagicMock()
-    mock_validation.passed = True
-    mock_validation.tool = "ruff"
-    mock_validation.tool_version = ""
-    mock_validation.output = ""
-
-    from phalanx.ci_fixer.version_parity import VersionParityResult
-
-    mock_parity = VersionParityResult(ok=True, local_version="", failure_version="", reason="ok")
+    classification = _make_classification()
+    validation = _make_validation(passed=True, tool_version="")
+    repair_result = _make_repair_result(success=True, validation=validation)
+    mock_parity = _make_parity()
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
@@ -435,17 +382,16 @@ async def test_execute_inner_success_push_failed_no_pr():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=["src/foo.py"]), \
-         patch("phalanx.agents.ci_fixer.validate_fix", return_value=mock_validation), \
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
+         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_get_fingerprint_success_count", new_callable=AsyncMock, return_value=0), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
                       return_value={"sha": "deadbeef", "branch": "phalanx/ci-fix/run-loop-001", "push_failed": True}), \
          patch.object(agent, "_update_fingerprint_on_success", new_callable=AsyncMock) as mock_fp_update:
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
+        MockClf.return_value.classify.return_value = classification
+        MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
         result = await agent._execute_inner()
 
     assert result.success is True
@@ -454,92 +400,49 @@ async def test_execute_inner_success_push_failed_no_pr():
     mock_fp_update.assert_called_once()
 
 
-# ── Validation loop: retry path ───────────────────────────────────────────────
+# ── LLM classifier low confidence → skip repair ───────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_execute_inner_validation_retry_then_pass():
-    """First iteration fails validation → second iteration passes."""
+async def test_execute_inner_classifier_low_confidence():
+    """classifier.is_actionable=False → early exit, repair never called."""
     agent = _make_agent()
     mock_run = _make_ci_run()
     mock_integration = _make_integration()
-
-    call_n = {"v": 0}
-    mock_session = AsyncMock()
-    mock_session.commit = AsyncMock()
-
-    async def mock_execute(_stmt):
-        call_n["v"] += 1
-        result = MagicMock()
-        if call_n["v"] == 1:
-            result.scalar_one_or_none.return_value = mock_run
-        elif call_n["v"] == 2:
-            result.scalar_one_or_none.return_value = mock_integration
-        else:
-            result.scalar_one_or_none.return_value = None
-        return result
-
-    mock_session.execute = mock_execute
-    mock_ctx = AsyncMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-    from phalanx.ci_fixer.log_parser import ParsedLog
-
+    mock_ctx, _ = _db_sequence(mock_run, mock_integration, None)
     parsed = _make_parsed_with_lint()
-    good_plan = _make_fix_plan_with_patches(n_patches=1)
 
-    # First call fails, second call passes
-    fail_validation = MagicMock()
-    fail_validation.passed = False
-    fail_validation.tool = "ruff"
-    fail_validation.tool_version = "ruff 0.4.0"
-    fail_validation.output = "E401 still present"
+    from phalanx.ci_fixer.classifier import ClassificationResult
 
-    pass_validation = MagicMock()
-    pass_validation.passed = True
-    pass_validation.tool = "ruff"
-    pass_validation.tool_version = "ruff 0.4.0"
-    pass_validation.output = ""
-
-    validation_calls = {"n": 0}
-    empty_retry = ParsedLog(tool="unknown")  # no errors on retry
-
-    from phalanx.ci_fixer.version_parity import VersionParityResult
-
-    mock_parity = VersionParityResult(ok=True, local_version="ruff 0.4.0", failure_version="", reason="ok")
-
-    def _validation_side_effect(*args, **kwargs):
-        validation_calls["n"] += 1
-        return fail_validation if validation_calls["n"] == 1 else pass_validation
+    low_clf = ClassificationResult(
+        failure_type="unknown",
+        language="unknown",
+        tool="unknown",
+        complexity_tier="L2",
+        confidence=0.2,
+        root_cause_hypothesis="unclear",
+    )
 
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
          patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", side_effect=[parsed, empty_retry]), \
+         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed), \
          patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
          patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_apply_patches", return_value=["src/foo.py"]), \
-         patch("phalanx.agents.ci_fixer.validate_fix", side_effect=_validation_side_effect), \
-         patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
-         patch.object(agent, "_get_fingerprint_success_count", new_callable=AsyncMock, return_value=0), \
-         patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
-                      return_value={"sha": "abc", "push_failed": False}), \
-         patch.object(agent, "_open_draft_pr", new_callable=AsyncMock, return_value=11), \
-         patch.object(agent, "_comment_on_pr", new_callable=AsyncMock), \
-         patch.object(agent, "_update_fingerprint_on_success", new_callable=AsyncMock):
-        mock_analyst_inst = MagicMock()
-        mock_analyst_inst.analyze.return_value = good_plan
-        MockAnalyst.return_value = mock_analyst_inst
+         patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
+         patch("phalanx.agents.ci_fixer.run_repair") as mock_run_repair, \
+         patch.object(agent, "_mark_failed", new_callable=AsyncMock):
+        MockClf.return_value.classify.return_value = low_clf
         result = await agent._execute_inner()
 
-    assert result.success is True
+    assert result.success is False
+    assert result.output["reason"] == "classifier_low_confidence"
+    mock_run_repair.assert_not_called()
 
 
-# ── _trace test (line 100) ─────────────────────────────────────────────────────
+# ── _trace test ────────────────────────────────────────────────────────────────
 
 
 def test_execute_calls_execute_inner():
@@ -562,14 +465,24 @@ def test_execute_calls_execute_inner():
 
 @pytest.mark.asyncio
 async def test_execute_cleans_workspace_on_exception(tmp_path):
-    """execute() calls _cleanup_workspace in finally block even on exception."""
-    agent = _make_agent()
+    from phalanx.agents.base import AgentResult
 
-    workspace = tmp_path / "ci-fixer" / "run-loop-001"
-    workspace.mkdir(parents=True)
+    agent = _make_agent()
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    from phalanx.agents.ci_fixer import _cleanup_workspace
+
+    cleanup_called = {"v": False}
+    original_cleanup = _cleanup_workspace
+
+    def _mock_cleanup(path):
+        cleanup_called["v"] = True
 
     with patch.object(agent, "_execute_inner", new_callable=AsyncMock,
-                      side_effect=RuntimeError("boom")):
+                      side_effect=RuntimeError("boom")), \
+         patch("phalanx.agents.ci_fixer._cleanup_workspace", side_effect=_mock_cleanup):
         result = await agent.execute()
 
     assert result.success is False
+    assert "boom" in result.error

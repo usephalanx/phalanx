@@ -281,7 +281,7 @@ def test_commit_dedup_window_constant():
     assert 1 <= _COMMIT_DEDUP_WINDOW_MINUTES <= 60
 
 
-# ── History weighting in CIFixerAgent._lookup_fix_history ─────────────────────
+# ── History weighting in CIFixerAgent._async_lookup_fix_history ───────────────
 
 
 class TestHistoryWeighting:
@@ -296,40 +296,48 @@ class TestHistoryWeighting:
             return agent
 
     def test_unreliable_fingerprint_returns_none(self):
-        """failure_count >= success_count → _lookup returns None."""
+        """failure_count >= success_count → _async_lookup returns None."""
         import asyncio
         from unittest.mock import AsyncMock
 
         agent = self._make_agent()
-        # Fingerprint with more failures than successes
+        # Fingerprint with more failures than successes — should_use_history → False
         fp = _make_fingerprint(success_count=1, failure_count=3)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = fp
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
 
-        async def mock_lookup(fp_hash):
-            from phalanx.db.models import CIFailureFingerprint
-            # Simulate DB returning a fingerprint with bad stats
-            mock_result = MagicMock()
-            mock_result.scalar_one_or_none.return_value = fp
-            mock_session = MagicMock()
-            mock_session.execute = AsyncMock(return_value=mock_result)
-            # Patch the actual DB call
-            return None  # should_use_history returns False → None returned
+        with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_cm):
+            result = asyncio.run(agent._async_lookup_fix_history("abc123"))
 
-        with patch.object(agent, "_async_lookup_fix_history", side_effect=mock_lookup):
-            result = agent._lookup_fix_history("abc123")
-
-        # Should get None due to history weighting
         assert result is None
 
     def test_reliable_fingerprint_returns_patches(self):
-        """success_count > failure_count → _lookup returns patches."""
+        """success_count > failure_count → _async_lookup returns patches."""
+        import asyncio
+        import json
         from unittest.mock import AsyncMock
 
         agent = self._make_agent()
         expected = [{"path": "src/foo.py", "start_line": 1,
                      "end_line": 1, "corrected_lines": ["x\n"], "reason": ""}]
+        fp = _make_fingerprint(success_count=3, failure_count=1)
+        fp.last_good_patch_json = json.dumps(expected)
+        fp.last_good_tool_version = "ruff 0.4.1"
 
-        with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as m:
-            m.return_value = expected
-            result = agent._lookup_fix_history("abc123")
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = fp
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_cm):
+            result = asyncio.run(agent._async_lookup_fix_history("abc123"))
 
         assert result == expected

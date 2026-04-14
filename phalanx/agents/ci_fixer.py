@@ -39,11 +39,13 @@ from sqlalchemy import select, update
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.soul import CI_FIXER_SOUL
 from phalanx.ci_fixer.analyst import FilePatch, FixPlan, RootCauseAnalyst
+from phalanx.ci_fixer.classifier import LLMClassifier
+from phalanx.ci_fixer.context_retriever import ContextRetriever
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
 from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
+from phalanx.ci_fixer.repair_agent import run_repair
 from phalanx.ci_fixer.suppressor import is_flaky_suppressed, should_use_history
-from phalanx.ci_fixer.validator import validate_fix
 from phalanx.ci_fixer.version_parity import (
     VersionParityResult,
     check_version_parity,
@@ -84,6 +86,13 @@ class CIFixerAgent(BaseAgent):
             task_id=None,  # CI fixer runs outside the task graph — no task row
         )
         self.ci_fix_run_id = ci_fix_run_id
+
+    async def _trace(self, trace_type: str, content: str, context: dict | None = None) -> None:
+        """
+        Override BaseAgent._trace — CI fixer runs have no row in `runs` table
+        (ci_fix_run_id is a ci_fix_runs PK, not a runs PK), so agent_traces
+        inserts would violate the run_id FK.  Skip tracing silently.
+        """
 
     async def execute(self) -> AgentResult:
         self._log.info("ci_fixer.execute.start", ci_fix_run_id=self.ci_fix_run_id)
@@ -201,143 +210,124 @@ class CIFixerAgent(BaseAgent):
             await self._mark_failed(ci_run, "repo_clone_failed")
             return AgentResult(success=False, output={}, error="repo clone failed")
 
-        # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
-        analyst = RootCauseAnalyst(
-            call_llm=self._call_claude,
-            history_lookup=self._lookup_fix_history,
+        # ── 5. Three-stage pipeline: classify → retrieve context → FSM repair ────
+
+        # Stage 1: LLM classifier (GPT-4.1) — fast structured classification
+        classifier = LLMClassifier()
+        classification = classifier.classify(parsed, raw_log=raw_log)
+        self._log.info(
+            "ci_fixer.classified",
+            failure_type=classification.failure_type,
+            tier=classification.complexity_tier,
+            tool_name=classification.tool,
+            confidence=classification.confidence,
+            hypothesis=classification.root_cause_hypothesis,
         )
-        fix_plan: FixPlan | None = None
-        validation_passed = False
-        validation_tool_version = ""
-        current_parsed = parsed
 
-        for iteration in range(1, _MAX_ITERATIONS + 1):
-            self._log.info("ci_fixer.analyst_iteration", iteration=iteration)
+        await self._trace(
+            "reflection",
+            f"**Classification:** {classification.failure_type} / {classification.complexity_tier}\n"
+            f"**Root cause hypothesis:** {classification.root_cause_hypothesis}\n"
+            f"**Confidence:** {classification.confidence:.2f}",
+            {
+                "failure_type": classification.failure_type,
+                "tier": classification.complexity_tier,
+                "confidence": classification.confidence,
+            },
+        )
 
-            fix_plan = analyst.analyze(current_parsed, workspace, fingerprint_hash=fingerprint)
-            self._log.info(
-                "ci_fixer.fix_plan",
-                confidence=fix_plan.confidence,
-                root_cause=fix_plan.root_cause,
-                patches=len(fix_plan.patches),
-                needs_test=fix_plan.needs_new_test,
+        if not classification.is_actionable:
+            await self._mark_failed(ci_run, "classifier_low_confidence")
+            return AgentResult(
+                success=False,
+                output={
+                    "reason": "classifier_low_confidence",
+                    "hypothesis": classification.root_cause_hypothesis,
+                    "tool": parsed.tool,
+                    "fingerprint": fingerprint,
+                },
             )
 
-            await self._trace(
-                "reflection",
-                f"**Root cause:** {fix_plan.root_cause}\n"
-                f"**Confidence:** {fix_plan.confidence}\n"
-                f"**Patches:** {len(fix_plan.patches)} file(s)",
-                {"confidence": fix_plan.confidence, "iteration": iteration},
+        # Stage 2: Context retriever (no LLM) — read files + history lookup
+        async with get_db() as session:
+            retriever = ContextRetriever()
+            context = await retriever.retrieve(
+                parsed_log=parsed,
+                classification=classification,
+                workspace=workspace,
+                repo_full_name=ci_run.repo_full_name,
+                fingerprint_hash=fingerprint,
+                session=session,
             )
+        context.log_excerpt = raw_log[:1200]
 
-            if not fix_plan.is_actionable:
-                self._log.info(
-                    "ci_fixer.low_confidence",
-                    root_cause=fix_plan.root_cause,
-                    iteration=iteration,
-                )
-                break
+        # Stage 3: FSM repair loop (Claude Sonnet) — deterministic L1 or LLM fix
+        repair_result = run_repair(
+            context=context,
+            call_claude=self._call_claude,
+            workspace=workspace,
+            original_parsed=parsed,
+            max_iterations=_MAX_ITERATIONS,
+        )
 
-            # Guard: total line delta across all patches
-            total_delta = sum(abs(p.delta) for p in fix_plan.patches)
-            if total_delta > _MAX_TOTAL_LINE_DELTA:
-                self._log.warning(
-                    "ci_fixer.patch_delta_exceeded",
-                    total_delta=total_delta,
-                    max_allowed=_MAX_TOTAL_LINE_DELTA,
-                )
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause=f"Patch too large ({total_delta} lines changed, max {_MAX_TOTAL_LINE_DELTA})",
-                )
-                break
+        self._log.info(
+            "ci_fixer.repair_done",
+            success=repair_result.success,
+            reason=repair_result.reason,
+            iteration=repair_result.iteration,
+            escalate=repair_result.escalate,
+            used_l1=repair_result.used_l1_pattern,
+            used_history=repair_result.used_history,
+            state_trace=repair_result.state_trace,
+        )
 
-            # Guard: number of files
-            if len(fix_plan.patches) > _MAX_FILES_CHANGED:
-                self._log.warning(
-                    "ci_fixer.too_many_files",
-                    files=len(fix_plan.patches),
-                    max_allowed=_MAX_FILES_CHANGED,
-                )
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause=f"Fix touches {len(fix_plan.patches)} files (max {_MAX_FILES_CHANGED})",
-                )
-                break
+        fix_plan = repair_result.fix_plan
+        validation_passed = repair_result.success
+        validation_tool_version = (
+            repair_result.validation.tool_version
+            if repair_result.validation
+            else ""
+        )
 
-            # Apply patches
-            files_written = self._apply_patches(workspace, fix_plan.patches)
-            if not files_written:
-                self._log.warning("ci_fixer.no_files_written")
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause="Patch application failed — hunk mismatch or guard rejection",
-                )
-                break
-
-            # Validate
-            validation = validate_fix(current_parsed, workspace, original_parsed=parsed)
-            validation_tool_version = validation.tool_version
-            self._log.info(
-                "ci_fixer.validation",
-                passed=validation.passed,
-                tool=validation.tool,
-                tool_version=validation_tool_version,
-                regressions=len(getattr(validation, "regressions", []) or []),
-                iteration=iteration,
-            )
-
-            if validation.passed:
-                validation_passed = True
-                self._log.info("ci_fixer.validation_passed", files=files_written)
-                break
-            else:
-                self._log.warning(
-                    "ci_fixer.validation_failed",
-                    iteration=iteration,
-                    output=validation.output[:300],
-                )
-                await self._trace(
-                    "uncertainty",
-                    f"Validation failed (iteration {iteration}):\n```\n{validation.output[:500]}\n```",
-                    {"iteration": iteration},
-                )
-                if iteration < _MAX_ITERATIONS:
-                    # Re-parse the validation output for the next iteration
-                    retry_parsed = parse_log(validation.output)
-                    if retry_parsed.has_errors:
-                        current_parsed = retry_parsed
-
-        # ── 6. Check final plan ───────────────────────────────────────────────
-        if not fix_plan or not fix_plan.is_actionable or not validation_passed:
-            reason = "low_confidence" if (not fix_plan or not fix_plan.is_actionable) else "validation_failed"
+        # ── 6. Check repair outcome ───────────────────────────────────────────
+        if not repair_result.success:
+            reason = repair_result.reason or "repair_failed"
+            root_cause_str = fix_plan.root_cause if fix_plan else classification.root_cause_hypothesis
             await self._mark_failed_with_fields(
                 ci_run,
                 reason=reason,
                 fingerprint_hash=fingerprint,
                 validation_tool_version=validation_tool_version,
             )
-            # Comment on the PR explaining why we couldn't fix it
             if ci_run.pr_number and integration.github_token:
                 await self._comment_unable_to_fix(
                     integration=integration,
                     ci_run=ci_run,
                     reason=reason,
-                    root_cause=fix_plan.root_cause if fix_plan else "",
+                    root_cause=root_cause_str,
                     tool=parsed.tool,
                 )
             return AgentResult(
                 success=False,
                 output={
                     "reason": reason,
-                    "root_cause": fix_plan.root_cause if fix_plan else "",
+                    "root_cause": root_cause_str,
                     "tool": parsed.tool,
                     "fingerprint": fingerprint,
+                    "escalate": repair_result.escalate,
                 },
             )
 
-        files_written = [p.path for p in fix_plan.patches]
+        # For L1 pattern fixes, files_written comes from fix_plan._l1_files
+        if fix_plan and getattr(fix_plan, "_l1_files", None):
+            files_written = fix_plan._l1_files  # type: ignore[attr-defined]
+        elif fix_plan and fix_plan.patches:
+            files_written = [p.path for p in fix_plan.patches]
+        else:
+            files_written = []
+
+        _root_cause = fix_plan.root_cause if fix_plan else classification.root_cause_hypothesis
+        _confidence = fix_plan.confidence if fix_plan else "high"
 
         # ── 6b. Phase 4: Tool version parity check ────────────────────────────
         # Compare local tool version to the version that caused the failure.
@@ -357,7 +347,7 @@ class CIFixerAgent(BaseAgent):
             fix_branch=fix_branch,
             commit_message=(
                 f"fix(ci): resolve {parsed.tool} failure [{ci_run.ci_provider}]\n\n"
-                f"Root cause: {fix_plan.root_cause}\n"
+                f"Root cause: {_root_cause}\n"
                 f"Files: {', '.join(files_written)}\n"
                 f"Validated: {validation_tool_version}\n"
                 f"CI Fix Run: {self.ci_fix_run_id}"
@@ -397,7 +387,7 @@ class CIFixerAgent(BaseAgent):
                 files_written=files_written,
                 commit_sha=commit_sha,
                 tool=parsed.tool,
-                root_cause=fix_plan.root_cause,
+                root_cause=_root_cause,
                 parsed=parsed,
                 validation_tool_version=validation_tool_version,
                 enable_auto_merge=enable_auto_merge,
@@ -412,7 +402,7 @@ class CIFixerAgent(BaseAgent):
                 files_written=files_written,
                 commit_sha=commit_sha,
                 tool=parsed.tool,
-                root_cause=fix_plan.root_cause,
+                root_cause=_root_cause,
                 parsed=parsed,
                 fix_pr_number=fix_pr_number,
                 validation_tool_version=validation_tool_version,
@@ -439,7 +429,7 @@ class CIFixerAgent(BaseAgent):
         # ── Phase 2: Store winning patches in fingerprint table for future reuse
         await self._update_fingerprint_on_success(
             fingerprint_hash=fingerprint,
-            patches=fix_plan.patches,
+            patches=fix_plan.patches if fix_plan else [],
             tool_version=validation_tool_version,
             parsed_log=parsed,
         )
@@ -451,7 +441,7 @@ class CIFixerAgent(BaseAgent):
             commit_sha=commit_sha,
             fix_branch=fix_branch,
             fix_pr_number=fix_pr_number,
-            root_cause=fix_plan.root_cause,
+            root_cause=_root_cause,
             fingerprint=fingerprint,
         )
 
@@ -459,12 +449,12 @@ class CIFixerAgent(BaseAgent):
             success=True,
             output={
                 "tool": parsed.tool,
-                "root_cause": fix_plan.root_cause,
+                "root_cause": _root_cause,
                 "files_fixed": files_written,
                 "commit_sha": commit_sha,
                 "fix_branch": fix_branch,
                 "fix_pr_number": fix_pr_number,
-                "confidence": fix_plan.confidence,
+                "confidence": _confidence,
                 "fingerprint": fingerprint,
                 "validation_tool_version": validation_tool_version,
             },
@@ -1126,21 +1116,6 @@ class CIFixerAgent(BaseAgent):
                 await session.commit()
         except Exception as exc:
             self._log.warning("ci_fixer.fingerprint_persist_failed", error=str(exc))
-
-    def _lookup_fix_history(self, fingerprint_hash: str) -> list[dict] | None:
-        """
-        Synchronous history lookup — returns previously-successful patch dicts
-        for this fingerprint, or None if no successful history exists.
-
-        Synchronous because RootCauseAnalyst.analyze() is synchronous
-        (Anthropic SDK _call_claude is synchronous).  We run the async DB call
-        in a new event loop via asyncio.run() to stay compatible.
-        """
-        try:
-            return asyncio.run(self._async_lookup_fix_history(fingerprint_hash))
-        except Exception as exc:
-            self._log.warning("ci_fixer.history_lookup_failed", error=str(exc))
-            return None
 
     async def _async_lookup_fix_history(self, fingerprint_hash: str) -> list[dict] | None:
         """Async body of _lookup_fix_history."""
