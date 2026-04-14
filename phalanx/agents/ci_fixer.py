@@ -81,7 +81,7 @@ class CIFixerAgent(BaseAgent):
         super().__init__(
             run_id=ci_fix_run_id,
             agent_id="ci-fixer",
-            task_id=ci_fix_run_id,
+            task_id=None,  # CI fixer runs outside the task graph — no task row
         )
         self.ci_fix_run_id = ci_fix_run_id
 
