@@ -874,9 +874,9 @@ class CIFixOutcome(Base):
 
     __tablename__ = "ci_fix_outcomes"
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     ci_fix_run_id: Mapped[str] = mapped_column(
-        Text,
+        UUID(as_uuid=False),
         ForeignKey("ci_fix_runs.id", ondelete="CASCADE"),
         nullable=False,
     )
