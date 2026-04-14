@@ -109,3 +109,107 @@ class TestValidateFix:
             result = validate_fix(parsed, tmp_path)
         assert result.passed is False
         assert "timed out" in result.output
+
+    def test_mypy_pass(self, tmp_path):
+        parsed = _parsed("mypy", type_errors=[
+            TypeError(file="phalanx/foo.py", line=5, col=0, message="type error")
+        ])
+        with patch("subprocess.run", return_value=self._mock_run(0)):
+            result = validate_fix(parsed, tmp_path)
+        assert result.passed is True
+        assert result.tool == "mypy"
+
+    def test_mypy_fail(self, tmp_path):
+        parsed = _parsed("mypy", type_errors=[
+            TypeError(file="phalanx/foo.py", line=5, col=0, message="type error")
+        ])
+        with patch("subprocess.run", return_value=self._mock_run(1, "", "phalanx/foo.py:5: error")):
+            result = validate_fix(parsed, tmp_path)
+        assert result.passed is False
+
+    def test_pytest_pass(self, tmp_path):
+        parsed = _parsed("pytest", test_failures=[
+            TestFailure(test_id="tests/unit/test_foo.py::test_bar", file="tests/unit/test_foo.py", message="")
+        ])
+        with patch("subprocess.run", return_value=self._mock_run(0)):
+            result = validate_fix(parsed, tmp_path)
+        assert result.passed is True
+        assert result.tool == "pytest"
+
+    def test_pytest_fail(self, tmp_path):
+        parsed = _parsed("pytest", test_failures=[
+            TestFailure(test_id="tests/unit/test_foo.py::test_bar", file="tests/unit/test_foo.py", message="")
+        ])
+        with patch("subprocess.run", return_value=self._mock_run(1, "", "FAILED")):
+            result = validate_fix(parsed, tmp_path)
+        assert result.passed is False
+
+    def test_tool_version_captured(self, tmp_path):
+        """tool_version is populated from --version output."""
+        parsed = _parsed("ruff", lint_errors=[
+            LintError(file="phalanx/foo.py", line=1, col=1, code="F401", message="unused")
+        ])
+        # First call = --version, subsequent = ruff check
+        def side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                m = self._mock_run(0, "ruff 0.4.1")
+                return m
+            return self._mock_run(0, "All good")
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = validate_fix(parsed, tmp_path)
+        assert result.passed is True
+        assert "ruff" in result.tool_version
+
+    def test_regression_check_fires_on_new_error(self, tmp_path):
+        """Regression check catches errors introduced into other files."""
+        from phalanx.ci_fixer.log_parser import parse_log
+
+        original = _parsed("ruff", lint_errors=[
+            LintError(file="phalanx/foo.py", line=1, col=1, code="F401", message="unused")
+        ])
+        fixed_parsed = _parsed("ruff", lint_errors=[
+            LintError(file="phalanx/foo.py", line=1, col=1, code="F401", message="unused")
+        ])
+        # Primary check passes (foo.py is clean), but broad check finds a NEW error in bar.py
+        call_count = {"n": 0}
+
+        def side_effect(cmd, **kwargs):
+            call_count["n"] += 1
+            if "--version" in cmd:
+                return self._mock_run(0, "ruff 0.4.1")
+            if "." in cmd:
+                # Broad check — returns a new error in bar.py
+                return self._mock_run(1, "phalanx/bar.py:5:1: E501 line too long")
+            return self._mock_run(0)  # primary file check passes
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = validate_fix(fixed_parsed, tmp_path, original_parsed=original)
+
+        assert result.passed is False
+        assert "phalanx/bar.py" in result.output
+        assert len(result.regressions) >= 1
+
+    def test_regression_check_skips_pre_existing_errors(self, tmp_path):
+        """Pre-existing errors in original_parsed are not counted as regressions."""
+        original = _parsed("ruff", lint_errors=[
+            LintError(file="phalanx/bar.py", line=5, col=1, code="E501", message="line too long")
+        ])
+        fixed_parsed = _parsed("ruff", lint_errors=[
+            LintError(file="phalanx/foo.py", line=1, col=1, code="F401", message="unused")
+        ])
+
+        def side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                return self._mock_run(0, "ruff 0.4.1")
+            if "." in cmd:
+                # Broad check — same bar.py error that was already there
+                return self._mock_run(1, "phalanx/bar.py:5:1: E501 line too long")
+            return self._mock_run(0)
+
+        with patch("subprocess.run", side_effect=side_effect):
+            result = validate_fix(fixed_parsed, tmp_path, original_parsed=original)
+
+        # bar.py E501 was pre-existing → not a regression → passes
+        assert result.passed is True
+        assert result.regressions == []

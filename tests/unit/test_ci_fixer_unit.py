@@ -326,51 +326,187 @@ from unittest.mock import patch  # noqa: E402
 
 
 class TestRootCauseAnalyst:
-    """Tests for the RootCauseAnalyst LLM confirmation step."""
+    """Tests for the RootCauseAnalyst LLM confirmation step (windowed API)."""
+
+    # File content used across tests — 5 lines, error on line 1
+    _FILE_LINES = [
+        "import os\n",
+        "import asyncio\n",
+        "\n",
+        "def main():\n",
+        "    pass\n",
+    ]
 
     def _make_analyst(self, llm_response: str):
         from phalanx.ci_fixer.analyst import RootCauseAnalyst
 
         return RootCauseAnalyst(call_llm=lambda **_: llm_response)
 
-    def _make_parsed_log(self, tool="ruff"):
+    def _make_parsed_log(self, tool="ruff", file="src/foo.py"):
         from phalanx.ci_fixer.log_parser import LintError, ParsedLog
 
         return ParsedLog(
             tool=tool,
-            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="'os' imported but unused")],
+            lint_errors=[
+                LintError(file=file, line=1, col=1, code="F401", message="'os' imported but unused")
+            ],
         )
 
-    def test_valid_json_returns_fix_plan(self, tmp_path):
+    def _write_file(self, tmp_path, rel_path: str) -> None:
+        """Create the test file in tmp_path so the analyst can read a window."""
+        target = tmp_path / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("".join(self._FILE_LINES))
+
+    def _patch_response(self, path: str, confidence: str = "high", **extra) -> str:
+        """Build a valid windowed-patch JSON response."""
         import json as _json
 
-        response = _json.dumps({
-            "confidence": "high",
+        # corrected_lines = original window minus the first line (import os)
+        corrected = self._FILE_LINES[1:]  # remove "import os\n"
+        patch = {
+            "path": path,
+            "start_line": 1,
+            "end_line": len(self._FILE_LINES),
+            "corrected_lines": corrected,
+            "reason": "removed unused import",
+        }
+        data = {
+            "confidence": confidence,
             "root_cause": "unused import",
-            "patches": [{"path": "src/foo.py", "content": "x = 1\n", "reason": "removed import"}],
+            "patches": [patch],
             "needs_new_test": False,
-        })
-        analyst = self._make_analyst(response)
+            **extra,
+        }
+        return _json.dumps(data)
+
+    # ── Happy path ─────────────────────────────────────────────────────────────
+
+    def test_valid_json_returns_fix_plan(self, tmp_path):
+        self._write_file(tmp_path, "src/foo.py")
+        analyst = self._make_analyst(self._patch_response("src/foo.py"))
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert plan.confidence == "high"
         assert plan.root_cause == "unused import"
         assert len(plan.patches) == 1
         assert plan.is_actionable
 
+    def test_medium_confidence_is_actionable(self, tmp_path):
+        self._write_file(tmp_path, "src/foo.py")
+        analyst = self._make_analyst(self._patch_response("src/foo.py", confidence="medium"))
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "medium"
+        assert plan.is_actionable
+
+    def test_patch_delta_stored(self, tmp_path):
+        """FilePatch.delta is negative when a line is removed."""
+        self._write_file(tmp_path, "src/foo.py")
+        analyst = self._make_analyst(self._patch_response("src/foo.py"))
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.patches[0].delta == -1   # removed 1 line (import os)
+
+    # ── Low confidence / no patches ───────────────────────────────────────────
+
     def test_low_confidence_returns_empty_patches(self, tmp_path):
-        response = '{"confidence": "low", "root_cause": "unclear", "patches": [], "needs_new_test": false}'
+        self._write_file(tmp_path, "src/foo.py")
+        import json as _j
+        response = _j.dumps({"confidence": "low", "root_cause": "unclear",
+                              "patches": [], "needs_new_test": False})
         analyst = self._make_analyst(response)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert plan.confidence == "low"
         assert not plan.is_actionable
 
+    def test_no_errors_returns_low_confidence(self, tmp_path):
+        from phalanx.ci_fixer.analyst import RootCauseAnalyst
+        from phalanx.ci_fixer.log_parser import ParsedLog
+
+        analyst = RootCauseAnalyst(call_llm=lambda **_: "{}")
+        plan = analyst.analyze(ParsedLog(tool="unknown"), tmp_path)
+        assert plan.confidence == "low"
+
+    def test_file_not_in_workspace_returns_low_confidence(self, tmp_path):
+        """No file created in tmp_path → windows empty → low confidence."""
+        analyst = self._make_analyst(self._patch_response("src/foo.py"))
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert plan.confidence == "low"
+
+    # ── Guard rails ────────────────────────────────────────────────────────────
+
+    def test_patch_for_unknown_file_rejected(self, tmp_path):
+        """LLM returns a patch for a file we never sent → rejected → no actionable patches."""
+        self._write_file(tmp_path, "src/foo.py")
+        import json as _j
+        response = _j.dumps({
+            "confidence": "high",
+            "root_cause": "x",
+            "patches": [{
+                "path": "src/invented_file.py",
+                "start_line": 1, "end_line": 3,
+                "corrected_lines": ["x = 1\n"],
+                "reason": "invented",
+            }],
+            "needs_new_test": False,
+        })
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        # All patches rejected → downgraded to low
+        assert plan.confidence == "low"
+        assert len(plan.patches) == 0
+
+    def test_patch_for_test_file_rejected(self, tmp_path):
+        """Patches targeting test files are always rejected."""
+        self._write_file(tmp_path, "tests/test_foo.py")
+        import json as _j
+        response = _j.dumps({
+            "confidence": "high",
+            "root_cause": "x",
+            "patches": [{
+                "path": "tests/test_foo.py",
+                "start_line": 1, "end_line": 3,
+                "corrected_lines": ["x = 1\n"],
+                "reason": "bad",
+            }],
+            "needs_new_test": False,
+        })
+        parsed = self._make_parsed_log(file="tests/test_foo.py")
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(parsed, tmp_path)
+        assert len(plan.patches) == 0
+
+    def test_patch_delta_too_large_rejected(self, tmp_path):
+        """corrected_lines that differ by > MAX_LINE_DELTA from the window → rejected."""
+        self._write_file(tmp_path, "src/foo.py")
+        import json as _j
+        # Window is 5 lines; returning 50 lines → delta = 45 → rejected
+        big_lines = [f"line {i}\n" for i in range(50)]
+        response = _j.dumps({
+            "confidence": "high",
+            "root_cause": "x",
+            "patches": [{
+                "path": "src/foo.py",
+                "start_line": 1, "end_line": len(self._FILE_LINES),
+                "corrected_lines": big_lines,
+                "reason": "too big",
+            }],
+            "needs_new_test": False,
+        })
+        analyst = self._make_analyst(response)
+        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
+        assert len(plan.patches) == 0
+
+    # ── JSON parsing edge cases ────────────────────────────────────────────────
+
     def test_markdown_fences_stripped(self, tmp_path):
-        response = '```json\n{"confidence": "high", "root_cause": "x", "patches": [], "needs_new_test": false}\n```'
+        self._write_file(tmp_path, "src/foo.py")
+        inner = self._patch_response("src/foo.py")
+        response = f"```json\n{inner}\n```"
         analyst = self._make_analyst(response)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert plan.confidence == "high"
 
     def test_invalid_json_returns_low_confidence(self, tmp_path):
+        self._write_file(tmp_path, "src/foo.py")
         analyst = self._make_analyst("not json at all")
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert plan.confidence == "low"
@@ -381,28 +517,7 @@ class TestRootCauseAnalyst:
         def bad_llm(**_):
             raise RuntimeError("API error")
 
+        self._write_file(tmp_path, "src/foo.py")
         analyst = RootCauseAnalyst(call_llm=bad_llm)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
-        assert plan.confidence == "low"
-
-    def test_medium_confidence_is_actionable(self, tmp_path):
-        import json as _json
-
-        response = _json.dumps({
-            "confidence": "medium",
-            "root_cause": "probably this",
-            "patches": [{"path": "x.py", "content": "pass\n", "reason": "fix"}],
-            "needs_new_test": False,
-        })
-        analyst = self._make_analyst(response)
-        plan = analyst.analyze(self._make_parsed_log(), tmp_path)
-        assert plan.confidence == "medium"
-        assert plan.is_actionable
-
-    def test_no_errors_returns_low_confidence(self, tmp_path):
-        from phalanx.ci_fixer.analyst import RootCauseAnalyst
-        from phalanx.ci_fixer.log_parser import ParsedLog
-
-        analyst = RootCauseAnalyst(call_llm=lambda **_: "{}")
-        plan = analyst.analyze(ParsedLog(tool="unknown"), tmp_path)
         assert plan.confidence == "low"
