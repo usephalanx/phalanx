@@ -52,8 +52,8 @@ class ContextBundle:
     Typed contract: retriever → repair agent.
     """
 
-    parsed_log: "ParsedLog"
-    classification: "ClassificationResult"
+    parsed_log: ParsedLog
+    classification: ClassificationResult
     workspace: Path
 
     # Files to repair (relative paths from repo root)
@@ -93,12 +93,12 @@ class ContextRetriever:
 
     async def retrieve(
         self,
-        parsed_log: "ParsedLog",
-        classification: "ClassificationResult",
+        parsed_log: ParsedLog,
+        classification: ClassificationResult,
         workspace: Path,
         repo_full_name: str,
         fingerprint_hash: str,
-        session: "AsyncSession",
+        session: AsyncSession,
     ) -> ContextBundle:
         """
         Build a ContextBundle.
@@ -115,7 +115,6 @@ class ContextRetriever:
             session, fingerprint_hash, repo_full_name, classification.tool
         )
 
-        from phalanx.ci_fixer.log_parser import clean_log  # noqa: PLC0415
 
         bundle = ContextBundle(
             parsed_log=parsed_log,
@@ -200,7 +199,7 @@ def _read_imported_files(
 
 
 async def _query_similar_fixes(
-    session: "AsyncSession",
+    session: AsyncSession,
     fingerprint_hash: str,
     repo_full_name: str,
     tool: str,
@@ -214,8 +213,8 @@ async def _query_similar_fixes(
     """
     from sqlalchemy import and_, select  # noqa: PLC0415
 
-    from phalanx.db.models import CIFailureFingerprint  # noqa: PLC0415
     from phalanx.ci_fixer.suppressor import should_use_history  # noqa: PLC0415
+    from phalanx.db.models import CIFailureFingerprint  # noqa: PLC0415
 
     results: list[SimilarFix] = []
 

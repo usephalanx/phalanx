@@ -171,7 +171,7 @@ class LLMClassifier:
 
     def classify(
         self,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
         raw_log: str,
     ) -> ClassificationResult:
         """
@@ -186,7 +186,7 @@ class LLMClassifier:
 
     def _llm_classify(
         self,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
         raw_log: str,
     ) -> ClassificationResult:
         from phalanx.agents.openai_client import OpenAIClient  # noqa: PLC0415
@@ -223,7 +223,7 @@ def _parse_classification(data: dict) -> ClassificationResult:
     )
 
 
-def _classify_from_parsed(parsed_log: "ParsedLog") -> ClassificationResult:
+def _classify_from_parsed(parsed_log: ParsedLog) -> ClassificationResult:
     """
     Deterministic fallback — derives ClassificationResult from ParsedLog
     without any LLM call. Uses the existing classify_failure() regex

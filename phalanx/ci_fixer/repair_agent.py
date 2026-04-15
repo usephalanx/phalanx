@@ -39,8 +39,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -49,7 +48,9 @@ from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
 from phalanx.ci_fixer.validator import validate_fix
 
 if TYPE_CHECKING:
-    from phalanx.ci_fixer.classifier import ClassificationResult
+    from collections.abc import Callable
+    from pathlib import Path
+
     from phalanx.ci_fixer.context_retriever import ContextBundle
     from phalanx.ci_fixer.validator import ValidationResult
 
@@ -83,8 +84,8 @@ class RepairResult:
     """Outcome of a complete repair agent run."""
 
     success: bool
-    fix_plan: "FixPlan | None" = None
-    validation: "ValidationResult | None" = None
+    fix_plan: FixPlan | None = None
+    validation: ValidationResult | None = None
     iteration: int = 0
     escalate: bool = False       # True → human review warranted
     reason: str = ""             # failure reason key (machine-readable)
@@ -97,10 +98,10 @@ class RepairResult:
 
 
 def run_repair(
-    context: "ContextBundle",
+    context: ContextBundle,
     call_claude: Callable,
     workspace: Path,
-    original_parsed: "ParsedLog",
+    original_parsed: ParsedLog,
     max_iterations: int = _MAX_ITERATIONS,
 ) -> RepairResult:
     """
@@ -132,10 +133,10 @@ def run_repair(
 class _RepairFSM:
     def __init__(
         self,
-        context: "ContextBundle",
+        context: ContextBundle,
         call_claude: Callable,
         workspace: Path,
-        original_parsed: "ParsedLog",
+        original_parsed: ParsedLog,
         max_iterations: int,
     ) -> None:
         self._context = context
@@ -146,8 +147,8 @@ class _RepairFSM:
 
         self._state = RepairState.GATHER_CONTEXT
         self._iteration = 0
-        self._fix_plan: "FixPlan | None" = None
-        self._validation: "ValidationResult | None" = None
+        self._fix_plan: FixPlan | None = None
+        self._validation: ValidationResult | None = None
         self._current_parsed = context.parsed_log
         self._trace: list[str] = []
 
@@ -352,7 +353,7 @@ class _RepairFSM:
 # ── L1 pattern fixes (deterministic, no LLM) ──────────────────────────────────
 
 
-def _try_l1_fix(parsed: "ParsedLog", workspace: Path) -> list[str] | None:
+def _try_l1_fix(parsed: ParsedLog, workspace: Path) -> list[str] | None:
     """
     Apply deterministic L1 fixes for simple lint codes.
     Returns list of modified relative paths on success, None if nothing applied.
@@ -397,7 +398,7 @@ def _file_was_modified(path: Path) -> bool:
 # ── History replay ─────────────────────────────────────────────────────────────
 
 
-def _try_replay_history(context: "ContextBundle", workspace: Path) -> "FixPlan | None":
+def _try_replay_history(context: ContextBundle, workspace: Path) -> FixPlan | None:
     """
     Attempt to replay a cached patch from context.similar_fixes.
     Validates the patch is still applicable (lines haven't shifted too much).

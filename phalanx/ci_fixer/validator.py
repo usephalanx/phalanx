@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 
 if TYPE_CHECKING:
-    from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TypeError
+    from pathlib import Path
+
+    from phalanx.ci_fixer.log_parser import ParsedLog
 
 log = structlog.get_logger(__name__)
 
@@ -47,9 +48,9 @@ class ValidationResult:
 
 
 def validate_fix(
-    parsed_log: "ParsedLog",
+    parsed_log: ParsedLog,
     workspace: Path,
-    original_parsed: "ParsedLog | None" = None,
+    original_parsed: ParsedLog | None = None,
 ) -> ValidationResult:
     """
     Re-run the failing tool against the workspace to confirm the fix.
@@ -133,7 +134,7 @@ def _run_mypy(workspace: Path, files: list[str], tool_version: str) -> Validatio
 
 
 def _run_pytest(
-    workspace: Path, parsed_log: "ParsedLog", tool_version: str
+    workspace: Path, parsed_log: ParsedLog, tool_version: str
 ) -> ValidationResult:
     test_files = list({f.file for f in parsed_log.test_failures})
     targets = test_files if test_files else ["tests/"]
@@ -162,7 +163,7 @@ def _run_node_linter(
 def _regression_check(
     tool: str,
     workspace: Path,
-    original_parsed: "ParsedLog",
+    original_parsed: ParsedLog,
     tool_version: str,
 ) -> list:
     """

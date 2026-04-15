@@ -23,10 +23,8 @@ all runs that:
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import and_, select, update
@@ -34,9 +32,6 @@ from sqlalchemy import and_, select, update
 from phalanx.db.models import CIFailureFingerprint, CIFixOutcome, CIFixRun
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
-
-if TYPE_CHECKING:
-    pass
 
 log = structlog.get_logger(__name__)
 

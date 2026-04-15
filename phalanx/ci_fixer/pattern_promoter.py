@@ -16,7 +16,6 @@ The promoter runs as a Celery beat task every hour.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from datetime import UTC, datetime
 
