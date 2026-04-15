@@ -310,7 +310,11 @@ class CIFixerAgent(BaseAgent):
 
         # ── 6. Check final plan ───────────────────────────────────────────────
         if not fix_plan or not fix_plan.is_actionable or not validation_passed:
-            reason = "low_confidence" if (not fix_plan or not fix_plan.is_actionable) else "validation_failed"
+            reason = (
+                "low_confidence"
+                if (not fix_plan or not fix_plan.is_actionable)
+                else "validation_failed"
+            )
             await self._mark_failed_with_fields(
                 ci_run,
                 reason=reason,
@@ -506,16 +510,14 @@ class CIFixerAgent(BaseAgent):
                 continue
 
             try:
-                original_lines = full_path.read_text(encoding="utf-8").splitlines(
-                    keepends=True
-                )
+                original_lines = full_path.read_text(encoding="utf-8").splitlines(keepends=True)
             except Exception as exc:
                 self._log.warning("ci_fixer.patch_read_failed", path=patch.path, error=str(exc))
                 continue
 
             # Convert to 0-indexed slice
             s = patch.start_line - 1
-            e = patch.end_line       # exclusive in Python slice
+            e = patch.end_line  # exclusive in Python slice
 
             # Bounds check
             if s < 0 or e > len(original_lines) or s >= e:
@@ -645,9 +647,8 @@ class CIFixerAgent(BaseAgent):
             push_failed = False
             if github_token and repo.remotes:
                 try:
-                    auth_url = (
-                        f"https://github.com/{repo_full_name}.git"
-                        .replace("https://", f"https://{github_token}@")
+                    auth_url = f"https://github.com/{repo_full_name}.git".replace(
+                        "https://", f"https://{github_token}@"
                     )
                     repo.git.push(auth_url, f"HEAD:{fix_branch}", "--set-upstream")
                     self._log.info("ci_fixer.git.pushed", branch=fix_branch, sha=sha)
@@ -713,8 +714,7 @@ class CIFixerAgent(BaseAgent):
         footer = (
             "*Auto-merge is enabled — will merge when all checks pass.*\n"
             if enable_auto_merge
-            else
-            "*This is a draft PR — Phalanx never auto-merges. "
+            else "*This is a draft PR — Phalanx never auto-merges. "
             "Review the diff above, then mark ready and merge if correct.*\n"
         )
 
@@ -960,9 +960,7 @@ class CIFixerAgent(BaseAgent):
     # ── DB helpers ─────────────────────────────────────────────────────────────
 
     async def _load_ci_fix_run(self, session) -> CIFixRun | None:
-        result = await session.execute(
-            select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id)
-        )
+        result = await session.execute(select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id))
         return result.scalar_one_or_none()
 
     async def _load_integration(self, session, integration_id: str) -> CIIntegration | None:
@@ -1017,7 +1015,6 @@ class CIFixerAgent(BaseAgent):
             )
 
         try:
-
             async with get_db() as session:
                 result = await session.execute(
                     select(CIFailureFingerprint).where(
@@ -1081,9 +1078,7 @@ class CIFixerAgent(BaseAgent):
             from sqlalchemy import and_, or_  # noqa: PLC0415
 
             # Collect (file, code) pairs from the parsed errors
-            error_keys = [
-                (e.file, e.code) for e in parsed_log.lint_errors
-            ] + [
+            error_keys = [(e.file, e.code) for e in parsed_log.lint_errors] + [
                 (e.file, getattr(e, "code", None)) for e in parsed_log.type_errors
             ]
 

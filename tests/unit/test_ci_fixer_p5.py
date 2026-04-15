@@ -112,9 +112,7 @@ class TestFormatProactiveComment:
         assert "ruff" in comment
 
     def test_info_findings_different_header(self):
-        findings = [
-            ProactiveFinding("fp1", "ruff", "info pattern", "info", ["f.py"])
-        ]
+        findings = [ProactiveFinding("fp1", "ruff", "info pattern", "info", ["f.py"])]
         comment = format_proactive_comment(findings, 42)
         assert "informational" in comment.lower() or "info" in comment.lower()
 
@@ -141,15 +139,11 @@ class TestShouldPostProactiveComment:
         assert not should_post_proactive_comment([])
 
     def test_only_info_findings_false(self):
-        findings = [
-            ProactiveFinding("fp1", "ruff", "info", "info", ["f.py"])
-        ]
+        findings = [ProactiveFinding("fp1", "ruff", "info", "info", ["f.py"])]
         assert not should_post_proactive_comment(findings)
 
     def test_warning_finding_true(self):
-        findings = [
-            ProactiveFinding("fp1", "ruff", "warning pattern", "warning", ["f.py"])
-        ]
+        findings = [ProactiveFinding("fp1", "ruff", "warning pattern", "warning", ["f.py"])]
         assert should_post_proactive_comment(findings)
 
     def test_mixed_info_and_warning_true(self):
@@ -165,6 +159,7 @@ class TestShouldPostProactiveComment:
 
 def test_pattern_registry_columns():
     from phalanx.db.models import CIPatternRegistry
+
     assert hasattr(CIPatternRegistry, "fingerprint_hash")
     assert hasattr(CIPatternRegistry, "tool")
     assert hasattr(CIPatternRegistry, "repo_count")
@@ -174,6 +169,7 @@ def test_pattern_registry_columns():
 
 def test_proactive_scan_columns():
     from phalanx.db.models import CIProactiveScan
+
     assert hasattr(CIProactiveScan, "repo_full_name")
     assert hasattr(CIProactiveScan, "pr_number")
     assert hasattr(CIProactiveScan, "findings_json")

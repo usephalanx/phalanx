@@ -90,9 +90,7 @@ async def _process_run(run: CIFixRun, now: datetime) -> None:
     # Which polls have already been recorded?
     async with get_db() as session:
         result = await session.execute(
-            select(CIFixOutcome.poll_number).where(
-                CIFixOutcome.ci_fix_run_id == run.id
-            )
+            select(CIFixOutcome.poll_number).where(CIFixOutcome.ci_fix_run_id == run.id)
         )
         done_polls = {row[0] for row in result.all()}
 
@@ -198,10 +196,12 @@ async def _get_github_token(run: CIFixRun) -> str | None:
         if integration.ci_api_key_enc:
             # Decrypt if needed — same logic as CIFixerAgent._decrypt_key
             from phalanx.config.settings import get_settings  # noqa: PLC0415
+
             settings = get_settings()
             if settings.encryption_key:
                 try:
                     from cryptography.fernet import Fernet  # noqa: PLC0415
+
                     f = Fernet(settings.encryption_key.encode())
                     return f.decrypt(integration.ci_api_key_enc.encode()).decode()
                 except Exception:
@@ -281,9 +281,7 @@ async def _mark_outcome_checked(run: CIFixRun) -> None:
     """Mark a CIFixRun as fully outcome-checked — no more polling."""
     async with get_db() as session:
         await session.execute(
-            update(CIFixRun)
-            .where(CIFixRun.id == run.id)
-            .values(outcome_checked=True)
+            update(CIFixRun).where(CIFixRun.id == run.id).values(outcome_checked=True)
         )
         await session.commit()
 

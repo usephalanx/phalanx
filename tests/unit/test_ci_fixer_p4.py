@@ -169,6 +169,7 @@ class TestFormatParityNotice:
 def test_ci_integration_auto_merge_column_exists():
     """Phase 4 columns exist on CIIntegration model."""
     from phalanx.db.models import CIIntegration
+
     # Verify the mapped columns exist by inspecting the class
     assert hasattr(CIIntegration, "auto_merge")
     assert hasattr(CIIntegration, "min_success_count")
@@ -177,4 +178,5 @@ def test_ci_integration_auto_merge_column_exists():
 def test_ci_fix_run_parity_column_exists():
     """Phase 4 column exists on CIFixRun model."""
     from phalanx.db.models import CIFixRun
+
     assert hasattr(CIFixRun, "tool_version_parity_ok")

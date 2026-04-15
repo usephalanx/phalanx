@@ -52,8 +52,9 @@ async def test_execute_catches_unhandled_exception():
     """execute() wraps _execute_inner exceptions and returns AgentResult(success=False)."""
     agent = _make_agent()
 
-    with patch.object(agent, "_execute_inner", new_callable=AsyncMock,
-                      side_effect=RuntimeError("unexpected boom")):
+    with patch.object(
+        agent, "_execute_inner", new_callable=AsyncMock, side_effect=RuntimeError("unexpected boom")
+    ):
         result = await agent.execute()
 
     assert result.success is False
@@ -64,10 +65,15 @@ async def test_execute_catches_unhandled_exception():
 async def test_execute_returns_inner_result_on_success():
     """execute() propagates AgentResult from _execute_inner."""
     from phalanx.agents.base import AgentResult
+
     agent = _make_agent()
 
-    with patch.object(agent, "_execute_inner", new_callable=AsyncMock,
-                      return_value=AgentResult(success=True, output={"done": True})):
+    with patch.object(
+        agent,
+        "_execute_inner",
+        new_callable=AsyncMock,
+        return_value=AgentResult(success=True, output={"done": True}),
+    ):
         result = await agent.execute()
 
     assert result.success is True
@@ -169,13 +175,16 @@ async def test_execute_inner_no_structured_errors():
 
     # parse_log returns empty → no errors
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     empty_parsed = ParsedLog(tool="unknown")
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value=""), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=empty_parsed), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_mark_failed", new_callable=AsyncMock):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value=""),
+        patch("phalanx.agents.ci_fixer.parse_log", return_value=empty_parsed),
+        patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock),
+        patch.object(agent, "_mark_failed", new_callable=AsyncMock),
+    ):
         result = await agent._execute_inner()
 
     assert result.success is False
@@ -190,6 +199,7 @@ async def test_load_flaky_patterns_no_lint_errors():
     """Returns [] immediately when no lint/type errors."""
     agent = _make_agent()
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="pytest")  # only test failures, no lint errors
 
     result = await agent._load_flaky_patterns("acme/backend", parsed)
@@ -204,7 +214,7 @@ async def test_load_flaky_patterns_returns_rows():
 
     parsed = ParsedLog(
         tool="ruff",
-        lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")]
+        lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")],
     )
 
     mock_pattern = MagicMock()
@@ -227,7 +237,7 @@ async def test_load_flaky_patterns_db_error_returns_empty():
 
     parsed = ParsedLog(
         tool="ruff",
-        lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")]
+        lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")],
     )
 
     with patch("phalanx.agents.ci_fixer.get_db", side_effect=Exception("DB down")):
@@ -248,8 +258,11 @@ async def test_clone_repo_generic_exception_returns_false(tmp_path):
     mock_repo_class = MagicMock()
     mock_repo_class.clone_from.side_effect = Exception("authentication failed")
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock, return_value=False):
+    with patch(
+        "phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
         result = await agent._clone_repo(tmp_path, "acme/backend", "main", "abc", "token")
 
     assert result is False
@@ -267,8 +280,11 @@ async def test_clone_repo_existing_git_dir(tmp_path):
     mock_repo.remotes.origin.fetch = MagicMock()
     mock_repo.git.checkout = MagicMock()
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock, return_value=True):
+    with patch(
+        "phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
         result = await agent._clone_repo(tmp_path, "acme/backend", "main", "abc", "token")
 
     assert result is True
@@ -286,8 +302,11 @@ async def test_commit_to_safe_branch_not_git_repo(tmp_path):
     try:
         from git.exc import InvalidGitRepositoryError
 
-        with patch("phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
-                   new_callable=AsyncMock, return_value={"sha": None, "error": "not a git repo"}):
+        with patch(
+            "phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
+            new_callable=AsyncMock,
+            return_value={"sha": None, "error": "not a git repo"},
+        ):
             result = await agent._commit_to_safe_branch(
                 workspace=tmp_path,
                 source_branch="main",
@@ -308,9 +327,11 @@ async def test_commit_to_safe_branch_exception(tmp_path):
     """Exception → returns sha=None with error key."""
     agent = _make_agent()
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
-               new_callable=AsyncMock,
-               return_value={"sha": None, "error": "something went wrong"}):
+    with patch(
+        "phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
+        new_callable=AsyncMock,
+        return_value={"sha": None, "error": "something went wrong"},
+    ):
         result = await agent._commit_to_safe_branch(
             workspace=tmp_path,
             source_branch="main",
@@ -339,6 +360,7 @@ async def test_comment_on_pr_no_fix_pr():
     ci_run.branch = "feature/x"
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     resp = MagicMock()
@@ -375,8 +397,10 @@ def test_execute_task_runs_agent():
     """execute_task creates CIFixerAgent and runs it."""
     from phalanx.agents.ci_fixer import execute_task
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent") as MockAgent, \
-         patch("phalanx.agents.ci_fixer.asyncio.run") as mock_run:
+    with (
+        patch("phalanx.agents.ci_fixer.CIFixerAgent") as MockAgent,
+        patch("phalanx.agents.ci_fixer.asyncio.run") as mock_run,
+    ):
         mock_instance = MagicMock()
         MockAgent.return_value = mock_instance
         execute_task("run-001")
@@ -387,9 +411,10 @@ def test_execute_task_reraises_exception():
     """execute_task re-raises exceptions after logging."""
     from phalanx.agents.ci_fixer import execute_task
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent") as MockAgent, \
-         patch("phalanx.agents.ci_fixer.asyncio.run",
-               side_effect=RuntimeError("boom")):
+    with (
+        patch("phalanx.agents.ci_fixer.CIFixerAgent") as MockAgent,
+        patch("phalanx.agents.ci_fixer.asyncio.run", side_effect=RuntimeError("boom")),
+    ):
         MockAgent.return_value = MagicMock()
         with pytest.raises(RuntimeError, match="boom"):
             execute_task("run-001")
@@ -485,12 +510,21 @@ async def test_run_scan_posts_comment_for_warnings():
 
     findings = [ProactiveFinding("fp1", "ruff", "pattern", "warning", ["src/foo.py"])]
 
-    with patch("phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
-               new_callable=AsyncMock, return_value=findings), \
-         patch("phalanx.ci_fixer.proactive_scanner._post_comment",
-               new_callable=AsyncMock, return_value=42), \
-         patch("phalanx.ci_fixer.proactive_scanner._record_scan",
-               new_callable=AsyncMock) as mock_record:
+    with (
+        patch(
+            "phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
+            new_callable=AsyncMock,
+            return_value=findings,
+        ),
+        patch(
+            "phalanx.ci_fixer.proactive_scanner._post_comment",
+            new_callable=AsyncMock,
+            return_value=42,
+        ),
+        patch(
+            "phalanx.ci_fixer.proactive_scanner._record_scan", new_callable=AsyncMock
+        ) as mock_record,
+    ):
         await _run_scan("acme/backend", 1, "abc", "token")
 
     mock_record.assert_called_once()
@@ -506,12 +540,17 @@ async def test_run_scan_no_comment_for_info_only():
 
     findings = [ProactiveFinding("fp1", "ruff", "pattern", "info", ["src/foo.py"])]
 
-    with patch("phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
-               new_callable=AsyncMock, return_value=findings), \
-         patch("phalanx.ci_fixer.proactive_scanner._post_comment",
-               new_callable=AsyncMock) as mock_post, \
-         patch("phalanx.ci_fixer.proactive_scanner._record_scan",
-               new_callable=AsyncMock):
+    with (
+        patch(
+            "phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
+            new_callable=AsyncMock,
+            return_value=findings,
+        ),
+        patch(
+            "phalanx.ci_fixer.proactive_scanner._post_comment", new_callable=AsyncMock
+        ) as mock_post,
+        patch("phalanx.ci_fixer.proactive_scanner._record_scan", new_callable=AsyncMock),
+    ):
         await _run_scan("acme/backend", 1, "abc", "token")
 
     mock_post.assert_not_called()

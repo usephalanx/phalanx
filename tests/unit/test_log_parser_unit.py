@@ -105,8 +105,7 @@ class TestParseLogMypy:
 
     def test_multiple_mypy_errors(self):
         log = (
-            "src/foo.py:10: error: Item has no attribute\n"
-            "src/bar.py:20: error: Argument of type\n"
+            "src/foo.py:10: error: Item has no attribute\nsrc/bar.py:20: error: Argument of type\n"
         )
         parsed = parse_log(log)
         assert len(parsed.type_errors) == 2

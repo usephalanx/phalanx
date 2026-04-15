@@ -9,6 +9,7 @@ Targets:
 - phalanx/memory/assembler.py — MemoryAssembler.build()
 - phalanx/memory/reader.py — MemoryReader methods
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -32,7 +33,15 @@ class TestMemoryAssembler:
         d.rejected_alternatives = alts or []
         return d
 
-    def _make_fact(self, fact_type="tech", title="Fact", body="body", confidence=1.0, relevance=0.9, is_standing=True):
+    def _make_fact(
+        self,
+        fact_type="tech",
+        title="Fact",
+        body="body",
+        confidence=1.0,
+        relevance=0.9,
+        is_standing=True,
+    ):
         f = MagicMock()
         f.fact_type = fact_type
         f.title = title
@@ -52,7 +61,9 @@ class TestMemoryAssembler:
         from phalanx.memory.assembler import MemoryAssembler
 
         a = MemoryAssembler(max_tokens=4000)
-        d = self._make_decision("Use Postgres", "PostgreSQL as primary DB", "Proven at scale", ["MySQL", "SQLite"])
+        d = self._make_decision(
+            "Use Postgres", "PostgreSQL as primary DB", "Proven at scale", ["MySQL", "SQLite"]
+        )
         result = a.build(decisions=[d])
         assert "Use Postgres" in result
         assert "Project Memory" in result
@@ -236,7 +247,9 @@ async def test_register_integration_create():
     obj = _make_ci_integration_obj()
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    )
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock(side_effect=lambda x: None)

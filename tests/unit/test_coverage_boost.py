@@ -75,16 +75,30 @@ async def test_product_manager_execute_for_work_order_success():
     work_order.title = "Build a blog"
     work_order.description = "A simple blogging platform"
 
-    llm_response = json.dumps({
-        "app_type": "web",
-        "tech_stack": "nextjs",
-        "epics": [
-            {"title": "Infrastructure", "description": "DB + auth", "sequence_num": 1, "estimated_complexity": 3},
-            {"title": "Frontend", "description": "React pages", "sequence_num": 2, "estimated_complexity": 2},
-        ],
-        "user_stories": ["As a user I can write posts"],
-        "acceptance_criteria": ["Given I am logged in, When I click New Post, Then I see the editor"],
-    })
+    llm_response = json.dumps(
+        {
+            "app_type": "web",
+            "tech_stack": "nextjs",
+            "epics": [
+                {
+                    "title": "Infrastructure",
+                    "description": "DB + auth",
+                    "sequence_num": 1,
+                    "estimated_complexity": 3,
+                },
+                {
+                    "title": "Frontend",
+                    "description": "React pages",
+                    "sequence_num": 2,
+                    "estimated_complexity": 2,
+                },
+            ],
+            "user_stories": ["As a user I can write posts"],
+            "acceptance_criteria": [
+                "Given I am logged in, When I click New Post, Then I see the editor"
+            ],
+        }
+    )
 
     mock_session = AsyncMock()
     mock_session.add = MagicMock()
@@ -198,9 +212,12 @@ async def test_verifier_execute_task_success():
     """execute_task creates agent and runs it."""
     from phalanx.agents.verifier import execute_task
 
-    with patch("phalanx.agents.verifier.VerifierAgent") as MockAgent, \
-         patch("phalanx.agents.verifier.asyncio.run") as mock_run:
+    with (
+        patch("phalanx.agents.verifier.VerifierAgent") as MockAgent,
+        patch("phalanx.agents.verifier.asyncio.run") as mock_run,
+    ):
         from phalanx.agents.base import AgentResult
+
         mock_instance = MagicMock()
         mock_instance.execute.return_value = AgentResult(success=True, output={})
         MockAgent.return_value = mock_instance
@@ -282,12 +299,17 @@ async def test_verifier_execute_build_errors():
     mock_profile = MagicMock()
     mock_profile.build_cmd = "npm run build"
 
-    with patch("phalanx.agents.verifier.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.verifier.settings") as mock_settings, \
-         patch("phalanx.agents.verifier.detect_tech_stack", return_value="nextjs"), \
-         patch("phalanx.agents.verifier.get_profile", return_value=mock_profile), \
-         patch("phalanx.agents.verifier.run_profile_checks", return_value=["build failed: missing file"]), \
-         patch("phalanx.agents.verifier.merge_workspace", return_value=mock_merged_dir):
+    with (
+        patch("phalanx.agents.verifier.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.verifier.settings") as mock_settings,
+        patch("phalanx.agents.verifier.detect_tech_stack", return_value="nextjs"),
+        patch("phalanx.agents.verifier.get_profile", return_value=mock_profile),
+        patch(
+            "phalanx.agents.verifier.run_profile_checks",
+            return_value=["build failed: missing file"],
+        ),
+        patch("phalanx.agents.verifier.merge_workspace", return_value=mock_merged_dir),
+    ):
         mock_settings.git_workspace = "/tmp/forge"
         result = await agent.execute()
 
@@ -436,8 +458,12 @@ async def test_poll_all_pending_no_runs():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.ci_fixer.outcome_tracker.get_db", return_value=mock_ctx), \
-         patch("phalanx.ci_fixer.outcome_tracker._process_run", new_callable=AsyncMock) as mock_process:
+    with (
+        patch("phalanx.ci_fixer.outcome_tracker.get_db", return_value=mock_ctx),
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._process_run", new_callable=AsyncMock
+        ) as mock_process,
+    ):
         await _poll_all_pending()
 
     mock_process.assert_not_called()
@@ -456,8 +482,10 @@ def test_poll_fix_outcomes_reraises():
     """poll_fix_outcomes re-raises on exception."""
     from phalanx.ci_fixer.outcome_tracker import poll_fix_outcomes
 
-    with patch("phalanx.ci_fixer.outcome_tracker.asyncio.run",
-               side_effect=RuntimeError("boom")), pytest.raises(RuntimeError, match="boom"):
+    with (
+        patch("phalanx.ci_fixer.outcome_tracker.asyncio.run", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
         poll_fix_outcomes()
 
 
@@ -507,8 +535,10 @@ def test_validator_subprocess_error(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "foo.py").write_text("import os\n")
 
-    with patch("shutil.which", return_value="/usr/bin/ruff"), \
-         patch("subprocess.run", side_effect=FileNotFoundError("ruff: not found")):
+    with (
+        patch("shutil.which", return_value="/usr/bin/ruff"),
+        patch("subprocess.run", side_effect=FileNotFoundError("ruff: not found")),
+    ):
         result = validate_fix(parsed, tmp_path)
 
     assert result.passed is False
@@ -591,12 +621,17 @@ async def test_run_scan_empty_findings_no_comment():
     """_run_scan with empty findings → no comment posted."""
     from phalanx.ci_fixer.proactive_scanner import _run_scan
 
-    with patch("phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
-               new_callable=AsyncMock, return_value=[]), \
-         patch("phalanx.ci_fixer.proactive_scanner._post_comment",
-               new_callable=AsyncMock) as mock_post, \
-         patch("phalanx.ci_fixer.proactive_scanner._record_scan",
-               new_callable=AsyncMock):
+    with (
+        patch(
+            "phalanx.ci_fixer.proactive_scanner.scan_pr_for_patterns",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "phalanx.ci_fixer.proactive_scanner._post_comment", new_callable=AsyncMock
+        ) as mock_post,
+        patch("phalanx.ci_fixer.proactive_scanner._record_scan", new_callable=AsyncMock),
+    ):
         await _run_scan("acme/backend", 1, "abc", "token")
 
     mock_post.assert_not_called()
@@ -630,8 +665,10 @@ async def test_scan_pr_mypy_patterns():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_ctx):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_ctx),
+    ):
         findings = await scan_pr_for_patterns("acme/backend", 1, "abc", "token")
 
     assert len(findings) >= 0  # At minimum doesn't crash
@@ -655,8 +692,10 @@ def test_promote_patterns_reraises():
     """promote_patterns re-raises on exception."""
     from phalanx.ci_fixer.pattern_promoter import promote_patterns
 
-    with patch("phalanx.ci_fixer.pattern_promoter.asyncio.run",
-               side_effect=RuntimeError("boom")), pytest.raises(RuntimeError, match="boom"):
+    with (
+        patch("phalanx.ci_fixer.pattern_promoter.asyncio.run", side_effect=RuntimeError("boom")),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
         promote_patterns()
 
 

@@ -77,9 +77,7 @@ class ParsedLog:
 
     @property
     def has_errors(self) -> bool:
-        return bool(
-            self.lint_errors or self.type_errors or self.test_failures or self.build_errors
-        )
+        return bool(self.lint_errors or self.type_errors or self.test_failures or self.build_errors)
 
     @property
     def all_files(self) -> list[str]:

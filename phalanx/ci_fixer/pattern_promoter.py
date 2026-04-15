@@ -128,10 +128,7 @@ def is_promotion_eligible(
         repo_count: distinct repos where this fix has succeeded
         total_success_count: total successful applications across all repos
     """
-    return (
-        repo_count >= MIN_REPOS_FOR_PROMOTION
-        or total_success_count >= MIN_GLOBAL_SUCCESS_COUNT
-    )
+    return repo_count >= MIN_REPOS_FOR_PROMOTION or total_success_count >= MIN_GLOBAL_SUCCESS_COUNT
 
 
 # ── Celery task ────────────────────────────────────────────────────────────────

@@ -321,7 +321,6 @@ class TestCIFixerSoul:
 # ── RootCauseAnalyst — JSON parsing (mocked _call_llm) ────────────────────────
 
 
-
 class TestRootCauseAnalyst:
     """Tests for the RootCauseAnalyst LLM confirmation step (windowed API)."""
 
@@ -400,15 +399,17 @@ class TestRootCauseAnalyst:
         self._write_file(tmp_path, "src/foo.py")
         analyst = self._make_analyst(self._patch_response("src/foo.py"))
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
-        assert plan.patches[0].delta == -1   # removed 1 line (import os)
+        assert plan.patches[0].delta == -1  # removed 1 line (import os)
 
     # ── Low confidence / no patches ───────────────────────────────────────────
 
     def test_low_confidence_returns_empty_patches(self, tmp_path):
         self._write_file(tmp_path, "src/foo.py")
         import json as _j
-        response = _j.dumps({"confidence": "low", "root_cause": "unclear",
-                              "patches": [], "needs_new_test": False})
+
+        response = _j.dumps(
+            {"confidence": "low", "root_cause": "unclear", "patches": [], "needs_new_test": False}
+        )
         analyst = self._make_analyst(response)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert plan.confidence == "low"
@@ -434,17 +435,23 @@ class TestRootCauseAnalyst:
         """LLM returns a patch for a file we never sent → rejected → no actionable patches."""
         self._write_file(tmp_path, "src/foo.py")
         import json as _j
-        response = _j.dumps({
-            "confidence": "high",
-            "root_cause": "x",
-            "patches": [{
-                "path": "src/invented_file.py",
-                "start_line": 1, "end_line": 3,
-                "corrected_lines": ["x = 1\n"],
-                "reason": "invented",
-            }],
-            "needs_new_test": False,
-        })
+
+        response = _j.dumps(
+            {
+                "confidence": "high",
+                "root_cause": "x",
+                "patches": [
+                    {
+                        "path": "src/invented_file.py",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "corrected_lines": ["x = 1\n"],
+                        "reason": "invented",
+                    }
+                ],
+                "needs_new_test": False,
+            }
+        )
         analyst = self._make_analyst(response)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         # All patches rejected → downgraded to low
@@ -455,17 +462,23 @@ class TestRootCauseAnalyst:
         """Patches targeting test files are always rejected."""
         self._write_file(tmp_path, "tests/test_foo.py")
         import json as _j
-        response = _j.dumps({
-            "confidence": "high",
-            "root_cause": "x",
-            "patches": [{
-                "path": "tests/test_foo.py",
-                "start_line": 1, "end_line": 3,
-                "corrected_lines": ["x = 1\n"],
-                "reason": "bad",
-            }],
-            "needs_new_test": False,
-        })
+
+        response = _j.dumps(
+            {
+                "confidence": "high",
+                "root_cause": "x",
+                "patches": [
+                    {
+                        "path": "tests/test_foo.py",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "corrected_lines": ["x = 1\n"],
+                        "reason": "bad",
+                    }
+                ],
+                "needs_new_test": False,
+            }
+        )
         parsed = self._make_parsed_log(file="tests/test_foo.py")
         analyst = self._make_analyst(response)
         plan = analyst.analyze(parsed, tmp_path)
@@ -475,19 +488,25 @@ class TestRootCauseAnalyst:
         """corrected_lines that differ by > MAX_LINE_DELTA from the window → rejected."""
         self._write_file(tmp_path, "src/foo.py")
         import json as _j
+
         # Window is 5 lines; returning 50 lines → delta = 45 → rejected
         big_lines = [f"line {i}\n" for i in range(50)]
-        response = _j.dumps({
-            "confidence": "high",
-            "root_cause": "x",
-            "patches": [{
-                "path": "src/foo.py",
-                "start_line": 1, "end_line": len(self._FILE_LINES),
-                "corrected_lines": big_lines,
-                "reason": "too big",
-            }],
-            "needs_new_test": False,
-        })
+        response = _j.dumps(
+            {
+                "confidence": "high",
+                "root_cause": "x",
+                "patches": [
+                    {
+                        "path": "src/foo.py",
+                        "start_line": 1,
+                        "end_line": len(self._FILE_LINES),
+                        "corrected_lines": big_lines,
+                        "reason": "too big",
+                    }
+                ],
+                "needs_new_test": False,
+            }
+        )
         analyst = self._make_analyst(response)
         plan = analyst.analyze(self._make_parsed_log(), tmp_path)
         assert len(plan.patches) == 0

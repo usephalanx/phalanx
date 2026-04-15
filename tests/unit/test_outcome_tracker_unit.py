@@ -85,8 +85,14 @@ async def test_check_pr_outcome_merged():
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value="ghp_token"), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._get_github_token",
+            new_callable=AsyncMock,
+            return_value="ghp_token",
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "merged"
@@ -114,8 +120,14 @@ async def test_check_pr_outcome_closed_unmerged():
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value="ghp_token"), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._get_github_token",
+            new_callable=AsyncMock,
+            return_value="ghp_token",
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "closed_unmerged"
@@ -142,8 +154,14 @@ async def test_check_pr_outcome_open():
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value="ghp_token"), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._get_github_token",
+            new_callable=AsyncMock,
+            return_value="ghp_token",
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "open"
@@ -162,8 +180,14 @@ async def test_check_pr_outcome_not_found():
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.get = AsyncMock(return_value=mock_response)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value="ghp_token"), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._get_github_token",
+            new_callable=AsyncMock,
+            return_value="ghp_token",
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "not_found"
@@ -174,7 +198,11 @@ async def test_check_pr_outcome_no_token():
     """No GitHub token → returns 'open' without calling GitHub."""
     run = _make_run()
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value=None):
+    with patch(
+        "phalanx.ci_fixer.outcome_tracker._get_github_token",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "open"
@@ -185,8 +213,14 @@ async def test_check_pr_outcome_network_error():
     """Network error → returns 'open' without raising."""
     run = _make_run()
 
-    with patch("phalanx.ci_fixer.outcome_tracker._get_github_token", new_callable=AsyncMock, return_value="ghp_token"), \
-         patch("httpx.AsyncClient", side_effect=Exception("connection refused")):
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._get_github_token",
+            new_callable=AsyncMock,
+            return_value="ghp_token",
+        ),
+        patch("httpx.AsyncClient", side_effect=Exception("connection refused")),
+    ):
         result = await _check_pr_outcome(run)
 
     assert result["outcome"] == "open"
@@ -212,8 +246,12 @@ async def test_record_outcome_writes_row():
         await _record_outcome(
             run,
             poll_number=1,
-            outcome={"outcome": "merged", "pr_state": "closed",
-                     "merged_at": datetime.now(UTC), "closed_at": None},
+            outcome={
+                "outcome": "merged",
+                "pr_state": "closed",
+                "merged_at": datetime.now(UTC),
+                "closed_at": None,
+            },
         )
 
     mock_session.add.assert_called_once()
@@ -331,12 +369,21 @@ async def test_process_run_poll1_due():
     run = _make_run(created_hours_ago=5.0)
     now = datetime.now(UTC)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock) as mock_check, \
-         patch("phalanx.ci_fixer.outcome_tracker._record_outcome", new_callable=AsyncMock) as mock_record, \
-         patch("phalanx.ci_fixer.outcome_tracker._update_fingerprint", new_callable=AsyncMock) as mock_update, \
-         patch("phalanx.ci_fixer.outcome_tracker._mark_outcome_checked", new_callable=AsyncMock) as mock_mark, \
-         patch("phalanx.ci_fixer.outcome_tracker.get_db") as mock_db:
-
+    with (
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock
+        ) as mock_check,
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._record_outcome", new_callable=AsyncMock
+        ) as mock_record,
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._update_fingerprint", new_callable=AsyncMock
+        ) as mock_update,
+        patch(
+            "phalanx.ci_fixer.outcome_tracker._mark_outcome_checked", new_callable=AsyncMock
+        ) as mock_mark,
+        patch("phalanx.ci_fixer.outcome_tracker.get_db") as mock_db,
+    ):
         # No polls done yet
         mock_result = MagicMock()
         mock_result.all.return_value = []
@@ -348,8 +395,10 @@ async def test_process_run_poll1_due():
         mock_db.return_value = mock_ctx
 
         mock_check.return_value = {
-            "outcome": "merged", "pr_state": "closed",
-            "merged_at": datetime.now(UTC), "closed_at": None
+            "outcome": "merged",
+            "pr_state": "closed",
+            "merged_at": datetime.now(UTC),
+            "closed_at": None,
         }
 
         await _process_run(run, now)
@@ -377,7 +426,9 @@ async def test_process_run_all_polls_done():
         mock_ctx.__aexit__ = AsyncMock(return_value=None)
         mock_db.return_value = mock_ctx
 
-        with patch("phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock) as mock_check:
+        with patch(
+            "phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock
+        ) as mock_check:
             await _process_run(run, now)
 
     # Nothing new to check
@@ -391,7 +442,9 @@ async def test_process_run_no_created_at():
     run.created_at = None
     now = datetime.now(UTC)
 
-    with patch("phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock) as mock_check:
+    with patch(
+        "phalanx.ci_fixer.outcome_tracker._check_pr_outcome", new_callable=AsyncMock
+    ) as mock_check:
         await _process_run(run, now)
 
     mock_check.assert_not_called()
@@ -439,8 +492,10 @@ async def test_poll_all_pending_exception_per_run_does_not_crash():
         call_count["n"] += 1
         raise RuntimeError("simulated DB error")
 
-    with patch("phalanx.ci_fixer.outcome_tracker.get_db", return_value=mock_ctx), \
-         patch("phalanx.ci_fixer.outcome_tracker._process_run", side_effect=broken_process):
+    with (
+        patch("phalanx.ci_fixer.outcome_tracker.get_db", return_value=mock_ctx),
+        patch("phalanx.ci_fixer.outcome_tracker._process_run", side_effect=broken_process),
+    ):
         await _poll_all_pending()
 
     # Both runs were attempted despite the first one failing

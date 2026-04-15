@@ -72,8 +72,14 @@ async def test_release_execute_github_skipped():
     agent._load_task_summaries = AsyncMock(return_value=[])
     agent._audit = AsyncMock()
 
-    mock_notes = {"title": "Release X", "summary": "X was built", "changes": [], "testing": "passed",
-                  "rollback": "revert", "breaking_changes": []}
+    mock_notes = {
+        "title": "Release X",
+        "summary": "X was built",
+        "changes": [],
+        "testing": "passed",
+        "rollback": "revert",
+        "breaking_changes": [],
+    }
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=MagicMock())
@@ -82,10 +88,14 @@ async def test_release_execute_github_skipped():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.release.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.release.settings") as mock_settings, \
-         patch.object(agent, "_generate_release_notes", new_callable=AsyncMock, return_value=mock_notes), \
-         patch.object(agent, "_persist_artifact", new_callable=AsyncMock):
+    with (
+        patch("phalanx.agents.release.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.release.settings") as mock_settings,
+        patch.object(
+            agent, "_generate_release_notes", new_callable=AsyncMock, return_value=mock_notes
+        ),
+        patch.object(agent, "_persist_artifact", new_callable=AsyncMock),
+    ):
         mock_settings.github_token = ""  # no token → skip
         result = await agent.execute()
 
@@ -134,12 +144,16 @@ async def test_release_create_github_pr_import_error():
     mock_run.active_branch = "feature/x"
     mock_run.project_id = "proj-1"
 
-    with patch("phalanx.agents.release.settings") as mock_settings, \
-         patch("phalanx.agents.release.get_db"):
+    with (
+        patch("phalanx.agents.release.settings") as mock_settings,
+        patch("phalanx.agents.release.get_db"),
+    ):
         mock_settings.github_token = "ghp_test"
         # Simulate import error
         with patch.dict("sys.modules", {"github": None}):
-            result = await agent._create_github_pr(mock_run, None, {"changes": [], "breaking_changes": []})
+            result = await agent._create_github_pr(
+                mock_run, None, {"changes": [], "breaking_changes": []}
+            )
 
     # ImportError → returns {}
     assert result == {} or "error" in result
@@ -168,15 +182,23 @@ async def test_release_create_github_pr_exception():
     mock_github = MagicMock()
     mock_github.Github.side_effect = Exception("API error")
 
-    with patch("phalanx.agents.release.settings") as mock_settings, \
-         patch("phalanx.agents.release.get_db", return_value=mock_ctx), \
-         patch.dict("sys.modules", {"github": mock_github}):
+    with (
+        patch("phalanx.agents.release.settings") as mock_settings,
+        patch("phalanx.agents.release.get_db", return_value=mock_ctx),
+        patch.dict("sys.modules", {"github": mock_github}),
+    ):
         mock_settings.github_token = "ghp_test"
         result = await agent._create_github_pr(
             mock_run,
             None,
-            {"summary": "x", "changes": [], "testing": "y", "rollback": "z",
-             "breaking_changes": [], "title": "Release X"},
+            {
+                "summary": "x",
+                "changes": [],
+                "testing": "y",
+                "rollback": "z",
+                "breaking_changes": [],
+                "title": "Release X",
+            },
         )
 
     assert "error" in result
@@ -279,13 +301,19 @@ async def test_integration_wiring_execute_with_builder_tasks(tmp_path):
     mock_profile = MagicMock()
     mock_profile.integration_pattern = "fastapi-router"
 
-    with patch("phalanx.agents.integration_wiring.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.integration_wiring.settings") as s, \
-         patch("phalanx.agents.integration_wiring.merge_workspace", return_value=tmp_path), \
-         patch("phalanx.agents.integration_wiring.detect_tech_stack", return_value="fastapi"), \
-         patch("phalanx.agents.integration_wiring.get_profile", return_value=mock_profile), \
-         patch.object(agent, "_wire", new_callable=AsyncMock,
-                      return_value={"status": "ok", "files_wired": ["main.py"], "notes": []}):
+    with (
+        patch("phalanx.agents.integration_wiring.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.integration_wiring.settings") as s,
+        patch("phalanx.agents.integration_wiring.merge_workspace", return_value=tmp_path),
+        patch("phalanx.agents.integration_wiring.detect_tech_stack", return_value="fastapi"),
+        patch("phalanx.agents.integration_wiring.get_profile", return_value=mock_profile),
+        patch.object(
+            agent,
+            "_wire",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "files_wired": ["main.py"], "notes": []},
+        ),
+    ):
         s.git_workspace = str(tmp_path)
         result = await agent.execute()
 
@@ -418,8 +446,10 @@ async def test_commit_to_safe_branch_push_success(tmp_path):
         mock_remote = MagicMock()
         mock_repo.remotes = [mock_remote]
 
-        with patch("git.Repo", return_value=mock_repo), \
-             patch("phalanx.agents.ci_fixer.settings") as mock_settings:
+        with (
+            patch("git.Repo", return_value=mock_repo),
+            patch("phalanx.agents.ci_fixer.settings") as mock_settings,
+        ):
             mock_settings.git_author_name = "FORGE"
             mock_settings.git_author_email = "forge@phalanx.dev"
             result = await agent._commit_to_safe_branch(

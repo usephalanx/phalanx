@@ -41,12 +41,12 @@ class TestExtractJson:
         assert result == {"key": "value"}
 
     def test_strips_code_fences(self):
-        text = "```json\n{\"key\": \"value\"}\n```"
+        text = '```json\n{"key": "value"}\n```'
         result = _extract_json(text)
         assert result == {"key": "value"}
 
     def test_strips_plain_backtick_fences(self):
-        text = "```\n{\"key\": \"value\"}\n```"
+        text = '```\n{"key": "value"}\n```'
         result = _extract_json(text)
         assert result == {"key": "value"}
 
@@ -90,6 +90,7 @@ class TestComplexityToMinutes:
 
 def _make_ci_agent():
     from phalanx.agents.ci_fixer import CIFixerAgent
+
     with patch("phalanx.agents.base.BaseAgent.__init__", return_value=None):
         agent = CIFixerAgent.__new__(CIFixerAgent)
         agent.ci_fix_run_id = "run-cov-001"
@@ -122,6 +123,7 @@ async def test_comment_on_pr_success():
     ci_run.branch = "main"
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     mock_client = _mock_http_client(201, {"id": 99})
@@ -151,6 +153,7 @@ async def test_comment_on_pr_failure_does_not_raise():
     ci_run.branch = "main"
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     mock_client = _mock_http_client(403)
@@ -294,8 +297,10 @@ async def test_fetch_logs_calls_fetcher():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.ci_fixer.get_log_fetcher", return_value=mock_fetcher):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.ci_fixer.get_log_fetcher", return_value=mock_fetcher),
+    ):
         result = await agent._fetch_logs(event, integration)
 
     assert result == "raw log content"
@@ -331,8 +336,10 @@ async def test_fetch_logs_returns_fallback_on_error():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.ci_fixer.get_log_fetcher", return_value=mock_fetcher):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.ci_fixer.get_log_fetcher", return_value=mock_fetcher),
+    ):
         result = await agent._fetch_logs(event, integration)
 
     # Falls back to cached failure_summary
@@ -346,14 +353,14 @@ async def test_fetch_logs_returns_fallback_on_error():
 async def test_clone_repo_gitpython_missing(tmp_path):
     agent = _make_ci_agent()
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock):
+    with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo", new_callable=AsyncMock):
         # Simulate ImportError path (gitpython not available)
         # Test directly by patching the import inside the method
         pass
 
     # Test directly without patching the method itself
     import builtins
+
     real_import = builtins.__import__
 
     def mock_import(name, *args, **kwargs):
@@ -371,8 +378,11 @@ async def test_clone_repo_gitpython_missing(tmp_path):
 async def test_clone_repo_exception_returns_false(tmp_path):
     agent = _make_ci_agent()
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock, return_value=False):
+    with patch(
+        "phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
         result = await agent._clone_repo(tmp_path, "acme/backend", "main", "abc123", "token")
 
     assert result is False
@@ -396,7 +406,7 @@ class TestLogParserEdgeCases:
         assert not result.lint_errors
 
     def test_mypy_error_format(self):
-        log = "src/foo.py:10: error: Argument 1 to \"foo\" has incompatible type\n"
+        log = 'src/foo.py:10: error: Argument 1 to "foo" has incompatible type\n'
         result = parse_log(log)
         # mypy errors should be parsed
         assert result.tool in ("mypy", "unknown") or len(result.type_errors) >= 0
@@ -427,14 +437,17 @@ class TestLogParserEdgeCases:
 
     def test_has_errors_false_when_empty(self):
         from phalanx.ci_fixer.log_parser import ParsedLog
+
         p = ParsedLog(tool="unknown")
         assert not p.has_errors
 
     def test_has_errors_true_with_lint_error(self):
         from phalanx.ci_fixer.log_parser import LintError, ParsedLog
-        p = ParsedLog(tool="ruff", lint_errors=[
-            LintError(file="f.py", line=1, col=1, code="F401", message="x")
-        ])
+
+        p = ParsedLog(
+            tool="ruff",
+            lint_errors=[LintError(file="f.py", line=1, col=1, code="F401", message="x")],
+        )
         assert p.has_errors
 
 
@@ -444,12 +457,14 @@ class TestLogParserEdgeCases:
 class TestAnalystEdgeCases:
     def test_read_files_shim_no_files(self, tmp_path):
         from phalanx.ci_fixer.analyst import RootCauseAnalyst
+
         analyst = RootCauseAnalyst(call_llm=lambda **_: "")
         result = analyst._read_files(tmp_path, [])
         assert "no files found" in result.lower() or isinstance(result, str)
 
     def test_read_files_shim_missing_file(self, tmp_path):
         from phalanx.ci_fixer.analyst import RootCauseAnalyst
+
         analyst = RootCauseAnalyst(call_llm=lambda **_: "")
         result = analyst._read_files(tmp_path, ["nonexistent.py"])
         assert isinstance(result, str)
@@ -457,6 +472,7 @@ class TestAnalystEdgeCases:
     def test_analyze_with_no_errors_returns_low_confidence(self, tmp_path):
         from phalanx.ci_fixer.analyst import RootCauseAnalyst
         from phalanx.ci_fixer.log_parser import ParsedLog
+
         analyst = RootCauseAnalyst(call_llm=lambda **_: "{}")
         plan = analyst.analyze(ParsedLog(tool="unknown"), tmp_path)
         assert plan.confidence == "low"
@@ -474,7 +490,7 @@ class TestAnalystEdgeCases:
         analyst = RootCauseAnalyst(call_llm=bad_llm)
         parsed = ParsedLog(
             tool="ruff",
-            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")]
+            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")],
         )
         plan = analyst.analyze(parsed, tmp_path)
         assert plan.confidence == "low"
@@ -489,7 +505,7 @@ class TestAnalystEdgeCases:
         analyst = RootCauseAnalyst(call_llm=lambda **_: "not json at all")
         parsed = ParsedLog(
             tool="ruff",
-            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")]
+            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")],
         )
         plan = analyst.analyze(parsed, tmp_path)
         assert plan.confidence == "low"
@@ -502,6 +518,7 @@ class TestValidatorEdgeCases:
     def test_validate_unknown_tool(self, tmp_path):
         from phalanx.ci_fixer.log_parser import ParsedLog
         from phalanx.ci_fixer.validator import validate_fix
+
         parsed = ParsedLog(tool="unknown_tool")
         result = validate_fix(parsed, tmp_path)
         # Unknown tool → should pass or return a graceful result
@@ -510,9 +527,10 @@ class TestValidatorEdgeCases:
     def test_validate_ruff_with_empty_workspace(self, tmp_path):
         from phalanx.ci_fixer.log_parser import LintError, ParsedLog
         from phalanx.ci_fixer.validator import validate_fix
+
         parsed = ParsedLog(
             tool="ruff",
-            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")]
+            lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="x")],
         )
         # Run ruff against empty workspace — ruff not installed in test env → graceful
         result = validate_fix(parsed, tmp_path)
@@ -522,9 +540,10 @@ class TestValidatorEdgeCases:
     def test_validate_mypy_with_empty_workspace(self, tmp_path):
         from phalanx.ci_fixer.log_parser import ParsedLog, TypeError
         from phalanx.ci_fixer.validator import validate_fix
+
         parsed = ParsedLog(
             tool="mypy",
-            type_errors=[TypeError(file="src/foo.py", line=1, col=0, message="type error")]
+            type_errors=[TypeError(file="src/foo.py", line=1, col=0, message="type error")],
         )
         result = validate_fix(parsed, tmp_path)
         assert hasattr(result, "passed")
@@ -532,13 +551,16 @@ class TestValidatorEdgeCases:
     def test_validate_pytest_with_empty_workspace(self, tmp_path):
         from phalanx.ci_fixer.log_parser import ParsedLog, TestFailure
         from phalanx.ci_fixer.validator import validate_fix
+
         parsed = ParsedLog(
             tool="pytest",
-            test_failures=[TestFailure(
-                test_id="tests/test_foo.py::test_bar",
-                file="tests/test_foo.py",
-                message="AssertionError"
-            )]
+            test_failures=[
+                TestFailure(
+                    test_id="tests/test_foo.py::test_bar",
+                    file="tests/test_foo.py",
+                    message="AssertionError",
+                )
+            ],
         )
         result = validate_fix(parsed, tmp_path)
         assert hasattr(result, "passed")

@@ -77,11 +77,13 @@ def format_proactive_comment(findings: list[ProactiveFinding], pr_number: int) -
             f"Consider reviewing before CI runs.\n\n"
         )
     else:
-        header += (
-            f"Found **{info_count} informational pattern(s)** — low severity.\n\n"
-        )
+        header += f"Found **{info_count} informational pattern(s)** — low severity.\n\n"
 
-    lines = [header, "| Pattern | Tool | Files | Severity |\n", "|---------|------|-------|----------|\n"]
+    lines = [
+        header,
+        "| Pattern | Tool | Files | Severity |\n",
+        "|---------|------|-------|----------|\n",
+    ]
     for f in findings[:10]:
         files_str = ", ".join(f"`{p}`" for p in f.affected_files[:3])
         if len(f.affected_files) > 3:
