@@ -41,8 +41,8 @@ _MIN_OBSERVATIONS = 3
 
 
 def is_flaky_suppressed(
-    parsed_log: "ParsedLog",
-    flaky_patterns: list["CIFlakyPattern"],
+    parsed_log: ParsedLog,
+    flaky_patterns: list[CIFlakyPattern],
 ) -> bool:
     """
     Return True if ALL errors in parsed_log are high-flakiness patterns.
@@ -64,7 +64,7 @@ def is_flaky_suppressed(
         return False
 
     # Build lookup: (file, code) → CIFlakyPattern
-    pattern_map: dict[tuple[str, str], "CIFlakyPattern"] = {}
+    pattern_map: dict[tuple[str, str], CIFlakyPattern] = {}
     for p in flaky_patterns:
         key = (p.error_file or "", p.error_code or "")
         pattern_map[key] = p
@@ -109,7 +109,7 @@ def is_flaky_suppressed(
     return True
 
 
-def should_use_history(fingerprint: "CIFailureFingerprint | None") -> bool:
+def should_use_history(fingerprint: CIFailureFingerprint | None) -> bool:
     """
     Return True if the fingerprint's history is trustworthy enough to reuse.
 
@@ -146,7 +146,7 @@ def record_flaky_pattern(
     error_code: str | None,
     error_file: str | None,
     was_flaky: bool,
-    existing_pattern: "CIFlakyPattern | None" = None,
+    existing_pattern: CIFlakyPattern | None = None,
 ) -> dict:
     """
     Return the dict of fields to set when upserting a CIFlakyPattern row.

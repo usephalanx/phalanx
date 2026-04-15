@@ -8,15 +8,12 @@ Phase 4 unit tests for CI Fixer:
 
 from __future__ import annotations
 
-import pytest
-
 from phalanx.ci_fixer.version_parity import (
     VersionParityResult,
     check_version_parity,
     format_parity_notice,
     should_auto_merge,
 )
-
 
 # ── check_version_parity ───────────────────────────────────────────────────────
 

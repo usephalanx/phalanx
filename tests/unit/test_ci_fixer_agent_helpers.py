@@ -7,10 +7,8 @@ the DB, Celery, or GitHub — those require integration tests.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from phalanx.agents.ci_fixer import (
     CIFixerAgent,
@@ -21,6 +19,8 @@ from phalanx.agents.ci_fixer import (
 from phalanx.ci_fixer.analyst import FilePatch
 from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

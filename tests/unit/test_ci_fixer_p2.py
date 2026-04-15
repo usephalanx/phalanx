@@ -11,21 +11,20 @@ No DB, no network, no Celery — all async DB calls are mocked.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.ci_fixer.analyst import (
-    FilePatch,
     FileWindow,
-    FixPlan,
     RootCauseAnalyst,
 )
 from phalanx.ci_fixer.log_parser import LintError, ParsedLog
 from phalanx.ci_fixer.outcome_tracker import _parse_iso
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -226,7 +225,7 @@ class TestAnalystHistoryLookup:
             call_llm=llm,
             history_lookup=lambda fp: [],  # empty → falsy
         )
-        plan = analyst.analyze(_lint_log("src/foo.py"), tmp_path, fingerprint_hash="abc")
+        analyst.analyze(_lint_log("src/foo.py"), tmp_path, fingerprint_hash="abc")
         assert llm_called["n"] == 1
 
 

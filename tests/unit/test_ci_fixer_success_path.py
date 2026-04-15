@@ -17,13 +17,11 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.agents.ci_fixer import CIFixerAgent
-
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -173,7 +171,7 @@ async def test_execute_inner_low_confidence_no_pr():
          patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark, \
+         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock), \
          patch("phalanx.ci_fixer.analyst.FixPlan"):
         mock_analyst_inst = MagicMock()
         mock_analyst_inst.analyze.return_value = low_conf_plan
@@ -411,7 +409,6 @@ async def test_enable_auto_merge_gql_error():
     gql_resp.json.return_value = {"errors": [{"message": "auto-merge not enabled"}]}
     gql_resp.text = '{"errors": [...]}'
 
-    call_count = {"n": 0}
 
     async def side_effect_client():
         pass

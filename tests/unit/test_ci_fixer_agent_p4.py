@@ -10,16 +10,16 @@ Phase 4 unit tests for CIFixerAgent helpers:
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.agents.ci_fixer import CIFixerAgent
 from phalanx.ci_fixer.analyst import FilePatch
-from phalanx.ci_fixer.version_parity import VersionParityResult
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -415,7 +415,6 @@ async def test_update_fingerprint_on_success_creates_new():
 
     mock_session.execute = mock_execute
 
-    from phalanx.ci_fixer.analyst import FilePatch
     from phalanx.ci_fixer.log_parser import ParsedLog
 
     patches = [FilePatch(path="src/foo.py", start_line=1, end_line=1, corrected_lines=["x\n"])]
@@ -466,7 +465,6 @@ async def test_update_fingerprint_on_success_increments_existing():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    from phalanx.ci_fixer.analyst import FilePatch
     from phalanx.ci_fixer.log_parser import ParsedLog
 
     patches = [FilePatch(path="src/foo.py", start_line=1, end_line=1, corrected_lines=["x\n"])]

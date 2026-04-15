@@ -7,8 +7,6 @@ ruff, mypy, pytest, tsc, eslint, build errors.
 
 from __future__ import annotations
 
-import pytest
-
 from phalanx.ci_fixer.log_parser import (
     ParsedLog,
     clean_log,

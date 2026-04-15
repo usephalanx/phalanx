@@ -14,7 +14,6 @@ Modules covered here:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -348,7 +347,7 @@ async def test_clone_repo_gitpython_missing(tmp_path):
     agent = _make_ci_agent()
 
     with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock) as mock_clone:
+               new_callable=AsyncMock):
         # Simulate ImportError path (gitpython not available)
         # Test directly by patching the import inside the method
         pass
@@ -373,7 +372,7 @@ async def test_clone_repo_exception_returns_false(tmp_path):
     agent = _make_ci_agent()
 
     with patch("phalanx.agents.ci_fixer.CIFixerAgent._clone_repo",
-               new_callable=AsyncMock, return_value=False) as mock_clone:
+               new_callable=AsyncMock, return_value=False):
         result = await agent._clone_repo(tmp_path, "acme/backend", "main", "abc123", "token")
 
     assert result is False

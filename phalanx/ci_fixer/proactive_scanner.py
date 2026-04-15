@@ -25,16 +25,12 @@ import json
 import time
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
 import structlog
 
 from phalanx.db.models import CIProactiveScan
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
-
-if TYPE_CHECKING:
-    pass
 
 log = structlog.get_logger(__name__)
 

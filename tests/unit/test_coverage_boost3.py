@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # verification_profiles.py
 # ══════════════════════════════════════════════════════════════════════════════
@@ -270,9 +269,9 @@ class TestVerificationHelpers:
 
     def test_run_helper_timeout(self, tmp_path):
         """_run catches TimeoutExpired."""
-        from phalanx.agents.verification_profiles import _run
-
         import subprocess
+
+        from phalanx.agents.verification_profiles import _run
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
             success, stdout, stderr = _run(["sleep", "999"], tmp_path, timeout=1)
@@ -402,7 +401,7 @@ async def test_ux_generate_design():
     mock_wo.title = "My App"
     mock_wo.description = "An app"
 
-    design_response = json.dumps({
+    json.dumps({
         "design_spec": {
             "brand": {"personality": "modern"},
             "color": {"primary": "#000"},

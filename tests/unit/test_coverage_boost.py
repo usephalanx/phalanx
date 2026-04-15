@@ -13,12 +13,11 @@ Coverage boost tests targeting multiple modules:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # product_manager.py
@@ -458,9 +457,8 @@ def test_poll_fix_outcomes_reraises():
     from phalanx.ci_fixer.outcome_tracker import poll_fix_outcomes
 
     with patch("phalanx.ci_fixer.outcome_tracker.asyncio.run",
-               side_effect=RuntimeError("boom")):
-        with pytest.raises(RuntimeError, match="boom"):
-            poll_fix_outcomes()
+               side_effect=RuntimeError("boom")), pytest.raises(RuntimeError, match="boom"):
+        poll_fix_outcomes()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -658,9 +656,8 @@ def test_promote_patterns_reraises():
     from phalanx.ci_fixer.pattern_promoter import promote_patterns
 
     with patch("phalanx.ci_fixer.pattern_promoter.asyncio.run",
-               side_effect=RuntimeError("boom")):
-        with pytest.raises(RuntimeError, match="boom"):
-            promote_patterns()
+               side_effect=RuntimeError("boom")), pytest.raises(RuntimeError, match="boom"):
+        promote_patterns()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

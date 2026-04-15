@@ -6,7 +6,6 @@ Tests async helpers with mocked DB and mocked httpx — no real network or DB.
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,7 +22,6 @@ from phalanx.ci_fixer.outcome_tracker import (
     _update_fingerprint,
 )
 from phalanx.db.models import CIFailureFingerprint, CIFixOutcome, CIFixRun
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

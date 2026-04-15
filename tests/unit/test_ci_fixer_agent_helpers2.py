@@ -11,14 +11,11 @@ Additional coverage for phalanx/agents/ci_fixer.py:
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from phalanx.agents.ci_fixer import CIFixerAgent, _cleanup_workspace, _compute_fingerprint
-
+from phalanx.agents.ci_fixer import CIFixerAgent
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

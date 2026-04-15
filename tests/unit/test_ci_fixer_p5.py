@@ -9,8 +9,6 @@ Phase 5 unit tests:
 
 from __future__ import annotations
 
-import pytest
-
 from phalanx.ci_fixer.pattern_promoter import (
     MIN_GLOBAL_SUCCESS_COUNT,
     MIN_REPOS_FOR_PROMOTION,
@@ -21,7 +19,6 @@ from phalanx.ci_fixer.proactive_scanner import (
     format_proactive_comment,
     should_post_proactive_comment,
 )
-
 
 # ── is_promotion_eligible ──────────────────────────────────────────────────────
 

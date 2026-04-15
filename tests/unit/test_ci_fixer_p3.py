@@ -10,21 +10,16 @@ Phase 3 unit tests for CI Fixer:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure
 from phalanx.ci_fixer.suppressor import (
-    _FLAKY_THRESHOLD,
     _MIN_OBSERVATIONS,
     is_flaky_suppressed,
     record_flaky_pattern,
     should_use_history,
 )
-from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
 from phalanx.db.models import CIFailureFingerprint, CIFlakyPattern
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -297,7 +292,6 @@ class TestHistoryWeighting:
 
     def test_unreliable_fingerprint_returns_none(self):
         """failure_count >= success_count → _lookup returns None."""
-        import asyncio
         from unittest.mock import AsyncMock
 
         agent = self._make_agent()
@@ -305,7 +299,6 @@ class TestHistoryWeighting:
         fp = _make_fingerprint(success_count=1, failure_count=3)
 
         async def mock_lookup(fp_hash):
-            from phalanx.db.models import CIFailureFingerprint
             # Simulate DB returning a fingerprint with bad stats
             mock_result = MagicMock()
             mock_result.scalar_one_or_none.return_value = fp

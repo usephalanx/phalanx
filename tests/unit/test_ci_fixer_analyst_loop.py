@@ -11,18 +11,15 @@ Tests for the analyst loop in _execute_inner (lines 243-458):
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.agents.ci_fixer import (
-    CIFixerAgent,
     _MAX_FILES_CHANGED,
     _MAX_TOTAL_LINE_DELTA,
+    CIFixerAgent,
 )
-
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

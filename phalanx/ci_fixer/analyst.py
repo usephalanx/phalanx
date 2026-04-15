@@ -178,7 +178,7 @@ class RootCauseAnalyst:
 
     def analyze(
         self,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
         workspace: Path,
         fingerprint_hash: str | None = None,
     ) -> FixPlan:
@@ -276,7 +276,7 @@ class RootCauseAnalyst:
     # ── File reading ───────────────────────────────────────────────────────────
 
     def _read_windows(
-        self, workspace: Path, parsed_log: "ParsedLog"
+        self, workspace: Path, parsed_log: ParsedLog
     ) -> list[FileWindow]:
         """
         For each file in parsed_log.all_files, read a window of ±WINDOW lines
@@ -442,7 +442,6 @@ class RootCauseAnalyst:
         mock_log.build_errors = []
 
         # Read each file as a full window (no error lines → defaults to line 1)
-        from phalanx.ci_fixer.log_parser import LintError  # noqa: PLC0415
 
         results: list[str] = []
         for rel_path in paths[:_MAX_FILES]:

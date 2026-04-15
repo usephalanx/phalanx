@@ -5,8 +5,6 @@ No DB, no network, no Celery.
 
 from __future__ import annotations
 
-import pytest
-
 from phalanx.ci_fixer.classifier import classify_failure, extract_failing_files
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import _extract_failure_section, _truncate
@@ -322,7 +320,6 @@ class TestCIFixerSoul:
 
 # ── RootCauseAnalyst — JSON parsing (mocked _call_llm) ────────────────────────
 
-from unittest.mock import patch  # noqa: E402
 
 
 class TestRootCauseAnalyst:

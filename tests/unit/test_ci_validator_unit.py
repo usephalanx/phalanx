@@ -8,10 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
-from phalanx.ci_fixer.validator import ValidationResult, validate_fix
+from phalanx.ci_fixer.validator import validate_fix
 
 
 def _parsed(tool: str, **kwargs) -> ParsedLog:
@@ -163,7 +161,6 @@ class TestValidateFix:
 
     def test_regression_check_fires_on_new_error(self, tmp_path):
         """Regression check catches errors introduced into other files."""
-        from phalanx.ci_fixer.log_parser import parse_log
 
         original = _parsed("ruff", lint_errors=[
             LintError(file="phalanx/foo.py", line=1, col=1, code="F401", message="unused")

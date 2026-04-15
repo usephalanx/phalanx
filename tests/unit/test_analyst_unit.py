@@ -12,19 +12,18 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from phalanx.ci_fixer.analyst import (
     FilePatch,
     FileWindow,
-    FixPlan,
     RootCauseAnalyst,
     _is_test_file,
 )
-from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
+from phalanx.ci_fixer.log_parser import LintError, ParsedLog
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
