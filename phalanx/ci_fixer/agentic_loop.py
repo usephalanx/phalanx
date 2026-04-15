@@ -21,10 +21,9 @@ Design principles (SWE-agent / OpenHands pattern):
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable  # noqa: TC003
+from pathlib import Path  # noqa: TC003
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -214,21 +213,28 @@ def _execute_tool(
 # ── System prompt ──────────────────────────────────────────────────────────────
 
 
-def _build_system_prompt(context: "ContextBundle") -> str:
+def _build_system_prompt(context: ContextBundle) -> str:
+    failing_files = context.failing_files or list(context.file_contents.keys())
+    failing_files_str = ", ".join(failing_files) if failing_files else "(see errors below)"
+
     lines = [
         "You are an expert software engineer fixing a CI failure.",
         "",
         "Your job:",
-        "1. Read the failing files",
-        "2. Fix the specific errors reported in the CI log",
-        "3. Validate your fix by running the appropriate tool",
-        "4. Call finish(success=true) when the CI passes, or finish(success=false) if you cannot fix it",
+        "1. Fix the specific errors listed in the CI log (only those files, nothing else)",
+        "2. Validate your fix by running the tool on ONLY the failing files",
+        "3. Call finish(success=true) as soon as those specific files pass — do NOT check other files",
+        "",
+        "IMPORTANT — scope your validation to the failing files only:",
+        f"  Failing files: {failing_files_str}",
+        f"  Validation command example: {context.classification.tool} check {failing_files_str}",
         "",
         "Rules:",
         "- Only fix what is broken. Do not refactor, rename, or restructure.",
         "- Do not modify test files.",
-        "- Call finish() as soon as validation passes — do not keep going.",
-        "- If a run_command is BLOCKED, it means that tool is not permitted. Use a different approach.",
+        "- Call finish() as soon as the failing files pass — do not check the whole codebase.",
+        "- The codebase may have pre-existing issues in OTHER files — ignore them.",
+        "- If a run_command is BLOCKED, that tool is not permitted. Use read_file/write_file instead.",
         "- If you cannot fix the failure after a few attempts, call finish(success=false).",
     ]
 
@@ -239,7 +245,7 @@ def _build_system_prompt(context: "ContextBundle") -> str:
         f"Failure type: {context.classification.failure_type}",
         f"Root cause hypothesis: {context.classification.root_cause_hypothesis}",
         "",
-        "=== FAILING ERRORS ===",
+        "=== FAILING ERRORS (fix ONLY these) ===",
         context.log_excerpt[:2000] if context.log_excerpt else "(no log excerpt)",
     ]
 
@@ -267,7 +273,7 @@ def _build_system_prompt(context: "ContextBundle") -> str:
 
 
 def run_agentic_loop(
-    context: "ContextBundle",
+    context: ContextBundle,
     call_claude_with_tools: Callable,
     workspace: Path,
     allowed_tools: list[str],

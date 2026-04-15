@@ -37,9 +37,8 @@ import structlog
 from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
-from phalanx.agents.soul import CI_FIXER_SOUL
 from phalanx.ci_fixer.agentic_loop import run_agentic_loop
-from phalanx.ci_fixer.analyst import FilePatch, FixPlan, RootCauseAnalyst
+from phalanx.ci_fixer.analyst import FilePatch, RootCauseAnalyst
 from phalanx.ci_fixer.classifier import LLMClassifier
 from phalanx.ci_fixer.context_retriever import ContextRetriever
 from phalanx.ci_fixer.events import CIFailureEvent
@@ -53,7 +52,7 @@ from phalanx.ci_fixer.version_parity import (
     should_auto_merge,
 )
 from phalanx.config.settings import get_settings
-from phalanx.db.models import CIFailureFingerprint, CIFlakyPattern, CIFixRun, CIIntegration
+from phalanx.db.models import CIFailureFingerprint, CIFixRun, CIFlakyPattern, CIIntegration
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
 
@@ -285,7 +284,6 @@ class CIFixerAgent(BaseAgent):
         )
 
         fix_plan = repair_result.fix_plan
-        validation_passed = repair_result.success
         validation_tool_version = (
             repair_result.validation.tool_version
             if repair_result.validation
@@ -705,11 +703,11 @@ class CIFixerAgent(BaseAgent):
         )
 
         footer = (
-            f"*Auto-merge is enabled — will merge when all checks pass.*\n"
+            "*Auto-merge is enabled — will merge when all checks pass.*\n"
             if enable_auto_merge
             else
-            f"*This is a draft PR — Phalanx never auto-merges. "
-            f"Review the diff above, then mark ready and merge if correct.*\n"
+            "*This is a draft PR — Phalanx never auto-merges. "
+            "Review the diff above, then mark ready and merge if correct.*\n"
         )
 
         body = (
@@ -995,7 +993,7 @@ class CIFixerAgent(BaseAgent):
         self,
         fingerprint_hash: str | None,
         local_version: str,
-    ) -> "VersionParityResult":
+    ) -> VersionParityResult:
         """
         Phase 4: Compare local tool version to the version at the last successful fix.
 
@@ -1011,7 +1009,6 @@ class CIFixerAgent(BaseAgent):
             )
 
         try:
-            from sqlalchemy import and_  # noqa: PLC0415
 
             async with get_db() as session:
                 result = await session.execute(
@@ -1061,8 +1058,8 @@ class CIFixerAgent(BaseAgent):
     async def _load_flaky_patterns(
         self,
         repo_full_name: str,
-        parsed_log: "ParsedLog",
-    ) -> list["CIFlakyPattern"]:
+        parsed_log: ParsedLog,
+    ) -> list[CIFlakyPattern]:
         """
         Phase 3: Load CIFlakyPattern rows matching the errors in parsed_log.
 
@@ -1167,9 +1164,9 @@ class CIFixerAgent(BaseAgent):
     async def _update_fingerprint_on_success(
         self,
         fingerprint_hash: str,
-        patches: list["FilePatch"],
+        patches: list[FilePatch],
         tool_version: str,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
     ) -> None:
         """
         After a successful fix is validated, upsert CIFailureFingerprint with
