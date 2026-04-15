@@ -187,7 +187,7 @@ async def test_execute_inner_low_confidence_no_pr():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark:
         MockClf.return_value.classify.return_value = clf
         MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))

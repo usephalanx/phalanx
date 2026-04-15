@@ -38,13 +38,13 @@ from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.agents.soul import CI_FIXER_SOUL
+from phalanx.ci_fixer.agentic_loop import run_agentic_loop
 from phalanx.ci_fixer.analyst import FilePatch, FixPlan, RootCauseAnalyst
 from phalanx.ci_fixer.classifier import LLMClassifier
 from phalanx.ci_fixer.context_retriever import ContextRetriever
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
 from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
-from phalanx.ci_fixer.repair_agent import run_repair
 from phalanx.ci_fixer.suppressor import is_flaky_suppressed, should_use_history
 from phalanx.ci_fixer.version_parity import (
     VersionParityResult,
@@ -261,13 +261,16 @@ class CIFixerAgent(BaseAgent):
             )
         context.log_excerpt = raw_log[:1200]
 
-        # Stage 3: FSM repair loop (Claude Sonnet) — deterministic L1 or LLM fix
-        repair_result = run_repair(
+        # Stage 3: Agentic tool loop (Claude) — tool-agnostic LLM-driven repair
+        allowed_tools = getattr(integration, "allowed_tools", None) or [
+            "ruff", "cargo", "npm", "mvn", "pytest",
+            "go", "tsc", "eslint", "mypy", "gradle",
+        ]
+        repair_result = run_agentic_loop(
             context=context,
-            call_claude=self._call_claude,
+            call_claude_with_tools=self._call_claude_with_tools,
             workspace=workspace,
-            original_parsed=parsed,
-            max_iterations=_MAX_ITERATIONS,
+            allowed_tools=allowed_tools,
         )
 
         self._log.info(

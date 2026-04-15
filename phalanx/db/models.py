@@ -795,6 +795,14 @@ class CIIntegration(Base):
     """Phase 4: when True, CIFixerAgent opens a real PR and enables auto-merge for trusted fingerprints."""
     min_success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
     """Phase 4: auto-merge only triggered after a fingerprint has >= this many successful fixes."""
+    allowed_tools: Mapped[list[str]] = mapped_column(
+        ARRAY(String),
+        nullable=False,
+        server_default="{ruff,cargo,npm,mvn,pytest,go,tsc,eslint,mypy,gradle}",
+    )
+    """Tools the CI fixer agent is permitted to execute for this repo.
+    The first token of any run_command call is checked against this list.
+    Defaults to the full set of supported tools."""
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 

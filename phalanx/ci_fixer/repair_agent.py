@@ -1,4 +1,10 @@
 """
+DEPRECATED: repair_agent.py is superseded by agentic_loop.py.
+
+The FSM approach is replaced by a tool-agnostic agentic loop where the LLM
+drives repair using 4 tools (read_file, write_file, run_command, finish).
+This module is kept for its RepairResult dataclass which agentic_loop.py imports.
+
 Repair Agent FSM — drives the CI fix loop using a finite state machine.
 
 States:

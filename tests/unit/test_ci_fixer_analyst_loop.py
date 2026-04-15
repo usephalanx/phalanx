@@ -159,7 +159,7 @@ def _base_patches(agent, mock_ctx, parsed, classification=None, repair_result=No
         # Mock the 3 pipeline stages
         patch("phalanx.agents.ci_fixer.LLMClassifier") ,
         patch("phalanx.agents.ci_fixer.ContextRetriever"),
-        patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result),
+        patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result),
     ]
 
 
@@ -188,7 +188,7 @@ async def test_execute_inner_repair_failed_low_confidence():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark:
         MockClf.return_value.classify.return_value = classification
         MockRet.return_value.retrieve = AsyncMock(return_value=MagicMock(log_excerpt=""))
@@ -224,7 +224,7 @@ async def test_execute_inner_validation_failed_with_pr():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock), \
          patch.object(agent, "_comment_unable_to_fix", new_callable=AsyncMock) as mock_unable:
         MockClf.return_value.classify.return_value = classification
@@ -263,7 +263,7 @@ async def test_execute_inner_commit_failed():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
                       return_value={"sha": None, "error": "commit failed"}), \
@@ -323,7 +323,7 @@ async def test_execute_inner_success_path():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_get_fingerprint_success_count", new_callable=AsyncMock, return_value=0), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
@@ -384,7 +384,7 @@ async def test_execute_inner_success_push_failed_no_pr():
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
          patch("phalanx.agents.ci_fixer.ContextRetriever") as MockRet, \
-         patch("phalanx.agents.ci_fixer.run_repair", return_value=repair_result), \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop", return_value=repair_result), \
          patch.object(agent, "_check_tool_version_parity", new_callable=AsyncMock, return_value=mock_parity), \
          patch.object(agent, "_get_fingerprint_success_count", new_callable=AsyncMock, return_value=0), \
          patch.object(agent, "_commit_to_safe_branch", new_callable=AsyncMock,
@@ -432,7 +432,7 @@ async def test_execute_inner_classifier_low_confidence():
          patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
          patch.object(agent, "_trace", new_callable=AsyncMock), \
          patch("phalanx.agents.ci_fixer.LLMClassifier") as MockClf, \
-         patch("phalanx.agents.ci_fixer.run_repair") as mock_run_repair, \
+         patch("phalanx.agents.ci_fixer.run_agentic_loop") as mock_run_repair, \
          patch.object(agent, "_mark_failed", new_callable=AsyncMock):
         MockClf.return_value.classify.return_value = low_clf
         result = await agent._execute_inner()

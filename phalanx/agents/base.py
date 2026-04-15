@@ -346,6 +346,68 @@ class BaseAgent(abc.ABC):
         # Fallback: Anthropic API
         return self._call_claude_api(messages, system, model, max_tokens)
 
+    def _call_claude_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int = 4096,
+        tool_choice: dict | None = None,
+    ) -> dict:
+        """
+        Call Anthropic API with tool use enabled.
+
+        Returns a dict: {"content": [...content blocks...], "stop_reason": str}
+        Content blocks may include {"type": "text", ...} and {"type": "tool_use", ...}.
+
+        Always uses the Anthropic API directly (not CLI) because tool use requires
+        the structured API response format.
+        """
+        self._check_budget(max_tokens)
+        client = get_anthropic_client()
+
+        kwargs: dict = {
+            "model": model or settings.anthropic_model_default,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+        }
+        if tool_choice:
+            kwargs["tool_choice"] = tool_choice
+
+        response = client.messages.create(**kwargs)
+
+        tokens_used = response.usage.input_tokens + response.usage.output_tokens
+        self._tokens_used += tokens_used
+
+        self._log.debug(
+            "agent.claude_call_with_tools",
+            via="api",
+            model=response.model,
+            stop_reason=response.stop_reason,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            total_tokens=tokens_used,
+            budget_remaining=self.token_budget - self._tokens_used,
+        )
+
+        # Serialize content blocks to plain dicts for easy consumption
+        content = []
+        for block in response.content:
+            if block.type == "text":
+                content.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                content.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": block.input,
+                })
+
+        return {"content": content, "stop_reason": response.stop_reason}
+
     # ── Soul layer ────────────────────────────────────────────────────────────
 
     def _reflect(

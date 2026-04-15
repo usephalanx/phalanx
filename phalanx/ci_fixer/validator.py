@@ -1,4 +1,10 @@
 """
+DEPRECATED: validator.py is superseded by agentic_loop.py.
+
+In the new architecture, validation is done by the LLM agent itself via
+run_command tool calls (ToolExecutor-gated). This module is kept for
+ValidationResult which test code references.
+
 CI Fix Validator — re-runs the failing command in the workspace to verify the fix.
 
 Phase 1 additions vs the original:
