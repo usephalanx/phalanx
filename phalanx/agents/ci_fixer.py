@@ -48,6 +48,8 @@ from phalanx.ci_fixer.context import (
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
 from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
+from phalanx.ci_fixer.reproducer import ReproducerAgent
+from phalanx.ci_fixer.sandbox import SandboxProvisioner
 from phalanx.ci_fixer.suppressor import is_flaky_suppressed, should_use_history
 from phalanx.ci_fixer.validator import validate_fix
 from phalanx.ci_fixer.version_parity import (
@@ -232,6 +234,54 @@ class CIFixerAgent(BaseAgent):
             _cleanup_workspace(workspace)
             await self._mark_failed(ci_run, "repo_clone_failed")
             return AgentResult(success=False, output={}, error="repo clone failed")
+
+        # ── Phase 2: Sandbox provisioning + failure reproduction ──────────────
+        provisioner = SandboxProvisioner()
+        sandbox_result = await provisioner.provision(workspace)
+
+        if sandbox_result:
+            ctx.sandbox_id = sandbox_result.sandbox_id
+            ctx.sandbox_stack = sandbox_result.stack
+            await self._persist_context(ctx)
+
+        reproducer = ReproducerAgent()
+        reproduction_result = await reproducer.reproduce(
+            reproducer_cmd=ctx.structured_failure.reproducer_cmd,
+            workspace_path=workspace,
+            sandbox_result=sandbox_result,
+            structured_failure=ctx.structured_failure,
+            timeout_seconds=settings.sandbox_timeout_seconds,
+        )
+        ctx.reproduction_result = reproduction_result
+        await self._persist_context(ctx)
+
+        if reproduction_result.verdict == "flaky":
+            self._log.info(
+                "ci_fixer.flaky_reproduction",
+                repo=ci_run.repo_full_name,
+                tool=parsed.tool,
+            )
+            ctx.complete("flaky")
+            await self._persist_context(ctx)
+            await self._mark_failed(ci_run, "flaky")
+            return AgentResult(
+                success=False,
+                output={"reason": "flaky", "tool": parsed.tool},
+            )
+
+        if reproduction_result.verdict == "env_mismatch":
+            self._log.warning(
+                "ci_fixer.env_mismatch",
+                repo=ci_run.repo_full_name,
+                tool=parsed.tool,
+            )
+            ctx.complete("escalated", error="env_mismatch: reproducer ran different failure")
+            await self._persist_context(ctx)
+            await self._mark_failed(ci_run, "env_mismatch")
+            return AgentResult(
+                success=False,
+                output={"reason": "env_mismatch", "tool": parsed.tool},
+            )
 
         # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
         analyst = RootCauseAnalyst(

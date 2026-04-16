@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     phalanx_enable_demo_deploy: bool = True
     # ── CI Webhooks ───────────────────────────────────────────────────────────
     buildkite_webhook_token: str = ""
+
+    # ── Sandbox / CI Reproduction ─────────────────────────────────────────────
+    # Command used to run containers (swap to "podman" on RHEL/CoreOS hosts).
+    sandbox_docker_cmd: str = "docker"
+    # Maximum seconds the reproducer command may run inside the sandbox.
+    sandbox_timeout_seconds: int = 120
+    # Master switch — set SANDBOX_ENABLED=false in envs where Docker is absent.
+    sandbox_enabled: bool = True
+
     # Phase 2: streaming builder — set FORGE_STREAMING_BUILDER=1 to enable.
     # Eliminates the 20K output token ceiling by writing each file as Claude
     # generates it. Safe to enable once validated in simulation.
