@@ -52,6 +52,7 @@ from phalanx.ci_fixer.reproducer import ReproducerAgent
 from phalanx.ci_fixer.sandbox import SandboxProvisioner
 from phalanx.ci_fixer.suppressor import is_flaky_suppressed, should_use_history
 from phalanx.ci_fixer.validator import validate_fix
+from phalanx.ci_fixer.verifier import VerifierAgent
 from phalanx.ci_fixer.version_parity import (
     VersionParityResult,
     check_version_parity,
@@ -547,9 +548,37 @@ class CIFixerAgent(BaseAgent):
             validation_cmd=validation_tool_version or "",
             success=True,
         )
-        ctx.reproduction_result = ReproductionResult(
-            verdict="skipped",  # Phase 1: no sandbox yet
+        # Phase 2 already sets ctx.reproduction_result earlier in the pipeline.
+        # Only set it here as a fallback if sandbox was disabled (still None).
+        if ctx.reproduction_result is None:
+            ctx.reproduction_result = ReproductionResult(verdict="skipped")
+
+        # ── Phase 3: Broad verification (catch regressions post-fix) ─────────
+        verifier = VerifierAgent()
+        verification_result = await verifier.verify(
+            workspace_path=workspace,
+            stack=ctx.sandbox_stack or "python",
+            sandbox_result=sandbox_result,
+            timeout_seconds=settings.sandbox_timeout_seconds,
         )
+        ctx.verification_result = verification_result
+        await self._persist_context(ctx)
+
+        if verification_result.verdict == "failed":
+            self._log.warning(
+                "ci_fixer.verification_failed",
+                repo=ci_run.repo_full_name,
+                tool=parsed.tool,
+                output=verification_result.output[:300],
+            )
+            ctx.complete("escalated", error="verification failed: post-fix regression detected")
+            await self._persist_context(ctx)
+            await self._mark_failed(ci_run, "verification_failed")
+            return AgentResult(
+                success=False,
+                output={"reason": "verification_failed", "tool": parsed.tool},
+            )
+
         ctx.fix_commit_sha = commit_sha
         ctx.fix_pr_number = fix_pr_number
         ctx.fix_branch = fix_branch
