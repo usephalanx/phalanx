@@ -828,6 +828,8 @@ class CIFixRun(Base):
     """False until OutcomeTracker has classified this run's fix outcome (V2)."""
     tool_version_parity_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     """Phase 4: True when tool version at fix time matches failure-time version (within minor version)."""
+    pipeline_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """CIFixContext serialized as JSON — full multi-agent pipeline state (Phase 1+)."""
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     error: Mapped[str | None] = mapped_column(Text)

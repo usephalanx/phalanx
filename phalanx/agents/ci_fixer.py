@@ -38,6 +38,13 @@ from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.ci_fixer.analyst import FilePatch, FixPlan, RootCauseAnalyst
+from phalanx.ci_fixer.context import (
+    CIFixContext,
+    ClassifiedFailure,
+    ReproductionResult,
+    StructuredFailure,
+    VerifiedPatch,
+)
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
 from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
@@ -113,6 +120,16 @@ class CIFixerAgent(BaseAgent):
         if integration is None:
             return AgentResult(success=False, output={}, error="CIIntegration not found")
 
+        # ── 1b. Initialize shared pipeline context ───────────────────────────
+        ctx = CIFixContext(
+            ci_fix_run_id=self.ci_fix_run_id,
+            repo=ci_run.repo_full_name,
+            branch=ci_run.branch,
+            commit_sha=ci_run.commit_sha,
+            original_build_id=ci_run.ci_build_id,
+        )
+        await self._persist_context(ctx)
+
         # ── 2. Fetch raw logs ─────────────────────────────────────────────────
         event = CIFailureEvent(
             provider=ci_run.ci_provider,
@@ -150,6 +167,22 @@ class CIFixerAgent(BaseAgent):
         # Persist fingerprint immediately — even if we can't fix it,
         # the hash is valuable for V2 history queries.
         await self._persist_fingerprint(fingerprint)
+
+        # Update shared context with structured failure
+        ctx.structured_failure = StructuredFailure(
+            tool=parsed.tool,
+            failure_type=parsed.failure_type if hasattr(parsed, "failure_type") else "unknown",
+            reproducer_cmd="",  # populated by classifier
+            errors=[],
+            failing_files=list(parsed.failing_files) if hasattr(parsed, "failing_files") else [],
+            log_excerpt=raw_log[:2000],
+        )
+        ctx.classified_failure = ClassifiedFailure(
+            tier="L1_auto",
+            root_cause="",
+            stack="python",
+        )
+        await self._persist_context(ctx)
 
         await self._trace(
             "decision",
@@ -393,19 +426,30 @@ class CIFixerAgent(BaseAgent):
 
         fix_pr_number: int | None = None
         if not push_failed and integration.github_token:
-            fix_pr_number = await self._open_draft_pr(
-                integration=integration,
-                ci_run=ci_run,
-                fix_branch=fix_branch,
-                files_written=files_written,
-                commit_sha=commit_sha,
-                tool=parsed.tool,
-                root_cause=fix_plan.root_cause,
-                parsed=parsed,
-                validation_tool_version=validation_tool_version,
-                enable_auto_merge=enable_auto_merge,
-                parity_notice=format_parity_notice(parity_result),
-            )
+            # Phase 1: check for an existing Phalanx fix PR targeting this branch.
+            # If one exists, push the new commit to it instead of opening a second PR.
+            existing_pr = await self._find_existing_fix_pr(integration, ci_run)
+            if existing_pr:
+                self._log.info(
+                    "ci_fixer.reusing_existing_fix_pr",
+                    pr=existing_pr,
+                    branch=ci_run.branch,
+                )
+                fix_pr_number = existing_pr
+            else:
+                fix_pr_number = await self._open_draft_pr(
+                    integration=integration,
+                    ci_run=ci_run,
+                    fix_branch=fix_branch,
+                    files_written=files_written,
+                    commit_sha=commit_sha,
+                    tool=parsed.tool,
+                    root_cause=fix_plan.root_cause,
+                    parsed=parsed,
+                    validation_tool_version=validation_tool_version,
+                    enable_auto_merge=enable_auto_merge,
+                    parity_notice=format_parity_notice(parity_result),
+                )
 
         # ── 9. Comment on original PR ─────────────────────────────────────────
         if ci_run.pr_number and integration.github_token:
@@ -447,6 +491,21 @@ class CIFixerAgent(BaseAgent):
             parsed_log=parsed,
         )
 
+        # ── Update final context state ────────────────────────────────────────
+        ctx.verified_patch = VerifiedPatch(
+            files_modified=files_written,
+            validation_cmd=validation_tool_version or "",
+            success=True,
+        )
+        ctx.reproduction_result = ReproductionResult(
+            verdict="skipped",  # Phase 1: no sandbox yet
+        )
+        ctx.fix_commit_sha = commit_sha
+        ctx.fix_pr_number = fix_pr_number
+        ctx.fix_branch = fix_branch
+        ctx.complete("fixed")
+        await self._persist_context(ctx)
+
         self._log.info(
             "ci_fixer.execute.done",
             tool=parsed.tool,
@@ -472,6 +531,23 @@ class CIFixerAgent(BaseAgent):
                 "validation_tool_version": validation_tool_version,
             },
         )
+
+    # ── Pipeline context persistence ───────────────────────────────────────────
+
+    async def _persist_context(self, ctx: CIFixContext) -> None:
+        """Persist the current CIFixContext state to CIFixRun.pipeline_context_json."""
+        import json  # noqa: PLC0415
+
+        try:
+            async with get_db() as session:
+                await session.execute(
+                    update(CIFixRun)
+                    .where(CIFixRun.id == self.ci_fix_run_id)
+                    .values(pipeline_context_json=json.dumps(ctx.to_dict()))
+                )
+                await session.commit()
+        except Exception as exc:
+            self._log.warning("ci_fixer.context_persist_error", error=str(exc))
 
     # ── Log fetching ───────────────────────────────────────────────────────────
 
@@ -780,6 +856,54 @@ class CIFixerAgent(BaseAgent):
         except Exception as exc:
             self._log.warning("ci_fixer.draft_pr_error", error=str(exc))
 
+        return None
+
+    async def _find_existing_fix_pr(
+        self,
+        integration: CIIntegration,
+        ci_run: CIFixRun,
+    ) -> int | None:
+        """
+        Look for an open Phalanx fix PR already targeting ci_run.branch.
+
+        Returns the PR number if found, None otherwise.
+
+        This prevents duplicate fix PRs when the pipeline is triggered
+        multiple times for the same failing branch (e.g. repeated CI runs).
+        A new commit is pushed to the existing PR instead of opening a second one.
+        """
+        import httpx  # noqa: PLC0415
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"https://api.github.com/repos/{ci_run.repo_full_name}/pulls",
+                    headers={
+                        "Authorization": f"Bearer {integration.github_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    params={
+                        "state": "open",
+                        "base": ci_run.branch,
+                        "head": f"{ci_run.repo_full_name.split('/')[0]}:phalanx/ci-fix/",
+                    },
+                )
+            if r.status_code != 200:
+                return None
+            prs = r.json()
+            # Filter to PRs whose head branch starts with phalanx/ci-fix/
+            for pr in prs:
+                head_ref = pr.get("head", {}).get("ref", "")
+                if head_ref.startswith("phalanx/ci-fix/"):
+                    self._log.info(
+                        "ci_fixer.existing_fix_pr_found",
+                        pr=pr["number"],
+                        head=head_ref,
+                        base=ci_run.branch,
+                    )
+                    return pr["number"]
+        except Exception as exc:
+            self._log.warning("ci_fixer.find_existing_pr_error", error=str(exc))
         return None
 
     async def _enable_github_auto_merge(
