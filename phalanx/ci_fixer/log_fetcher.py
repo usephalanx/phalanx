@@ -262,16 +262,142 @@ class BuildkiteLogFetcher:
 class CircleCILogFetcher:
     """
     Fetches CI logs from CircleCI v2 API.
-    Phase 2 — stub for now.
+
+    Strategy:
+    1. GET /api/v2/workflow/{workflow_id}/job  → find failed jobs
+    2. GET /api/v2/project/{slug}/job/{job_number}/steps  → get step log URLs
+    3. GET {log_url}  → fetch the actual step output
+    4. Combine + extract the relevant failure section
+
+    event.build_id is the CircleCI workflow ID (UUID).
+    event.repo_full_name must be in 'owner/repo' format (GitHub VCS assumed).
     """
 
+    _BASE = "https://circleci.com/api/v2"
+
     async def fetch(self, event: CIFailureEvent, api_key: str) -> str:
-        # TODO Phase 2: implement CircleCI v2 API log fetch
-        # GET /pipeline/{pipeline_id}/workflow
-        # GET /workflow/{workflow_id}/job
-        # GET /project/{slug}/job/{job_number}/steps
-        log.warning("ci_fixer.circleci.not_implemented")
-        return "(CircleCI log fetch not yet implemented)"
+        headers = {"Circle-Token": api_key}
+        project_slug = f"github/{event.repo_full_name}"
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            # 1. List jobs in this workflow, find the failed ones
+            failed_jobs = await self._get_failed_jobs(client, headers, event.build_id)
+            if not failed_jobs:
+                log.info(
+                    "ci_fixer.circleci.no_failed_jobs",
+                    workflow_id=event.build_id,
+                )
+                return "(no failed jobs found in workflow)"
+
+            log_sections: list[str] = []
+            for job_number, job_name in failed_jobs[:3]:
+                section = await self._get_job_log(
+                    client, headers, project_slug, job_number, job_name
+                )
+                if section:
+                    log_sections.append(f"JOB: {job_name}\n{section}")
+
+            combined = "\n\n---\n\n".join(log_sections)
+            return _truncate(combined) if combined.strip() else "(no logs retrieved)"
+
+    async def _get_failed_jobs(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict,
+        workflow_id: str,
+    ) -> list[tuple[int, str]]:
+        """Return list of (job_number, job_name) for failed jobs in the workflow."""
+        try:
+            r = await client.get(
+                f"{self._BASE}/workflow/{workflow_id}/job",
+                headers=headers,
+            )
+            r.raise_for_status()
+            jobs = r.json().get("items", [])
+            return [
+                (j["job_number"], j.get("name", str(j["job_number"])))
+                for j in jobs
+                if j.get("status") in ("failed", "timedout", "infrastructure_fail")
+                and j.get("job_number") is not None
+            ]
+        except Exception as exc:
+            log.warning("ci_fixer.circleci.workflow_jobs_failed", error=str(exc))
+            return []
+
+    async def _get_job_log(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict,
+        project_slug: str,
+        job_number: int,
+        job_name: str,
+    ) -> str:
+        """Fetch and return the failure section from a single CircleCI job."""
+        try:
+            # Get step details — each step has output URLs
+            r = await client.get(
+                f"{self._BASE}/project/{project_slug}/job/{job_number}/steps",
+                headers=headers,
+            )
+            r.raise_for_status()
+            steps = r.json().get("items", [])
+
+            # Find failed steps (exit_code != 0)
+            failed_steps = [
+                action
+                for step in steps
+                for action in step.get("actions", [])
+                if action.get("exit_code") not in (0, None) or action.get("failed")
+            ]
+
+            # Fall back to all steps if no explicit failures found
+            all_actions = [
+                action
+                for step in steps
+                for action in step.get("actions", [])
+                if action.get("output_url")
+            ]
+            targets = failed_steps if failed_steps else all_actions[-3:]
+
+            all_lines: list[str] = []
+            for action in targets[:3]:
+                output_url = action.get("output_url")
+                if not output_url:
+                    continue
+                try:
+                    log_r = await client.get(output_url, headers=headers)
+                    if log_r.status_code == 200:
+                        # CircleCI returns a JSON array of {message, type} objects
+                        # OR raw text depending on content-type
+                        content_type = log_r.headers.get("content-type", "")
+                        if "json" in content_type:
+                            entries = log_r.json()
+                            text = "".join(
+                                e.get("message", "") for e in entries if isinstance(e, dict)
+                            )
+                        else:
+                            text = log_r.text
+                        # Strip ANSI escape codes
+                        text = re.sub(r"\x1b\[[0-9;]*[mGKHF]", "", text)
+                        all_lines.extend(text.splitlines())
+                except Exception as exc:
+                    log.warning(
+                        "ci_fixer.circleci.output_fetch_failed",
+                        job=job_name,
+                        error=str(exc),
+                    )
+
+            if all_lines:
+                return _extract_failure_section(all_lines)
+            return ""
+
+        except Exception as exc:
+            log.warning(
+                "ci_fixer.circleci.job_steps_failed",
+                job_number=job_number,
+                error=str(exc),
+            )
+            return ""
 
 
 # ── Jenkins ────────────────────────────────────────────────────────────────────

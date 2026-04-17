@@ -14,11 +14,18 @@ Design:
     rust   → cargo test
     unknown → skipped (verdict="skipped")
 
+  Execution:
+    When sandbox_result.container_id is set, each command is executed inside
+    the pre-warmed isolated container via `docker exec`.  The workspace is
+    already at /workspace inside the container.
+    When container_id is empty or sandbox unavailable, falls back to local
+    subprocess (original Phase 2 behaviour — no regression).
+
   Timeout: settings.sandbox_timeout_seconds (same budget as reproducer).
 
   The verifier is intentionally conservative:
     - If the test command is not found → verdict="skipped" (don't block the fix)
-    - If the command times out → verdict="timeout"
+    - If the command times out → verdict="timeout" (non-blocking per step)
     - If exit_code == 0 → verdict="passed"
     - If exit_code != 0 → verdict="failed"
 
@@ -96,6 +103,12 @@ class VerifierAgent:
             or (workspace_path / "setup.cfg").exists()
         )
 
+    def _container_id(self, sandbox_result: SandboxResult | None) -> str:
+        """Return container_id from sandbox_result if available, else empty string."""
+        if sandbox_result is None:
+            return ""
+        return getattr(sandbox_result, "container_id", "")
+
     async def verify(
         self,
         workspace_path: Path,
@@ -127,12 +140,15 @@ class VerifierAgent:
 
         steps: list[VerificationStep] = []
 
+        container_id = self._container_id(sandbox_result)
+
         for label, cmd_args in profile:
             step = await self._run_cmd(
                 label=label,
                 cmd_args=cmd_args,
                 cwd=workspace_path,
                 timeout_seconds=timeout_seconds,
+                container_id=container_id,
             )
             steps.append(step)
 
@@ -186,20 +202,37 @@ class VerifierAgent:
         cmd_args: list[str],
         cwd: Path,
         timeout_seconds: int,
+        container_id: str = "",
     ) -> VerificationStep:
         """
         Run a single verification command as an async subprocess.
+
+        When container_id is provided, wraps with docker exec so the command
+        runs inside the pre-warmed isolated container at /workspace.
+        When container_id is empty, runs locally (original behaviour).
+
         Returns a VerificationStep with timed_out=True if timeout is exceeded.
         """
+        from phalanx.ci_fixer.sandbox_pool import wrap_cmd_for_container
+        from phalanx.config.settings import get_settings as _get_settings
+
         start = time.monotonic()
         cmd_str = " ".join(cmd_args)
 
+        if container_id:
+            docker_cmd = _get_settings().sandbox_docker_cmd
+            exec_args = wrap_cmd_for_container(
+                container_id, cmd_args, str(cwd), docker_cmd=docker_cmd
+            )
+        else:
+            exec_args = cmd_args
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd_args,
+                *exec_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(cwd),
+                cwd=str(cwd) if not container_id else None,
             )
 
             stdout_b, stderr_b = await asyncio.wait_for(

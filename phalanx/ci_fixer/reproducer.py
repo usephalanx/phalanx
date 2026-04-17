@@ -10,15 +10,18 @@ Verdicts:
   skipped      — no sandbox available (sandbox_enabled=False or provision failed)
 
 Design:
-  - Phase 2: runs the command as a local subprocess (no Docker yet).
-    The sandbox_result is accepted for forward-compat with Phase 3's real
-    container exec; in Phase 2 its presence simply gates whether to attempt.
-  - asyncio.create_subprocess_shell is used because reproducer_cmd is a
-    string that may contain flags, pipes, or argument lists the shell parses.
+  - When sandbox_result.container_id is set, the command is executed inside
+    the pre-warmed container via `docker exec`.  The workspace is already
+    bind-mounted at /workspace inside the container by SandboxProvisioner.
+  - When sandbox_result.available=False or container_id is empty, falls back
+    to local subprocess (same as Phase 2 behaviour — no regression).
+  - asyncio.create_subprocess_shell is used for the local path because
+    reproducer_cmd is a string that may contain flags, pipes, etc.
+  - For the container path, we use create_subprocess_exec with docker exec
+    args to avoid shell injection.
   - Timeout is enforced via asyncio.wait_for; the process is killed on breach.
   - Output matching is conservative: if tool name OR any error code appears
-    in stdout/stderr we call it "confirmed".  False negatives (wrongly saying
-    env_mismatch) are worse than false positives here.
+    in stdout/stderr we call it "confirmed".
 """
 
 from __future__ import annotations
@@ -126,11 +129,13 @@ class ReproducerAgent:
                 reproducer_cmd=reproducer_cmd,
             )
 
-        # ── Run subprocess ────────────────────────────────────────────────────
+        # ── Run in container or local subprocess ──────────────────────────────
+        container_id = getattr(sandbox_result, "container_id", "")
         attempt = await self._run_subprocess(
             cmd=reproducer_cmd,
             cwd=workspace_path,
             timeout_seconds=timeout_seconds,
+            container_id=container_id,
         )
 
         combined_output = (attempt.stdout + "\n" + attempt.stderr).strip()
@@ -176,21 +181,40 @@ class ReproducerAgent:
         cmd: str,
         cwd: Path,
         timeout_seconds: int,
+        container_id: str = "",
     ) -> ReproductionAttempt:
         """
-        Run cmd as a shell subprocess with a hard timeout.
+        Run cmd with a hard timeout.
 
-        Uses asyncio.create_subprocess_shell so the full command string
-        (flags, quoted args, etc.) is interpreted by the shell.
+        When container_id is provided, wraps the command as:
+            docker exec -w /workspace {container_id} sh -c {cmd}
+        so it executes inside the pre-warmed isolated container.
+
+        When container_id is empty, falls back to local subprocess via
+        asyncio.create_subprocess_shell (original Phase 2 behaviour).
         """
+        from phalanx.ci_fixer.sandbox_pool import wrap_shell_cmd_for_container
+        from phalanx.config.settings import get_settings as _get_settings
+
         start = time.monotonic()
 
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd),
-        )
+        if container_id:
+            # Isolated container exec path
+            docker_cmd = _get_settings().sandbox_docker_cmd
+            args = wrap_shell_cmd_for_container(container_id, cmd, docker_cmd=docker_cmd)
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            # Local subprocess fallback
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
+            )
 
         try:
             stdout_b, stderr_b = await asyncio.wait_for(

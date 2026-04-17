@@ -15,6 +15,7 @@ import pytest
 from phalanx.api.routes.ci_webhooks import (
     _parse_repo_name,
     _verify_buildkite_signature,
+    _verify_circleci_signature,
     _verify_github_signature,
 )
 from phalanx.ci_fixer.log_fetcher import (
@@ -222,36 +223,242 @@ class TestTruncateLogFetcher:
         assert "START_MARKER" in result
 
 
-# ── Stub fetchers (CircleCI, Jenkins) ─────────────────────────────────────────
+# ── CircleCI / Jenkins fetcher helpers ─────────────────────────────────────────
 
 from phalanx.ci_fixer.events import CIFailureEvent  # noqa: E402
 
 
-def _make_event():
+def _make_circleci_event(build_id: str = "wf-uuid-1234") -> CIFailureEvent:
     return CIFailureEvent(
         provider="circleci",
         repo_full_name="acme/api",
-        branch="main",
-        commit_sha="abc",
-        build_id="1",
-        build_url="https://ci.example.com/1",
+        branch="fix/my-branch",
+        commit_sha="deadbeef",
+        build_id=build_id,
+        build_url="https://app.circleci.com/pipelines/github/acme/api/1/workflows/wf-uuid-1234",
     )
 
 
-class TestStubFetchers:
+def _make_circleci_client(
+    jobs_payload: dict | None = None,
+    steps_payload: dict | None = None,
+    log_content: str = "",
+    log_is_json: bool = False,
+    workflow_jobs_fail: bool = False,
+    steps_fail: bool = False,
+    log_fetch_fail: bool = False,
+):
+    """Build a mock httpx.AsyncClient for CircleCI API calls."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+
+    responses: list = []
+
+    # Call 1: GET /workflow/{id}/job
+    if workflow_jobs_fail:
+        job_resp = MagicMock()
+        job_resp.raise_for_status.side_effect = Exception("403 Forbidden")
+    else:
+        job_resp = MagicMock()
+        job_resp.raise_for_status = MagicMock()
+        job_resp.json.return_value = jobs_payload or {
+            "items": [
+                {"job_number": 42, "name": "test-job", "status": "failed"},
+            ]
+        }
+    responses.append(job_resp)
+
+    if not workflow_jobs_fail:
+        # Call 2: GET /project/{slug}/job/{number}/steps
+        if steps_fail:
+            steps_resp = MagicMock()
+            steps_resp.raise_for_status.side_effect = Exception("404 Not Found")
+        else:
+            steps_resp = MagicMock()
+            steps_resp.raise_for_status = MagicMock()
+            steps_resp.json.return_value = steps_payload or {
+                "items": [
+                    {
+                        "name": "Run tests",
+                        "actions": [
+                            {
+                                "exit_code": 1,
+                                "failed": True,
+                                "output_url": "https://circle-output.s3.amazonaws.com/out",
+                            }
+                        ],
+                    }
+                ]
+            }
+        responses.append(steps_resp)
+
+        if not steps_fail:
+            # Call 3: GET output_url
+            if log_fetch_fail:
+                log_resp = MagicMock()
+                log_resp.status_code = 500
+            else:
+                log_resp = MagicMock()
+                log_resp.status_code = 200
+                if log_is_json:
+                    log_resp.headers = {"content-type": "application/json"}
+                    log_resp.json.return_value = [
+                        {"message": log_content, "type": "out"}
+                    ]
+                else:
+                    log_resp.headers = {"content-type": "text/plain"}
+                    log_resp.text = log_content
+            responses.append(log_resp)
+
+    client.get = AsyncMock(side_effect=responses)
+    return client
+
+
+class TestCircleCILogFetcher:
     @pytest.mark.asyncio
-    async def test_circleci_returns_string(self):
-        fetcher = CircleCILogFetcher()
-        result = await fetcher.fetch(_make_event(), "key")
-        assert isinstance(result, str)
-        assert len(result) > 0
+    async def test_fetch_failed_job_plain_text_log(self):
+        """Happy path: failed job with plain-text output → failure section returned."""
+        log_text = "Step 1\nStep 2\nError: assert failed\nStep 4"
+        client = _make_circleci_client(log_content=log_text)
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert "Error: assert failed" in result
 
     @pytest.mark.asyncio
+    async def test_fetch_failed_job_json_log(self):
+        """CircleCI JSON log format: array of {message, type} objects."""
+        client = _make_circleci_client(
+            log_content="ruff: F401 unused import",
+            log_is_json=True,
+        )
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert "F401" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_no_failed_jobs(self):
+        """Workflow with no failed jobs → informative message."""
+        client = _make_circleci_client(jobs_payload={"items": []})
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert "no failed jobs" in result
+
+    @pytest.mark.asyncio
+    async def test_fetch_workflow_jobs_api_fails(self):
+        """GET /workflow/jobs raises → no logs retrieved."""
+        client = _make_circleci_client(workflow_jobs_fail=True)
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert "no failed jobs" in result or isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_fetch_steps_api_fails_gracefully(self):
+        """GET /job/{n}/steps raises → no logs retrieved for that job."""
+        client = _make_circleci_client(steps_fail=True)
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_fetch_log_url_fails_gracefully(self):
+        """Output URL fetch returns 500 → no output for that step."""
+        client = _make_circleci_client(log_content="", log_fetch_fail=True)
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_fetch_timedout_job_included(self):
+        """Jobs with status=timedout are treated as failed."""
+        client = _make_circleci_client(
+            jobs_payload={
+                "items": [{"job_number": 7, "name": "slow-build", "status": "timedout"}]
+            },
+            log_content="Timeout: job exceeded 10 minutes",
+        )
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert isinstance(result, str)
+
+    @pytest.mark.asyncio
+    async def test_fetch_multiple_failed_jobs_limited_to_three(self):
+        """Up to 3 failed jobs are fetched; extras are silently dropped."""
+        jobs = [
+            {"job_number": i, "name": f"job-{i}", "status": "failed"} for i in range(1, 6)
+        ]
+        # Build a client that returns jobs list, then step + log for each of the first 3
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+
+        jobs_resp = MagicMock()
+        jobs_resp.raise_for_status = MagicMock()
+        jobs_resp.json.return_value = {"items": jobs}
+
+        def _make_steps_resp():
+            r = MagicMock()
+            r.raise_for_status = MagicMock()
+            r.json.return_value = {
+                "items": [
+                    {"name": "run", "actions": [{"exit_code": 1, "output_url": "https://s3/out"}]}
+                ]
+            }
+            return r
+
+        def _make_log_resp():
+            r = MagicMock()
+            r.status_code = 200
+            r.headers = {"content-type": "text/plain"}
+            r.text = "Error: something failed"
+            return r
+
+        # jobs + (steps + log) * 3 = 7 calls
+        responses = [jobs_resp]
+        for _ in range(3):
+            responses.append(_make_steps_resp())
+            responses.append(_make_log_resp())
+
+        client.get = AsyncMock(side_effect=responses)
+
+        with patch("phalanx.ci_fixer.log_fetcher.httpx.AsyncClient", return_value=client):
+            result = await CircleCILogFetcher().fetch(_make_circleci_event(), "tok")
+
+        assert isinstance(result, str)
+        # Exactly 3 job log sections (or fewer, combined into one string)
+        assert result.count("JOB:") <= 3
+
+
+class TestJenkinsLogFetcher:
+    @pytest.mark.asyncio
     async def test_jenkins_returns_string(self):
-        fetcher = JenkinsLogFetcher()
-        e = _make_event()
-        e.provider = "jenkins"
-        result = await fetcher.fetch(e, "key")
+        event = CIFailureEvent(
+            provider="jenkins",
+            repo_full_name="acme/api",
+            branch="main",
+            commit_sha="abc",
+            build_id="1",
+            build_url="https://jenkins.example.com/job/1",
+        )
+        result = await JenkinsLogFetcher().fetch(event, "key")
         assert isinstance(result, str)
         assert len(result) > 0
 
@@ -551,7 +758,7 @@ def _make_app():
     from phalanx.api.routes.ci_webhooks import router
 
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(router, prefix="/webhook")
     return app
 
 
@@ -668,16 +875,184 @@ class TestBuildkiteWebhookRoutes:
         assert r.json()["status"] == "skipped"
 
 
-class TestStubWebhookRoutes:
+class TestJenkinsWebhookRoute:
     def setup_method(self):
         self.client = TestClient(_make_app())
-
-    def test_circleci_stub(self):
-        r = self.client.post("/webhook/circleci", content=b"{}")
-        assert r.status_code == 200
-        assert r.json()["status"] == "coming_soon"
 
     def test_jenkins_stub(self):
         r = self.client.post("/webhook/jenkins", content=b"{}")
         assert r.status_code == 200
         assert r.json()["status"] == "coming_soon"
+
+
+# ── _verify_circleci_signature ─────────────────────────────────────────────────
+
+
+class TestVerifyCircleCISignature:
+    def _make_sig(self, body: bytes, secret: str) -> str:
+        digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return f"v1={digest}"
+
+    def test_valid_signature(self):
+        body = b'{"type": "workflow-completed"}'
+        secret = "circle-secret"
+        sig = self._make_sig(body, secret)
+        assert _verify_circleci_signature(body, sig, secret) is True
+
+    def test_invalid_signature(self):
+        body = b'{"type": "workflow-completed"}'
+        assert _verify_circleci_signature(body, "v1=invalidsig", "secret") is False
+
+    def test_no_secret_always_passes(self):
+        assert _verify_circleci_signature(b"anything", "", "") is True
+        assert _verify_circleci_signature(b"anything", "v1=bad", "") is True
+
+    def test_tampered_body_fails(self):
+        body = b'{"type": "workflow-completed"}'
+        secret = "my-secret"
+        sig = self._make_sig(body, secret)
+        tampered = b'{"type": "job-completed"}'
+        assert _verify_circleci_signature(tampered, sig, secret) is False
+
+    def test_empty_signature_with_secret_fails(self):
+        assert _verify_circleci_signature(b"data", "", "some-secret") is False
+
+
+# ── CircleCI webhook route ─────────────────────────────────────────────────────
+
+
+def _circleci_payload(
+    event_type: str = "workflow-completed",
+    status: str = "failed",
+    branch: str = "fix/my-branch",
+    repo_url: str = "https://github.com/acme/api",
+    commit_sha: str = "abc123",
+    workflow_id: str = "wf-uuid-001",
+    pipeline_number: int = 10,
+    pr_author: str | None = "dev-user",
+) -> dict:
+    return {
+        "type": event_type,
+        "workflow": {
+            "id": workflow_id,
+            "name": "build-and-test",
+            "status": status,
+        },
+        "pipeline": {
+            "id": "pipe-uuid",
+            "number": pipeline_number,
+            "vcs": {
+                "origin_repository_url": repo_url,
+                "branch": branch,
+                "revision": commit_sha,
+                "commit": {
+                    "subject": "fix: update deps",
+                    "author": {"login": pr_author} if pr_author else {},
+                },
+            },
+        },
+        "project": {"id": "proj-uuid", "name": "api", "slug": "github/acme/api"},
+        "organization": {"name": "acme"},
+    }
+
+
+class TestCircleCIWebhookRoutes:
+    def setup_method(self):
+        self.client = TestClient(_make_app())
+
+    def _post(self, payload: dict, sig: str = "") -> object:
+        return self.client.post(
+            "/webhook/circleci",
+            content=_json.dumps(payload).encode(),
+            headers={
+                "circleci-signature": sig,
+                "content-type": "application/json",
+            },
+        )
+
+    def test_non_workflow_event_is_ignored(self):
+        r = self._post(_circleci_payload(event_type="job-completed"))
+        assert r.status_code == 200
+        assert r.json()["status"] == "ignored"
+
+    def test_successful_workflow_is_ignored(self):
+        r = self._post(_circleci_payload(status="success"))
+        assert r.status_code == 200
+        assert r.json()["status"] == "ignored"
+
+    def test_workflow_on_hold_is_ignored(self):
+        r = self._post(_circleci_payload(status="on_hold"))
+        assert r.status_code == 200
+        assert r.json()["status"] == "ignored"
+
+    def test_failed_workflow_dispatches(self):
+        with _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None):
+            r = self._post(_circleci_payload(status="failed"))
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"  # _dispatch_ci_fix returned None
+
+    def test_error_workflow_dispatches(self):
+        """'error' is also a failed state."""
+        with _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None):
+            r = self._post(_circleci_payload(status="error"))
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"
+
+    def test_unparseable_repo_is_skipped(self):
+        payload = _circleci_payload(
+            status="failed",
+            repo_url="https://gitlab.com/acme/api",  # not github
+        )
+        # Remove project slug so fallback also fails
+        payload["project"] = {"id": "x", "name": "api", "slug": "gitlab/acme/api"}
+        r = self._post(payload)
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"
+        assert "cannot_parse_repo" in r.json()["reason"]
+
+    def test_repo_from_project_slug_fallback(self):
+        """When VCS URL is missing, repo is parsed from project.slug."""
+        payload = _circleci_payload(status="failed", repo_url="")
+        payload["project"] = {"slug": "github/acme/api"}
+        with _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None):
+            r = self._post(payload)
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"
+
+    def test_pr_number_parsed_from_branch(self):
+        """Branch 'pull/42' → pr_number=42."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        captured = {}
+
+        async def capture_dispatch(event):
+            captured["event"] = event
+            return None
+
+        with _patch(
+            "phalanx.api.routes.ci_webhooks._dispatch_ci_fix",
+            side_effect=capture_dispatch,
+        ):
+            self._post(_circleci_payload(status="failed", branch="pull/42"))
+
+        assert captured.get("event") is not None
+        assert captured["event"].pr_number == 42
+
+    def test_invalid_signature_returns_401(self):
+        body = _json.dumps(_circleci_payload(status="failed")).encode()
+        with _patch(
+            "phalanx.api.routes.ci_webhooks.settings"
+        ) as mock_settings:
+            mock_settings.circleci_webhook_secret = "real-secret"
+            mock_settings.buildkite_webhook_token = ""
+            mock_settings.github_webhook_secret = ""
+            r = self.client.post(
+                "/webhook/circleci",
+                content=body,
+                headers={
+                    "circleci-signature": "v1=invalidsignature",
+                    "content-type": "application/json",
+                },
+            )
+        assert r.status_code == 401
+

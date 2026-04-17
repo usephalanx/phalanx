@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from phalanx.ci_fixer.context import VerificationResult
+from phalanx.ci_fixer.sandbox import SandboxResult
 from phalanx.ci_fixer.verifier import VerificationStep, VerifierAgent
 
 if TYPE_CHECKING:
@@ -306,6 +307,120 @@ class TestRunCmd:
         assert step.timed_out is True
         assert step.exit_code == -1
         proc.kill.assert_called_once()
+
+
+# ── Container exec path ───────────────────────────────────────────────────────
+
+
+def _make_sandbox_result(container_id: str = "") -> SandboxResult:
+    return SandboxResult(
+        sandbox_id="phalanx-sandbox-test1234",
+        stack="python",
+        image="python:3.12-slim",
+        workspace_path="/tmp/ws",
+        available=True,
+        container_id=container_id,
+    )
+
+
+class TestVerifierContainerExec:
+    @pytest.mark.asyncio
+    async def test_run_cmd_with_container_id_uses_docker_exec(self, tmp_path):
+        """When container_id is set, command is wrapped with docker exec."""
+        proc = _make_proc(returncode=0, stdout=b"clean", stderr=b"")
+
+        captured_args = []
+
+        async def fake_exec(*args, **kwargs):
+            captured_args.extend(args)
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            step = await VerifierAgent()._run_cmd(
+                label="ruff_full",
+                cmd_args=["ruff", "check", "."],
+                cwd=tmp_path,
+                timeout_seconds=30,
+                container_id="ctr-abc123",
+            )
+
+        assert step.exit_code == 0
+        assert "docker" in captured_args
+        assert "ctr-abc123" in captured_args
+        assert "ruff" in captured_args
+
+    @pytest.mark.asyncio
+    async def test_run_cmd_without_container_id_runs_locally(self, tmp_path):
+        """When container_id is empty, runs locally (original behaviour)."""
+        proc = _make_proc(returncode=0, stdout=b"ok", stderr=b"")
+
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            step = await VerifierAgent()._run_cmd(
+                label="go_test",
+                cmd_args=["go", "test", "./..."],
+                cwd=tmp_path,
+                timeout_seconds=30,
+                container_id="",
+            )
+
+        assert step.exit_code == 0
+
+    @pytest.mark.asyncio
+    async def test_verify_passes_container_id_to_run_cmd(self, tmp_path):
+        """verify() extracts container_id from sandbox_result and threads it through."""
+        proc = _make_proc(returncode=0, stdout=b"ok", stderr=b"")
+        captured_container_ids = []
+
+        original_run_cmd = VerifierAgent._run_cmd
+
+        async def recording_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=""):
+            captured_container_ids.append(container_id)
+            return await original_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=container_id)
+
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            with patch.object(VerifierAgent, "_run_cmd", recording_run_cmd):
+                await VerifierAgent().verify(
+                    workspace_path=tmp_path,
+                    stack="go",
+                    sandbox_result=_make_sandbox_result(container_id="ctr-xyz"),
+                    timeout_seconds=30,
+                )
+
+        assert all(cid == "ctr-xyz" for cid in captured_container_ids)
+
+    @pytest.mark.asyncio
+    async def test_verify_no_container_id_when_sandbox_none(self, tmp_path):
+        """sandbox_result=None → container_id="" → local subprocess path."""
+        proc = _make_proc(returncode=0, stdout=b"ok", stderr=b"")
+        captured_container_ids = []
+
+        original_run_cmd = VerifierAgent._run_cmd
+
+        async def recording_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=""):
+            captured_container_ids.append(container_id)
+            return await original_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=container_id)
+
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            with patch.object(VerifierAgent, "_run_cmd", recording_run_cmd):
+                await VerifierAgent().verify(
+                    workspace_path=tmp_path,
+                    stack="go",
+                    sandbox_result=None,
+                    timeout_seconds=30,
+                )
+
+        assert all(cid == "" for cid in captured_container_ids)
+
+    def test_container_id_helper_no_sandbox(self):
+        assert VerifierAgent()._container_id(None) == ""
+
+    def test_container_id_helper_with_container(self):
+        sr = _make_sandbox_result(container_id="ctr-123")
+        assert VerifierAgent()._container_id(sr) == "ctr-123"
+
+    def test_container_id_helper_empty_container(self):
+        sr = _make_sandbox_result(container_id="")
+        assert VerifierAgent()._container_id(sr) == ""
 
 
 # ── VerificationStep dataclass ────────────────────────────────────────────────

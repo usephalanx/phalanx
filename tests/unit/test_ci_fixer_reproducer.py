@@ -27,13 +27,14 @@ if TYPE_CHECKING:
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
-def _make_sandbox(available: bool = True) -> SandboxResult:
+def _make_sandbox(available: bool = True, container_id: str = "") -> SandboxResult:
     return SandboxResult(
         sandbox_id="phalanx-sandbox-test1234",
         stack="python",
         image="python:3.12-slim",
         workspace_path="/tmp/ws",
         available=available,
+        container_id=container_id,
     )
 
 
@@ -317,6 +318,94 @@ class TestOutputMatchesFailure:
         )
         # Tool name match should still work
         assert agent._output_matches_failure("ruff: 1 error found", sf) is True
+
+
+# ── Container exec path ───────────────────────────────────────────────────────
+
+
+class TestReproducerContainerExec:
+    """Tests for the docker exec path when sandbox_result.container_id is set."""
+
+    def _make_sandbox_with_container(self, container_id: str = "ctr-abc123") -> object:
+        return _make_sandbox(available=True, container_id=container_id)
+
+    @pytest.mark.asyncio
+    async def test_reproduce_uses_docker_exec_when_container_id_set(self, tmp_path):
+        """When container_id is set, command is wrapped with docker exec."""
+        proc = _make_proc(returncode=1, stdout=b"ruff: 1 error", stderr=b"")
+
+        captured_args = []
+
+        async def fake_exec(*args, **kwargs):
+            captured_args.extend(args)
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await ReproducerAgent().reproduce(
+                reproducer_cmd="ruff check .",
+                workspace_path=tmp_path,
+                sandbox_result=self._make_sandbox_with_container("ctr-abc123"),
+                structured_failure=_make_sf(tool="ruff"),
+                timeout_seconds=30,
+            )
+
+        assert result.verdict == "confirmed"
+        assert "docker" in captured_args
+        assert "ctr-abc123" in captured_args
+
+    @pytest.mark.asyncio
+    async def test_reproduce_local_subprocess_when_no_container_id(self, tmp_path):
+        """When container_id is empty, uses local subprocess shell."""
+        proc = _make_proc(returncode=0, stdout=b"clean", stderr=b"")
+
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            result = await ReproducerAgent().reproduce(
+                reproducer_cmd="ruff check .",
+                workspace_path=tmp_path,
+                sandbox_result=_make_sandbox(available=True),  # no container_id
+                structured_failure=_make_sf(tool="ruff"),
+                timeout_seconds=30,
+            )
+
+        assert result.verdict == "flaky"
+
+    @pytest.mark.asyncio
+    async def test_run_subprocess_with_container_id(self, tmp_path):
+        """_run_subprocess with container_id uses create_subprocess_exec."""
+        proc = _make_proc(returncode=0, stdout=b"ok", stderr=b"")
+
+        captured = []
+
+        async def fake_exec(*args, **kwargs):
+            captured.extend(args)
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            step = await ReproducerAgent()._run_subprocess(
+                cmd="ruff check .",
+                cwd=tmp_path,
+                timeout_seconds=30,
+                container_id="ctr-xyz",
+            )
+
+        assert step.exit_code == 0
+        assert "ctr-xyz" in captured
+        assert "sh" in captured
+
+    @pytest.mark.asyncio
+    async def test_run_subprocess_without_container_id(self, tmp_path):
+        """_run_subprocess without container_id uses create_subprocess_shell."""
+        proc = _make_proc(returncode=0, stdout=b"clean", stderr=b"")
+
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            step = await ReproducerAgent()._run_subprocess(
+                cmd="ruff check .",
+                cwd=tmp_path,
+                timeout_seconds=30,
+                container_id="",
+            )
+
+        assert step.exit_code == 0
 
 
 # ── ReproductionAttempt dataclass ─────────────────────────────────────────────
