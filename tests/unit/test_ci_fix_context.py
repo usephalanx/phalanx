@@ -23,7 +23,6 @@ from phalanx.ci_fixer.context import (
     VerifiedPatch,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
