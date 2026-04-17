@@ -150,16 +150,16 @@ class ReproducerAgent:
         )
 
         # ── Classify verdict ──────────────────────────────────────────────────
+        from typing import Literal  # noqa: PLC0415
+
+        verdict: Literal["confirmed", "flaky", "env_mismatch", "timeout", "skipped"]
         if attempt.timed_out:
             verdict = "timeout"
         elif attempt.exit_code == 0:
-            # Command passed in our environment → CI failure was transient/flaky
             verdict = "flaky"
         elif self._output_matches_failure(combined_output, structured_failure):
-            # Same tool/error codes reproduced → confirmed
             verdict = "confirmed"
         else:
-            # Failed differently → different environment / missing dependencies
             verdict = "env_mismatch"
 
         log.info(
