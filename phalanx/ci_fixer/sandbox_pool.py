@@ -185,7 +185,9 @@ class SandboxPool:
         if stack not in self._queues:
             raise SandboxUnavailableError(f"no pool for stack={stack!r}")
 
-        effective_timeout = timeout if timeout is not None else settings.sandbox_checkout_timeout_seconds
+        effective_timeout = (
+            timeout if timeout is not None else settings.sandbox_checkout_timeout_seconds
+        )
 
         try:
             container = await asyncio.wait_for(
@@ -325,25 +327,29 @@ class SandboxPool:
         cmd = settings.sandbox_docker_cmd
 
         proc = await asyncio.create_subprocess_exec(
-            cmd, "run",
-            "-d",                          # detached
-            "--rm",                        # auto-remove when stopped
-            "--user", "1000:1000",         # non-root
-            "--no-new-privileges",         # no privilege escalation
-            "--network", "none",           # no network (lint/type tools don't need it)
-            "--memory", "512m",            # memory limit
-            "--cpus", "1",                 # cpu limit
+            cmd,
+            "run",
+            "-d",  # detached
+            "--rm",  # auto-remove when stopped
+            "--user",
+            "1000:1000",  # non-root
+            "--no-new-privileges",  # no privilege escalation
+            "--network",
+            "none",  # no network (lint/type tools don't need it)
+            "--memory",
+            "512m",  # memory limit
+            "--cpus",
+            "1",  # cpu limit
             image,
-            "sleep", "infinity",           # keep alive until we kill it
+            "sleep",
+            "infinity",  # keep alive until we kill it
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"docker run failed for stack={stack!r}: {stderr.decode().strip()}"
-            )
+            raise RuntimeError(f"docker run failed for stack={stack!r}: {stderr.decode().strip()}")
 
         container_id = stdout.decode().strip()[:12]
         log.info(
@@ -363,7 +369,10 @@ class SandboxPool:
         cmd = settings.sandbox_docker_cmd
 
         proc = await asyncio.create_subprocess_exec(
-            cmd, "image", "inspect", preferred,
+            cmd,
+            "image",
+            "inspect",
+            preferred,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -386,7 +395,11 @@ class SandboxPool:
         cmd = settings.sandbox_docker_cmd
         try:
             proc = await asyncio.create_subprocess_exec(
-                cmd, "exec", container.container_id, "echo", "ok",
+                cmd,
+                "exec",
+                container.container_id,
+                "echo",
+                "ok",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -403,8 +416,11 @@ class SandboxPool:
         cmd = settings.sandbox_docker_cmd
         try:
             proc = await asyncio.create_subprocess_exec(
-                cmd, "exec", container.container_id,
-                "sh", "-c",
+                cmd,
+                "exec",
+                container.container_id,
+                "sh",
+                "-c",
                 "rm -rf /workspace/* /tmp/pip-* /tmp/npm-* /root/.cache 2>/dev/null; echo done",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -419,7 +435,9 @@ class SandboxPool:
         cmd = settings.sandbox_docker_cmd
         try:
             proc = await asyncio.create_subprocess_exec(
-                cmd, "kill", container_id,
+                cmd,
+                "kill",
+                container_id,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -441,9 +459,7 @@ class SandboxPool:
             )
             # Only enqueue if within max_size
             current_depth = self._queues[stack].qsize()
-            current_checked_out = sum(
-                1 for c in self._checked_out.values() if c.stack == stack
-            )
+            current_checked_out = sum(1 for c in self._checked_out.values() if c.stack == stack)
             if current_depth + current_checked_out < settings.sandbox_pool_max_size:
                 await self._queues[stack].put(container)
             else:
@@ -479,8 +495,7 @@ class SandboxPool:
                 now = time.monotonic()
                 max_hold = settings.sandbox_max_hold_seconds
                 stale = [
-                    c for c in list(self._checked_out.values())
-                    if now - c.checked_out_at > max_hold
+                    c for c in list(self._checked_out.values()) if now - c.checked_out_at > max_hold
                 ]
                 for container in stale:
                     log.warning(

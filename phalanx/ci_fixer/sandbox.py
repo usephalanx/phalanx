@@ -248,7 +248,8 @@ class SandboxProvisioner:
         cmd = settings.sandbox_docker_cmd
         try:
             proc = await asyncio.create_subprocess_exec(
-                cmd, "cp",
+                cmd,
+                "cp",
                 f"{workspace_path}/.",
                 f"{container_id}:/workspace",
                 stdout=asyncio.subprocess.DEVNULL,

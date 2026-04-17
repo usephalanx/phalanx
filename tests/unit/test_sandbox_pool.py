@@ -85,13 +85,24 @@ class TestWrapHelpers:
         assert result == ["docker", "exec", "-w", "/workspace", "ctr123", "ruff", "check", "."]
 
     def test_wrap_cmd_custom_docker_cmd(self):
-        result = wrap_cmd_for_container("ctr123", ["go", "test", "./..."], "/ws", docker_cmd="podman")
+        result = wrap_cmd_for_container(
+            "ctr123", ["go", "test", "./..."], "/ws", docker_cmd="podman"
+        )
         assert result[0] == "podman"
         assert "ctr123" in result
 
     def test_wrap_shell_cmd_for_container(self):
         result = wrap_shell_cmd_for_container("ctr123", "ruff check .")
-        assert result == ["docker", "exec", "-w", "/workspace", "ctr123", "sh", "-c", "ruff check ."]
+        assert result == [
+            "docker",
+            "exec",
+            "-w",
+            "/workspace",
+            "ctr123",
+            "sh",
+            "-c",
+            "ruff check .",
+        ]
 
     def test_wrap_shell_cmd_custom_docker(self):
         result = wrap_shell_cmd_for_container("ctr456", "npm test", docker_cmd="podman")

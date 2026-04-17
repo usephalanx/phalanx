@@ -132,7 +132,9 @@ class VerifierAgent:
 
         # Add pytest to python profile only if test infrastructure exists
         if stack == "python" and self._has_pytest(workspace_path):
-            profile = [("pytest_full", ["python", "-m", "pytest", "-x", "-q", "--tb=short"])] + profile
+            profile = [
+                ("pytest_full", ["python", "-m", "pytest", "-x", "-q", "--tb=short"])
+            ] + profile
 
         if not profile:
             log.info("ci_fixer.verify_skipped", stack=stack, reason="no_profile")
@@ -240,7 +242,9 @@ class VerifierAgent:
                 timeout=timeout_seconds,
             )
             elapsed = time.monotonic() - start
-            output = (stdout_b.decode(errors="replace") + "\n" + stderr_b.decode(errors="replace")).strip()
+            output = (
+                stdout_b.decode(errors="replace") + "\n" + stderr_b.decode(errors="replace")
+            ).strip()
 
             return VerificationStep(
                 label=label,

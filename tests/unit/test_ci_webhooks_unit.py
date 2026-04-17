@@ -305,9 +305,7 @@ def _make_circleci_client(
                 log_resp.status_code = 200
                 if log_is_json:
                     log_resp.headers = {"content-type": "application/json"}
-                    log_resp.json.return_value = [
-                        {"message": log_content, "type": "out"}
-                    ]
+                    log_resp.json.return_value = [{"message": log_content, "type": "out"}]
                 else:
                     log_resp.headers = {"content-type": "text/plain"}
                     log_resp.text = log_content
@@ -386,9 +384,7 @@ class TestCircleCILogFetcher:
     async def test_fetch_timedout_job_included(self):
         """Jobs with status=timedout are treated as failed."""
         client = _make_circleci_client(
-            jobs_payload={
-                "items": [{"job_number": 7, "name": "slow-build", "status": "timedout"}]
-            },
+            jobs_payload={"items": [{"job_number": 7, "name": "slow-build", "status": "timedout"}]},
             log_content="Timeout: job exceeded 10 minutes",
         )
 
@@ -400,9 +396,7 @@ class TestCircleCILogFetcher:
     @pytest.mark.asyncio
     async def test_fetch_multiple_failed_jobs_limited_to_three(self):
         """Up to 3 failed jobs are fetched; extras are silently dropped."""
-        jobs = [
-            {"job_number": i, "name": f"job-{i}", "status": "failed"} for i in range(1, 6)
-        ]
+        jobs = [{"job_number": i, "name": f"job-{i}", "status": "failed"} for i in range(1, 6)]
         # Build a client that returns jobs list, then step + log for each of the first 3
         from unittest.mock import AsyncMock, MagicMock
 
@@ -1040,9 +1034,7 @@ class TestCircleCIWebhookRoutes:
 
     def test_invalid_signature_returns_401(self):
         body = _json.dumps(_circleci_payload(status="failed")).encode()
-        with _patch(
-            "phalanx.api.routes.ci_webhooks.settings"
-        ) as mock_settings:
+        with _patch("phalanx.api.routes.ci_webhooks.settings") as mock_settings:
             mock_settings.circleci_webhook_secret = "real-secret"
             mock_settings.buildkite_webhook_token = ""
             mock_settings.github_webhook_secret = ""
@@ -1055,4 +1047,3 @@ class TestCircleCIWebhookRoutes:
                 },
             )
         assert r.status_code == 401
-

@@ -303,9 +303,7 @@ async def test_list_fix_runs_filters_applied():
     mock_ctx_manager.__aexit__ = AsyncMock(return_value=None)
 
     with patch("phalanx.api.routes.ci_fix_runs.get_db", return_value=mock_ctx_manager):
-        result = await list_fix_runs(
-            repo="owner/repo", branch="main", run_status="FIXED", limit=5
-        )
+        result = await list_fix_runs(repo="owner/repo", branch="main", run_status="FIXED", limit=5)
 
     assert result["count"] == 0
 

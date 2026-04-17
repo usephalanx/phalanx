@@ -393,9 +393,7 @@ async def circleci_webhook(
     """
     body = await request.body()
 
-    if not _verify_circleci_signature(
-        body, circleci_signature, settings.circleci_webhook_secret
-    ):
+    if not _verify_circleci_signature(body, circleci_signature, settings.circleci_webhook_secret):
         log.warning("ci_webhook.circleci.invalid_signature")
         raise HTTPException(status_code=401, detail="Invalid CircleCI signature")
 
@@ -419,16 +417,15 @@ async def circleci_webhook(
         # Fallback: try project slug (format: "github/owner/repo")
         slug = payload.get("project", {}).get("slug", "")
         if slug.startswith("github/"):
-            repo_full_name = slug[len("github/"):]
+            repo_full_name = slug[len("github/") :]
     if not repo_full_name:
         return {"status": "skipped", "reason": "cannot_parse_repo"}
 
     branch = vcs.get("branch", "")
     commit_sha = vcs.get("revision", "")
-    pr_author: str | None = (
-        vcs.get("commit", {}).get("author", {}).get("login") or
-        vcs.get("commit", {}).get("committer", {}).get("login")
-    )
+    pr_author: str | None = vcs.get("commit", {}).get("author", {}).get("login") or vcs.get(
+        "commit", {}
+    ).get("committer", {}).get("login")
 
     # CircleCI build_id = workflow ID (used to fetch job list + logs)
     workflow_id = workflow.get("id", "")
@@ -443,6 +440,7 @@ async def circleci_webhook(
     pr_number: int | None = None
     if branch.startswith("pull/"):
         import contextlib  # noqa: PLC0415
+
         with contextlib.suppress(IndexError, ValueError):
             pr_number = int(branch.split("/")[1])
 
@@ -473,8 +471,6 @@ async def circleci_webhook(
 async def jenkins_webhook(request: Request):
     """Jenkins webhook — Phase 2."""
     return {"status": "coming_soon", "provider": "jenkins"}
-
-
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

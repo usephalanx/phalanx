@@ -375,7 +375,9 @@ class TestVerifierContainerExec:
 
         async def recording_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=""):
             captured_container_ids.append(container_id)
-            return await original_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=container_id)
+            return await original_run_cmd(
+                self, label, cmd_args, cwd, timeout_seconds, container_id=container_id
+            )
 
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             with patch.object(VerifierAgent, "_run_cmd", recording_run_cmd):
@@ -398,7 +400,9 @@ class TestVerifierContainerExec:
 
         async def recording_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=""):
             captured_container_ids.append(container_id)
-            return await original_run_cmd(self, label, cmd_args, cwd, timeout_seconds, container_id=container_id)
+            return await original_run_cmd(
+                self, label, cmd_args, cwd, timeout_seconds, container_id=container_id
+            )
 
         with patch("asyncio.create_subprocess_exec", return_value=proc):
             with patch.object(VerifierAgent, "_run_cmd", recording_run_cmd):

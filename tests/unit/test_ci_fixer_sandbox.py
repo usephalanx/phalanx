@@ -38,6 +38,7 @@ def _mock_pool(container_id: str = "ctr-abc123") -> MagicMock:
     pool.checkin = AsyncMock()
     return pool
 
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
