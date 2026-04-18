@@ -113,6 +113,7 @@ services:
       --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills,ci_fixer
       --concurrency=4
       --max-tasks-per-child=100
+    user: root
     environment:
       PHALANX_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
       OPENAI_MODEL_REASONING: "gpt-4.1"  # reasoning agents: Commander, Planner, QA, Reviewer, Release
@@ -120,6 +121,7 @@ services:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
       - ./skill-registry:/app/skill-registry:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # required: CI fixer spawns sandbox containers
     depends_on:
       postgres:
         condition: service_healthy
