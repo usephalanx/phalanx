@@ -37,13 +37,22 @@ import structlog
 from sqlalchemy import select, update
 
 from phalanx.agents.base import AgentResult, BaseAgent
-from phalanx.agents.soul import CI_FIXER_SOUL
 from phalanx.ci_fixer.analyst import FilePatch, FixPlan, RootCauseAnalyst
+from phalanx.ci_fixer.context import (
+    CIFixContext,
+    ClassifiedFailure,
+    ReproductionResult,
+    StructuredFailure,
+    VerifiedPatch,
+)
 from phalanx.ci_fixer.events import CIFailureEvent
 from phalanx.ci_fixer.log_fetcher import get_log_fetcher
 from phalanx.ci_fixer.log_parser import ParsedLog, parse_log
+from phalanx.ci_fixer.reproducer import ReproducerAgent
+from phalanx.ci_fixer.sandbox import SandboxProvisioner
 from phalanx.ci_fixer.suppressor import is_flaky_suppressed, should_use_history
 from phalanx.ci_fixer.validator import validate_fix
+from phalanx.ci_fixer.verifier import VerifierAgent
 from phalanx.ci_fixer.version_parity import (
     VersionParityResult,
     check_version_parity,
@@ -51,7 +60,7 @@ from phalanx.ci_fixer.version_parity import (
     should_auto_merge,
 )
 from phalanx.config.settings import get_settings
-from phalanx.db.models import CIFailureFingerprint, CIFlakyPattern, CIFixRun, CIIntegration
+from phalanx.db.models import CIFailureFingerprint, CIFixRun, CIFlakyPattern, CIIntegration
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
 
@@ -114,6 +123,16 @@ class CIFixerAgent(BaseAgent):
         if integration is None:
             return AgentResult(success=False, output={}, error="CIIntegration not found")
 
+        # ── 1b. Initialize shared pipeline context ───────────────────────────
+        ctx = CIFixContext(
+            ci_fix_run_id=self.ci_fix_run_id,
+            repo=ci_run.repo_full_name,
+            branch=ci_run.branch,
+            commit_sha=ci_run.commit_sha,
+            original_build_id=ci_run.ci_build_id,
+        )
+        await self._persist_context(ctx)
+
         # ── 2. Fetch raw logs ─────────────────────────────────────────────────
         event = CIFailureEvent(
             provider=ci_run.ci_provider,
@@ -151,6 +170,22 @@ class CIFixerAgent(BaseAgent):
         # Persist fingerprint immediately — even if we can't fix it,
         # the hash is valuable for V2 history queries.
         await self._persist_fingerprint(fingerprint)
+
+        # Update shared context with structured failure
+        ctx.structured_failure = StructuredFailure(
+            tool=parsed.tool,
+            failure_type=parsed.failure_type if hasattr(parsed, "failure_type") else "unknown",
+            reproducer_cmd="",  # populated by classifier
+            errors=[],
+            failing_files=list(parsed.failing_files) if hasattr(parsed, "failing_files") else [],
+            log_excerpt=raw_log[:2000],
+        )
+        ctx.classified_failure = ClassifiedFailure(
+            tier="L1_auto",
+            root_cause="",
+            stack="python",
+        )
+        await self._persist_context(ctx)
 
         await self._trace(
             "decision",
@@ -201,274 +236,401 @@ class CIFixerAgent(BaseAgent):
             await self._mark_failed(ci_run, "repo_clone_failed")
             return AgentResult(success=False, output={}, error="repo clone failed")
 
-        # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
-        analyst = RootCauseAnalyst(
-            call_llm=self._call_claude,
-            history_lookup=self._lookup_fix_history,
-        )
-        fix_plan: FixPlan | None = None
-        validation_passed = False
-        validation_tool_version = ""
-        current_parsed = parsed
+        # ── Phase 2: Sandbox provisioning + failure reproduction ──────────────
+        provisioner = SandboxProvisioner()
+        sandbox_result = await provisioner.provision(workspace)
 
-        for iteration in range(1, _MAX_ITERATIONS + 1):
-            self._log.info("ci_fixer.analyst_iteration", iteration=iteration)
+        if sandbox_result:
+            ctx.sandbox_id = sandbox_result.sandbox_id
+            ctx.sandbox_stack = sandbox_result.stack
+            await self._persist_context(ctx)
 
-            fix_plan = analyst.analyze(current_parsed, workspace, fingerprint_hash=fingerprint)
-            self._log.info(
-                "ci_fixer.fix_plan",
-                confidence=fix_plan.confidence,
-                root_cause=fix_plan.root_cause,
-                patches=len(fix_plan.patches),
-                needs_test=fix_plan.needs_new_test,
+        try:
+            reproducer = ReproducerAgent()
+            reproduction_result = await reproducer.reproduce(
+                reproducer_cmd=ctx.structured_failure.reproducer_cmd,
+                workspace_path=workspace,
+                sandbox_result=sandbox_result,
+                structured_failure=ctx.structured_failure,
+                timeout_seconds=settings.sandbox_timeout_seconds,
             )
+            ctx.reproduction_result = reproduction_result
+            await self._persist_context(ctx)
 
-            await self._trace(
-                "reflection",
-                f"**Root cause:** {fix_plan.root_cause}\n"
-                f"**Confidence:** {fix_plan.confidence}\n"
-                f"**Patches:** {len(fix_plan.patches)} file(s)",
-                {"confidence": fix_plan.confidence, "iteration": iteration},
-            )
-
-            if not fix_plan.is_actionable:
+            if reproduction_result.verdict == "flaky":
                 self._log.info(
-                    "ci_fixer.low_confidence",
-                    root_cause=fix_plan.root_cause,
-                    iteration=iteration,
-                )
-                break
-
-            # Guard: total line delta across all patches
-            total_delta = sum(abs(p.delta) for p in fix_plan.patches)
-            if total_delta > _MAX_TOTAL_LINE_DELTA:
-                self._log.warning(
-                    "ci_fixer.patch_delta_exceeded",
-                    total_delta=total_delta,
-                    max_allowed=_MAX_TOTAL_LINE_DELTA,
-                )
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause=f"Patch too large ({total_delta} lines changed, max {_MAX_TOTAL_LINE_DELTA})",
-                )
-                break
-
-            # Guard: number of files
-            if len(fix_plan.patches) > _MAX_FILES_CHANGED:
-                self._log.warning(
-                    "ci_fixer.too_many_files",
-                    files=len(fix_plan.patches),
-                    max_allowed=_MAX_FILES_CHANGED,
-                )
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause=f"Fix touches {len(fix_plan.patches)} files (max {_MAX_FILES_CHANGED})",
-                )
-                break
-
-            # Apply patches
-            files_written = self._apply_patches(workspace, fix_plan.patches)
-            if not files_written:
-                self._log.warning("ci_fixer.no_files_written")
-                fix_plan = FixPlan(
-                    confidence="low",
-                    root_cause="Patch application failed — hunk mismatch or guard rejection",
-                )
-                break
-
-            # Validate
-            validation = validate_fix(current_parsed, workspace, original_parsed=parsed)
-            validation_tool_version = validation.tool_version
-            self._log.info(
-                "ci_fixer.validation",
-                passed=validation.passed,
-                tool=validation.tool,
-                tool_version=validation_tool_version,
-                regressions=len(getattr(validation, "regressions", []) or []),
-                iteration=iteration,
-            )
-
-            if validation.passed:
-                validation_passed = True
-                self._log.info("ci_fixer.validation_passed", files=files_written)
-                break
-            else:
-                self._log.warning(
-                    "ci_fixer.validation_failed",
-                    iteration=iteration,
-                    output=validation.output[:300],
-                )
-                await self._trace(
-                    "uncertainty",
-                    f"Validation failed (iteration {iteration}):\n```\n{validation.output[:500]}\n```",
-                    {"iteration": iteration},
-                )
-                if iteration < _MAX_ITERATIONS:
-                    # Re-parse the validation output for the next iteration
-                    retry_parsed = parse_log(validation.output)
-                    if retry_parsed.has_errors:
-                        current_parsed = retry_parsed
-
-        # ── 6. Check final plan ───────────────────────────────────────────────
-        if not fix_plan or not fix_plan.is_actionable or not validation_passed:
-            reason = "low_confidence" if (not fix_plan or not fix_plan.is_actionable) else "validation_failed"
-            await self._mark_failed_with_fields(
-                ci_run,
-                reason=reason,
-                fingerprint_hash=fingerprint,
-                validation_tool_version=validation_tool_version,
-            )
-            # Comment on the PR explaining why we couldn't fix it
-            if ci_run.pr_number and integration.github_token:
-                await self._comment_unable_to_fix(
-                    integration=integration,
-                    ci_run=ci_run,
-                    reason=reason,
-                    root_cause=fix_plan.root_cause if fix_plan else "",
+                    "ci_fixer.flaky_reproduction",
+                    repo=ci_run.repo_full_name,
                     tool=parsed.tool,
                 )
-            return AgentResult(
-                success=False,
-                output={
-                    "reason": reason,
-                    "root_cause": fix_plan.root_cause if fix_plan else "",
-                    "tool": parsed.tool,
-                    "fingerprint": fingerprint,
-                },
+                ctx.complete("flaky")
+                await self._persist_context(ctx)
+                await self._mark_failed(ci_run, "flaky")
+                return AgentResult(
+                    success=False,
+                    output={"reason": "flaky", "tool": parsed.tool},
+                )
+
+            if reproduction_result.verdict == "env_mismatch":
+                self._log.warning(
+                    "ci_fixer.env_mismatch",
+                    repo=ci_run.repo_full_name,
+                    tool=parsed.tool,
+                )
+                ctx.complete("escalated", error="env_mismatch: reproducer ran different failure")
+                await self._persist_context(ctx)
+                await self._mark_failed(ci_run, "env_mismatch")
+                return AgentResult(
+                    success=False,
+                    output={"reason": "env_mismatch", "tool": parsed.tool},
+                )
+
+            # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
+            analyst = RootCauseAnalyst(
+                call_llm=self._call_claude,
+                history_lookup=self._lookup_fix_history,
             )
+            fix_plan: FixPlan | None = None
+            validation_passed = False
+            validation_tool_version = ""
+            current_parsed = parsed
 
-        files_written = [p.path for p in fix_plan.patches]
+            for iteration in range(1, _MAX_ITERATIONS + 1):
+                self._log.info("ci_fixer.analyst_iteration", iteration=iteration)
 
-        # ── 6b. Phase 4: Tool version parity check ────────────────────────────
-        # Compare local tool version to the version that caused the failure.
-        # We use last_good_tool_version from the fingerprint as the "failure version"
-        # proxy (it was the version at the last successful fix — close enough for parity).
-        parity_result = await self._check_tool_version_parity(
-            fingerprint_hash=fingerprint,
-            local_version=validation_tool_version,
-        )
-        parity_ok = parity_result.ok
+                fix_plan = analyst.analyze(current_parsed, workspace, fingerprint_hash=fingerprint)
+                self._log.info(
+                    "ci_fixer.fix_plan",
+                    confidence=fix_plan.confidence,
+                    root_cause=fix_plan.root_cause,
+                    patches=len(fix_plan.patches),
+                    needs_test=fix_plan.needs_new_test,
+                )
 
-        # ── 7. Commit to safe branch (NEVER the author's branch) ─────────────
-        fix_branch = f"phalanx/ci-fix/{self.ci_fix_run_id}"
-        commit_result = await self._commit_to_safe_branch(
-            workspace=workspace,
-            source_branch=ci_run.branch,
-            fix_branch=fix_branch,
-            commit_message=(
-                f"fix(ci): resolve {parsed.tool} failure [{ci_run.ci_provider}]\n\n"
-                f"Root cause: {fix_plan.root_cause}\n"
-                f"Files: {', '.join(files_written)}\n"
-                f"Validated: {validation_tool_version}\n"
-                f"CI Fix Run: {self.ci_fix_run_id}"
-            ),
-            github_token=self._get_github_token(integration),
-            repo_full_name=ci_run.repo_full_name,
-        )
-        commit_sha = commit_result.get("sha")
-        push_failed = commit_result.get("push_failed", False)
+                await self._trace(
+                    "reflection",
+                    f"**Root cause:** {fix_plan.root_cause}\n"
+                    f"**Confidence:** {fix_plan.confidence}\n"
+                    f"**Patches:** {len(fix_plan.patches)} file(s)",
+                    {"confidence": fix_plan.confidence, "iteration": iteration},
+                )
 
-        if not commit_sha:
-            await self._mark_failed_with_fields(
-                ci_run,
-                reason=commit_result.get("error", "commit_failed"),
-                fingerprint_hash=fingerprint,
-                validation_tool_version=validation_tool_version,
-            )
-            return AgentResult(success=False, output={}, error="commit failed")
+                if not fix_plan.is_actionable:
+                    self._log.info(
+                        "ci_fixer.low_confidence",
+                        root_cause=fix_plan.root_cause,
+                        iteration=iteration,
+                    )
+                    break
 
-        # ── 8. Open PR (draft or auto-merge depending on integration config) ────
-        # Phase 4: auto-merge only if integration.auto_merge=True AND the
-        # fingerprint has enough successful fixes AND tool version parity is OK.
-        fingerprint_success = await self._get_fingerprint_success_count(fingerprint)
-        enable_auto_merge = should_auto_merge(
-            integration_auto_merge=getattr(integration, "auto_merge", False),
-            fingerprint_success_count=fingerprint_success,
-            min_success_count=getattr(integration, "min_success_count", 3),
-            parity_ok=parity_ok,
-        )
+                # Guard: total line delta across all patches
+                total_delta = sum(abs(p.delta) for p in fix_plan.patches)
+                if total_delta > _MAX_TOTAL_LINE_DELTA:
+                    self._log.warning(
+                        "ci_fixer.patch_delta_exceeded",
+                        total_delta=total_delta,
+                        max_allowed=_MAX_TOTAL_LINE_DELTA,
+                    )
+                    fix_plan = FixPlan(
+                        confidence="low",
+                        root_cause=f"Patch too large ({total_delta} lines changed, max {_MAX_TOTAL_LINE_DELTA})",
+                    )
+                    break
 
-        fix_pr_number: int | None = None
-        if not push_failed and integration.github_token:
-            fix_pr_number = await self._open_draft_pr(
-                integration=integration,
-                ci_run=ci_run,
-                fix_branch=fix_branch,
-                files_written=files_written,
-                commit_sha=commit_sha,
-                tool=parsed.tool,
-                root_cause=fix_plan.root_cause,
-                parsed=parsed,
-                validation_tool_version=validation_tool_version,
-                enable_auto_merge=enable_auto_merge,
-                parity_notice=format_parity_notice(parity_result),
-            )
+                # Guard: number of files
+                if len(fix_plan.patches) > _MAX_FILES_CHANGED:
+                    self._log.warning(
+                        "ci_fixer.too_many_files",
+                        files=len(fix_plan.patches),
+                        max_allowed=_MAX_FILES_CHANGED,
+                    )
+                    fix_plan = FixPlan(
+                        confidence="low",
+                        root_cause=f"Fix touches {len(fix_plan.patches)} files (max {_MAX_FILES_CHANGED})",
+                    )
+                    break
 
-        # ── 9. Comment on original PR ─────────────────────────────────────────
-        if ci_run.pr_number and integration.github_token:
-            await self._comment_on_pr(
-                integration=integration,
-                ci_run=ci_run,
-                files_written=files_written,
-                commit_sha=commit_sha,
-                tool=parsed.tool,
-                root_cause=fix_plan.root_cause,
-                parsed=parsed,
-                fix_pr_number=fix_pr_number,
-                validation_tool_version=validation_tool_version,
-            )
+                # Apply patches
+                files_written = self._apply_patches(workspace, fix_plan.patches)
+                if not files_written:
+                    self._log.warning("ci_fixer.no_files_written")
+                    fix_plan = FixPlan(
+                        confidence="low",
+                        root_cause="Patch application failed — hunk mismatch or guard rejection",
+                    )
+                    break
 
-        # ── 10. Mark FIXED ────────────────────────────────────────────────────
-        async with get_db() as session:
-            await session.execute(
-                update(CIFixRun)
-                .where(CIFixRun.id == self.ci_fix_run_id)
-                .values(
-                    status="FIXED",
-                    fix_commit_sha=commit_sha,
-                    fix_branch=fix_branch,
-                    fix_pr_number=fix_pr_number,
+                # Validate
+                validation = validate_fix(current_parsed, workspace, original_parsed=parsed)
+                validation_tool_version = validation.tool_version
+                self._log.info(
+                    "ci_fixer.validation",
+                    passed=validation.passed,
+                    tool=validation.tool,
+                    tool_version=validation_tool_version,
+                    regressions=len(getattr(validation, "regressions", []) or []),
+                    iteration=iteration,
+                )
+
+                if validation.passed:
+                    validation_passed = True
+                    self._log.info("ci_fixer.validation_passed", files=files_written)
+                    break
+                else:
+                    self._log.warning(
+                        "ci_fixer.validation_failed",
+                        iteration=iteration,
+                        output=validation.output[:300],
+                    )
+                    await self._trace(
+                        "uncertainty",
+                        f"Validation failed (iteration {iteration}):\n```\n{validation.output[:500]}\n```",
+                        {"iteration": iteration},
+                    )
+                    if iteration < _MAX_ITERATIONS:
+                        # Re-parse the validation output for the next iteration
+                        retry_parsed = parse_log(validation.output)
+                        if retry_parsed.has_errors:
+                            current_parsed = retry_parsed
+
+            # ── 6. Check final plan ───────────────────────────────────────────────
+            if not fix_plan or not fix_plan.is_actionable or not validation_passed:
+                reason = (
+                    "low_confidence"
+                    if (not fix_plan or not fix_plan.is_actionable)
+                    else "validation_failed"
+                )
+                await self._mark_failed_with_fields(
+                    ci_run,
+                    reason=reason,
                     fingerprint_hash=fingerprint,
                     validation_tool_version=validation_tool_version,
-                    tool_version_parity_ok=parity_ok,
-                    completed_at=datetime.now(UTC),
                 )
+                # Comment on the PR explaining why we couldn't fix it
+                if ci_run.pr_number and integration.github_token:
+                    await self._comment_unable_to_fix(
+                        integration=integration,
+                        ci_run=ci_run,
+                        reason=reason,
+                        root_cause=fix_plan.root_cause if fix_plan else "",
+                        tool=parsed.tool,
+                    )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "reason": reason,
+                        "root_cause": fix_plan.root_cause if fix_plan else "",
+                        "tool": parsed.tool,
+                        "fingerprint": fingerprint,
+                    },
+                )
+
+            files_written = [p.path for p in fix_plan.patches]
+
+            # ── 6b. Phase 4: Tool version parity check ────────────────────────────
+            # Compare local tool version to the version that caused the failure.
+            # We use last_good_tool_version from the fingerprint as the "failure version"
+            # proxy (it was the version at the last successful fix — close enough for parity).
+            parity_result = await self._check_tool_version_parity(
+                fingerprint_hash=fingerprint,
+                local_version=validation_tool_version,
             )
-            await session.commit()
+            parity_ok = parity_result.ok
 
-        # ── Phase 2: Store winning patches in fingerprint table for future reuse
-        await self._update_fingerprint_on_success(
-            fingerprint_hash=fingerprint,
-            patches=fix_plan.patches,
-            tool_version=validation_tool_version,
-            parsed_log=parsed,
-        )
+            # ── 7. Commit to safe branch (NEVER the author's branch) ─────────────
+            fix_branch = f"phalanx/ci-fix/{self.ci_fix_run_id}"
+            commit_result = await self._commit_to_safe_branch(
+                workspace=workspace,
+                source_branch=ci_run.branch,
+                fix_branch=fix_branch,
+                commit_message=(
+                    f"fix(ci): resolve {parsed.tool} failure [{ci_run.ci_provider}]\n\n"
+                    f"Root cause: {fix_plan.root_cause}\n"
+                    f"Files: {', '.join(files_written)}\n"
+                    f"Validated: {validation_tool_version}\n"
+                    f"CI Fix Run: {self.ci_fix_run_id}"
+                ),
+                github_token=self._get_github_token(integration),
+                repo_full_name=ci_run.repo_full_name,
+            )
+            commit_sha = commit_result.get("sha")
+            push_failed = commit_result.get("push_failed", False)
 
-        self._log.info(
-            "ci_fixer.execute.done",
-            tool=parsed.tool,
-            files=files_written,
-            commit_sha=commit_sha,
-            fix_branch=fix_branch,
-            fix_pr_number=fix_pr_number,
-            root_cause=fix_plan.root_cause,
-            fingerprint=fingerprint,
-        )
+            if not commit_sha:
+                await self._mark_failed_with_fields(
+                    ci_run,
+                    reason=commit_result.get("error", "commit_failed"),
+                    fingerprint_hash=fingerprint,
+                    validation_tool_version=validation_tool_version,
+                )
+                return AgentResult(success=False, output={}, error="commit failed")
 
-        return AgentResult(
-            success=True,
-            output={
-                "tool": parsed.tool,
-                "root_cause": fix_plan.root_cause,
-                "files_fixed": files_written,
-                "commit_sha": commit_sha,
-                "fix_branch": fix_branch,
-                "fix_pr_number": fix_pr_number,
-                "confidence": fix_plan.confidence,
-                "fingerprint": fingerprint,
-                "validation_tool_version": validation_tool_version,
-            },
-        )
+            # ── 8. Open PR (draft or auto-merge depending on integration config) ────
+            # Phase 4: auto-merge only if integration.auto_merge=True AND the
+            # fingerprint has enough successful fixes AND tool version parity is OK.
+            fingerprint_success = await self._get_fingerprint_success_count(fingerprint)
+            enable_auto_merge = should_auto_merge(
+                integration_auto_merge=getattr(integration, "auto_merge", False),
+                fingerprint_success_count=fingerprint_success,
+                min_success_count=getattr(integration, "min_success_count", 3),
+                parity_ok=parity_ok,
+            )
+
+            fix_pr_number: int | None = None
+            if not push_failed and integration.github_token:
+                # Phase 1: check for an existing Phalanx fix PR targeting this branch.
+                # If one exists, push the new commit to it instead of opening a second PR.
+                existing_pr = await self._find_existing_fix_pr(integration, ci_run)
+                if existing_pr:
+                    self._log.info(
+                        "ci_fixer.reusing_existing_fix_pr",
+                        pr=existing_pr,
+                        branch=ci_run.branch,
+                    )
+                    fix_pr_number = existing_pr
+                else:
+                    fix_pr_number = await self._open_draft_pr(
+                        integration=integration,
+                        ci_run=ci_run,
+                        fix_branch=fix_branch,
+                        files_written=files_written,
+                        commit_sha=commit_sha,
+                        tool=parsed.tool,
+                        root_cause=fix_plan.root_cause,
+                        parsed=parsed,
+                        validation_tool_version=validation_tool_version,
+                        enable_auto_merge=enable_auto_merge,
+                        parity_notice=format_parity_notice(parity_result),
+                    )
+
+            # ── 9. Comment on original PR ─────────────────────────────────────────
+            if ci_run.pr_number and integration.github_token:
+                await self._comment_on_pr(
+                    integration=integration,
+                    ci_run=ci_run,
+                    files_written=files_written,
+                    commit_sha=commit_sha,
+                    tool=parsed.tool,
+                    root_cause=fix_plan.root_cause,
+                    parsed=parsed,
+                    fix_pr_number=fix_pr_number,
+                    validation_tool_version=validation_tool_version,
+                )
+
+            # ── 10. Mark FIXED ────────────────────────────────────────────────────
+            async with get_db() as session:
+                await session.execute(
+                    update(CIFixRun)
+                    .where(CIFixRun.id == self.ci_fix_run_id)
+                    .values(
+                        status="FIXED",
+                        fix_commit_sha=commit_sha,
+                        fix_branch=fix_branch,
+                        fix_pr_number=fix_pr_number,
+                        fingerprint_hash=fingerprint,
+                        validation_tool_version=validation_tool_version,
+                        tool_version_parity_ok=parity_ok,
+                        completed_at=datetime.now(UTC),
+                    )
+                )
+                await session.commit()
+
+            # ── Phase 2: Store winning patches in fingerprint table for future reuse
+            await self._update_fingerprint_on_success(
+                fingerprint_hash=fingerprint,
+                patches=fix_plan.patches,
+                tool_version=validation_tool_version,
+                parsed_log=parsed,
+            )
+
+            # ── Update final context state ────────────────────────────────────────
+            ctx.verified_patch = VerifiedPatch(
+                files_modified=files_written,
+                validation_cmd=validation_tool_version or "",
+                success=True,
+            )
+            # Phase 2 already sets ctx.reproduction_result earlier in the pipeline.
+            # Only set it here as a fallback if sandbox was disabled (still None).
+            if ctx.reproduction_result is None:
+                ctx.reproduction_result = ReproductionResult(verdict="skipped")
+
+            # ── Phase 3: Broad verification (catch regressions post-fix) ─────────
+            verifier = VerifierAgent()
+            verification_result = await verifier.verify(
+                workspace_path=workspace,
+                stack=ctx.sandbox_stack or "python",
+                sandbox_result=sandbox_result,
+                timeout_seconds=settings.sandbox_timeout_seconds,
+            )
+            ctx.verification_result = verification_result
+            await self._persist_context(ctx)
+
+            if verification_result.verdict == "failed":
+                self._log.warning(
+                    "ci_fixer.verification_failed",
+                    repo=ci_run.repo_full_name,
+                    tool=parsed.tool,
+                    output=verification_result.output[:300],
+                )
+                ctx.complete("escalated", error="verification failed: post-fix regression detected")
+                await self._persist_context(ctx)
+                await self._mark_failed(ci_run, "verification_failed")
+                return AgentResult(
+                    success=False,
+                    output={"reason": "verification_failed", "tool": parsed.tool},
+                )
+
+            ctx.fix_commit_sha = commit_sha
+            ctx.fix_pr_number = fix_pr_number
+            ctx.fix_branch = fix_branch
+            ctx.complete("fixed")
+            await self._persist_context(ctx)
+
+            self._log.info(
+                "ci_fixer.execute.done",
+                tool=parsed.tool,
+                files=files_written,
+                commit_sha=commit_sha,
+                fix_branch=fix_branch,
+                fix_pr_number=fix_pr_number,
+                root_cause=fix_plan.root_cause,
+                fingerprint=fingerprint,
+            )
+
+            return AgentResult(
+                success=True,
+                output={
+                    "tool": parsed.tool,
+                    "root_cause": fix_plan.root_cause,
+                    "files_fixed": files_written,
+                    "commit_sha": commit_sha,
+                    "fix_branch": fix_branch,
+                    "fix_pr_number": fix_pr_number,
+                    "confidence": fix_plan.confidence,
+                    "fingerprint": fingerprint,
+                    "validation_tool_version": validation_tool_version,
+                },
+            )
+        finally:
+            if sandbox_result:
+                await provisioner.release(sandbox_result)
+
+    # ── Pipeline context persistence ───────────────────────────────────────────
+
+    async def _persist_context(self, ctx: CIFixContext) -> None:
+        """Persist the current CIFixContext state to CIFixRun.pipeline_context_json."""
+        import json  # noqa: PLC0415
+
+        try:
+            async with get_db() as session:
+                await session.execute(
+                    update(CIFixRun)
+                    .where(CIFixRun.id == self.ci_fix_run_id)
+                    .values(pipeline_context_json=json.dumps(ctx.to_dict()))
+                )
+                await session.commit()
+        except Exception as exc:
+            self._log.warning("ci_fixer.context_persist_error", error=str(exc))
 
     # ── Log fetching ───────────────────────────────────────────────────────────
 
@@ -507,16 +669,14 @@ class CIFixerAgent(BaseAgent):
                 continue
 
             try:
-                original_lines = full_path.read_text(encoding="utf-8").splitlines(
-                    keepends=True
-                )
+                original_lines = full_path.read_text(encoding="utf-8").splitlines(keepends=True)
             except Exception as exc:
                 self._log.warning("ci_fixer.patch_read_failed", path=patch.path, error=str(exc))
                 continue
 
             # Convert to 0-indexed slice
             s = patch.start_line - 1
-            e = patch.end_line       # exclusive in Python slice
+            e = patch.end_line  # exclusive in Python slice
 
             # Bounds check
             if s < 0 or e > len(original_lines) or s >= e:
@@ -646,9 +806,8 @@ class CIFixerAgent(BaseAgent):
             push_failed = False
             if github_token and repo.remotes:
                 try:
-                    auth_url = (
-                        f"https://github.com/{repo_full_name}.git"
-                        .replace("https://", f"https://{github_token}@")
+                    auth_url = f"https://github.com/{repo_full_name}.git".replace(
+                        "https://", f"https://{github_token}@"
                     )
                     repo.git.push(auth_url, f"HEAD:{fix_branch}", "--set-upstream")
                     self._log.info("ci_fixer.git.pushed", branch=fix_branch, sha=sha)
@@ -712,11 +871,10 @@ class CIFixerAgent(BaseAgent):
         )
 
         footer = (
-            f"*Auto-merge is enabled — will merge when all checks pass.*\n"
+            "*Auto-merge is enabled — will merge when all checks pass.*\n"
             if enable_auto_merge
-            else
-            f"*This is a draft PR — Phalanx never auto-merges. "
-            f"Review the diff above, then mark ready and merge if correct.*\n"
+            else "*This is a draft PR — Phalanx never auto-merges. "
+            "Review the diff above, then mark ready and merge if correct.*\n"
         )
 
         body = (
@@ -781,6 +939,54 @@ class CIFixerAgent(BaseAgent):
         except Exception as exc:
             self._log.warning("ci_fixer.draft_pr_error", error=str(exc))
 
+        return None
+
+    async def _find_existing_fix_pr(
+        self,
+        integration: CIIntegration,
+        ci_run: CIFixRun,
+    ) -> int | None:
+        """
+        Look for an open Phalanx fix PR already targeting ci_run.branch.
+
+        Returns the PR number if found, None otherwise.
+
+        This prevents duplicate fix PRs when the pipeline is triggered
+        multiple times for the same failing branch (e.g. repeated CI runs).
+        A new commit is pushed to the existing PR instead of opening a second one.
+        """
+        import httpx  # noqa: PLC0415
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"https://api.github.com/repos/{ci_run.repo_full_name}/pulls",
+                    headers={
+                        "Authorization": f"Bearer {integration.github_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    params={
+                        "state": "open",
+                        "base": ci_run.branch,
+                        "head": f"{ci_run.repo_full_name.split('/')[0]}:phalanx/ci-fix/",
+                    },
+                )
+            if r.status_code != 200:
+                return None
+            prs = r.json()
+            # Filter to PRs whose head branch starts with phalanx/ci-fix/
+            for pr in prs:
+                head_ref = pr.get("head", {}).get("ref", "")
+                if head_ref.startswith("phalanx/ci-fix/"):
+                    self._log.info(
+                        "ci_fixer.existing_fix_pr_found",
+                        pr=pr["number"],
+                        head=head_ref,
+                        base=ci_run.branch,
+                    )
+                    return pr["number"]
+        except Exception as exc:
+            self._log.warning("ci_fixer.find_existing_pr_error", error=str(exc))
         return None
 
     async def _enable_github_auto_merge(
@@ -961,9 +1167,7 @@ class CIFixerAgent(BaseAgent):
     # ── DB helpers ─────────────────────────────────────────────────────────────
 
     async def _load_ci_fix_run(self, session) -> CIFixRun | None:
-        result = await session.execute(
-            select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id)
-        )
+        result = await session.execute(select(CIFixRun).where(CIFixRun.id == self.ci_fix_run_id))
         return result.scalar_one_or_none()
 
     async def _load_integration(self, session, integration_id: str) -> CIIntegration | None:
@@ -1002,7 +1206,7 @@ class CIFixerAgent(BaseAgent):
         self,
         fingerprint_hash: str | None,
         local_version: str,
-    ) -> "VersionParityResult":
+    ) -> VersionParityResult:
         """
         Phase 4: Compare local tool version to the version at the last successful fix.
 
@@ -1018,8 +1222,6 @@ class CIFixerAgent(BaseAgent):
             )
 
         try:
-            from sqlalchemy import and_  # noqa: PLC0415
-
             async with get_db() as session:
                 result = await session.execute(
                     select(CIFailureFingerprint).where(
@@ -1068,8 +1270,8 @@ class CIFixerAgent(BaseAgent):
     async def _load_flaky_patterns(
         self,
         repo_full_name: str,
-        parsed_log: "ParsedLog",
-    ) -> list["CIFlakyPattern"]:
+        parsed_log: ParsedLog,
+    ) -> list[CIFlakyPattern]:
         """
         Phase 3: Load CIFlakyPattern rows matching the errors in parsed_log.
 
@@ -1083,9 +1285,7 @@ class CIFixerAgent(BaseAgent):
             from sqlalchemy import and_, or_  # noqa: PLC0415
 
             # Collect (file, code) pairs from the parsed errors
-            error_keys = [
-                (e.file, e.code) for e in parsed_log.lint_errors
-            ] + [
+            error_keys = [(e.file, e.code) for e in parsed_log.lint_errors] + [
                 (e.file, getattr(e, "code", None)) for e in parsed_log.type_errors
             ]
 
@@ -1189,9 +1389,9 @@ class CIFixerAgent(BaseAgent):
     async def _update_fingerprint_on_success(
         self,
         fingerprint_hash: str,
-        patches: list["FilePatch"],
+        patches: list[FilePatch],
         tool_version: str,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
     ) -> None:
         """
         After a successful fix is validated, upsert CIFailureFingerprint with

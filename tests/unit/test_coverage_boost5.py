@@ -9,14 +9,15 @@ Targets:
 - phalanx/memory/assembler.py — MemoryAssembler.build()
 - phalanx/memory/reader.py — MemoryReader methods
 """
+
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # memory/assembler.py
@@ -32,7 +33,15 @@ class TestMemoryAssembler:
         d.rejected_alternatives = alts or []
         return d
 
-    def _make_fact(self, fact_type="tech", title="Fact", body="body", confidence=1.0, relevance=0.9, is_standing=True):
+    def _make_fact(
+        self,
+        fact_type="tech",
+        title="Fact",
+        body="body",
+        confidence=1.0,
+        relevance=0.9,
+        is_standing=True,
+    ):
         f = MagicMock()
         f.fact_type = fact_type
         f.title = title
@@ -52,7 +61,9 @@ class TestMemoryAssembler:
         from phalanx.memory.assembler import MemoryAssembler
 
         a = MemoryAssembler(max_tokens=4000)
-        d = self._make_decision("Use Postgres", "PostgreSQL as primary DB", "Proven at scale", ["MySQL", "SQLite"])
+        d = self._make_decision(
+            "Use Postgres", "PostgreSQL as primary DB", "Proven at scale", ["MySQL", "SQLite"]
+        )
         result = a.build(decisions=[d])
         assert "Use Postgres" in result
         assert "Project Memory" in result
@@ -226,7 +237,7 @@ def _make_ci_integration_obj():
 
 @pytest.mark.asyncio
 async def test_register_integration_create():
-    from phalanx.api.routes.ci_integrations import register_integration, CIIntegrationCreate
+    from phalanx.api.routes.ci_integrations import CIIntegrationCreate, register_integration
 
     body = CIIntegrationCreate(
         repo_full_name="acme/backend",
@@ -236,7 +247,9 @@ async def test_register_integration_create():
     obj = _make_ci_integration_obj()
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+    )
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock(side_effect=lambda x: None)
@@ -245,7 +258,6 @@ async def test_register_integration_create():
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
     # refresh won't return an obj with attributes — so we mock the return value
-    refreshed = obj
     mock_session.refresh = AsyncMock(return_value=None)
     # patch get_db AND capture the integration that was added
     captured = {}
@@ -265,17 +277,15 @@ async def test_register_integration_create():
     with patch("phalanx.api.routes.ci_integrations.get_db", return_value=mock_ctx):
         # This will fail at refresh since the session is mocked
         # Use a simpler approach: just call the route function and catch the error
-        try:
+        with contextlib.suppress(Exception):
             await register_integration(body)
-        except Exception:
-            pass
 
     mock_session.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
 async def test_register_integration_update_existing():
-    from phalanx.api.routes.ci_integrations import register_integration, CIIntegrationCreate
+    from phalanx.api.routes.ci_integrations import CIIntegrationCreate, register_integration
 
     body = CIIntegrationCreate(repo_full_name="acme/backend", github_token="new_token")
     existing = _make_ci_integration_obj()
@@ -291,10 +301,8 @@ async def test_register_integration_update_existing():
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
     with patch("phalanx.api.routes.ci_integrations.get_db", return_value=mock_ctx):
-        try:
+        with contextlib.suppress(Exception):
             await register_integration(body)
-        except Exception:
-            pass
 
     assert existing.github_token == "new_token"
 
@@ -337,6 +345,7 @@ async def test_get_integration_found():
 @pytest.mark.asyncio
 async def test_get_integration_not_found():
     from fastapi import HTTPException
+
     from phalanx.api.routes.ci_integrations import get_integration
 
     mock_session = AsyncMock()
@@ -355,7 +364,8 @@ async def test_get_integration_not_found():
 @pytest.mark.asyncio
 async def test_update_integration_not_found():
     from fastapi import HTTPException
-    from phalanx.api.routes.ci_integrations import update_integration, CIIntegrationUpdate
+
+    from phalanx.api.routes.ci_integrations import CIIntegrationUpdate, update_integration
 
     mock_session = AsyncMock()
     mock_session.get = AsyncMock(return_value=None)
@@ -372,7 +382,7 @@ async def test_update_integration_not_found():
 
 @pytest.mark.asyncio
 async def test_update_integration_success():
-    from phalanx.api.routes.ci_integrations import update_integration, CIIntegrationUpdate
+    from phalanx.api.routes.ci_integrations import CIIntegrationUpdate, update_integration
 
     obj = _make_ci_integration_obj()
     mock_session = AsyncMock()
@@ -385,10 +395,8 @@ async def test_update_integration_success():
 
     update = CIIntegrationUpdate(enabled=False, max_attempts=3, auto_commit=False)
     with patch("phalanx.api.routes.ci_integrations.get_db", return_value=mock_ctx):
-        try:
+        with contextlib.suppress(Exception):
             await update_integration(obj.id, update)
-        except Exception:
-            pass
 
     assert obj.enabled is False
     assert obj.max_attempts == 3
@@ -397,6 +405,7 @@ async def test_update_integration_success():
 @pytest.mark.asyncio
 async def test_delete_integration_not_found():
     from fastapi import HTTPException
+
     from phalanx.api.routes.ci_integrations import delete_integration
 
     mock_session = AsyncMock()

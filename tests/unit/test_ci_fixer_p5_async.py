@@ -8,7 +8,6 @@ Phase 5 async tests:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -19,7 +18,6 @@ from phalanx.ci_fixer.proactive_scanner import (
     _record_scan,
     scan_pr_for_patterns,
 )
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -87,8 +85,10 @@ async def test_scan_pr_no_python_files():
 
     mock_db_ctx, _ = _mock_db(rows=[pattern])
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx),
+    ):
         findings = await scan_pr_for_patterns("acme/backend", 1, "abc", "token")
 
     assert findings == []
@@ -117,8 +117,10 @@ async def test_scan_pr_with_python_files_finds_patterns():
 
     mock_db_ctx, _ = _mock_db(rows=[pattern])
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx),
+    ):
         findings = await scan_pr_for_patterns("acme/backend", 1, "abc", "token")
 
     assert len(findings) == 1
@@ -146,8 +148,10 @@ async def test_scan_pr_low_success_count_is_info():
 
     mock_db_ctx, _ = _mock_db(rows=[pattern])
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch("phalanx.ci_fixer.proactive_scanner.get_db", return_value=mock_db_ctx),
+    ):
         findings = await scan_pr_for_patterns("acme/backend", 1, "abc", "token")
 
     assert len(findings) == 1
@@ -248,6 +252,7 @@ async def test_record_scan_inserts_row():
 
     mock_session.add.assert_called_once()
     from phalanx.db.models import CIProactiveScan
+
     added = mock_session.add.call_args[0][0]
     assert isinstance(added, CIProactiveScan)
     assert added.pr_number == 42
@@ -269,7 +274,9 @@ async def test_promote_patterns_eligible_creates_registry_entry():
     row.fingerprint_hash = "abc123def456abcd"
     row.tool = "ruff"
     row.sample_errors = "unused import"
-    row.last_good_patch_json = '[{"path":"src/foo.py","start_line":1,"end_line":1,"corrected_lines":["x\\n"],"reason":""}]'
+    row.last_good_patch_json = (
+        '[{"path":"src/foo.py","start_line":1,"end_line":1,"corrected_lines":["x\\n"],"reason":""}]'
+    )
     row.repo_count = 3  # >= MIN_REPOS_FOR_PROMOTION=2
     row.total_successes = 5
 
@@ -303,6 +310,7 @@ async def test_promote_patterns_eligible_creates_registry_entry():
     # Should have added one entry to the registry
     mock_session.add.assert_called_once()
     from phalanx.db.models import CIPatternRegistry
+
     added = mock_session.add.call_args[0][0]
     assert isinstance(added, CIPatternRegistry)
     assert added.fingerprint_hash == "abc123def456abcd"

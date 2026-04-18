@@ -17,13 +17,11 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.agents.ci_fixer import CIFixerAgent
-
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -112,13 +110,17 @@ async def test_execute_inner_flaky_suppressed():
 
     mock_flaky = MagicMock()
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[mock_flaky]), \
-         patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=True), \
-         patch.object(agent, "_mark_failed", new_callable=AsyncMock) as mock_mark:
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"),
+        patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors),
+        patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock),
+        patch.object(
+            agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[mock_flaky]
+        ),
+        patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=True),
+        patch.object(agent, "_mark_failed", new_callable=AsyncMock) as mock_mark,
+    ):
         result = await agent._execute_inner()
 
     assert result.success is False
@@ -165,16 +167,18 @@ async def test_execute_inner_low_confidence_no_pr():
     )
     low_conf_plan = FixPlan(confidence="low", root_cause="can't fix this")
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
-         patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
-         patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True), \
-         patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst, \
-         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock) as mock_mark, \
-         patch("phalanx.ci_fixer.analyst.FixPlan"):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"),
+        patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors),
+        patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock),
+        patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]),
+        patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False),
+        patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=True),
+        patch("phalanx.agents.ci_fixer.RootCauseAnalyst") as MockAnalyst,
+        patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock),
+        patch("phalanx.ci_fixer.analyst.FixPlan"),
+    ):
         mock_analyst_inst = MagicMock()
         mock_analyst_inst.analyze.return_value = low_conf_plan
         MockAnalyst.return_value = mock_analyst_inst
@@ -221,14 +225,16 @@ async def test_execute_inner_clone_failed():
         lint_errors=[LintError(file="src/foo.py", line=1, col=1, code="F401", message="unused")],
     )
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"), \
-         patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors), \
-         patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock), \
-         patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]), \
-         patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False), \
-         patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=False), \
-         patch.object(agent, "_mark_failed", new_callable=AsyncMock) as mock_mark:
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_fetch_logs", new_callable=AsyncMock, return_value="some log"),
+        patch("phalanx.agents.ci_fixer.parse_log", return_value=parsed_with_errors),
+        patch.object(agent, "_persist_fingerprint", new_callable=AsyncMock),
+        patch.object(agent, "_load_flaky_patterns", new_callable=AsyncMock, return_value=[]),
+        patch("phalanx.agents.ci_fixer.is_flaky_suppressed", return_value=False),
+        patch.object(agent, "_clone_repo", new_callable=AsyncMock, return_value=False),
+        patch.object(agent, "_mark_failed", new_callable=AsyncMock) as mock_mark,
+    ):
         result = await agent._execute_inner()
 
     assert result.success is False
@@ -350,8 +356,10 @@ async def test_open_draft_pr_auto_merge_calls_enable():
     mock_client.__aexit__ = AsyncMock(return_value=None)
     mock_client.post = AsyncMock(return_value=mock_resp)
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch.object(agent, "_enable_github_auto_merge", new_callable=AsyncMock) as mock_auto:
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch.object(agent, "_enable_github_auto_merge", new_callable=AsyncMock) as mock_auto,
+    ):
         result = await agent._open_draft_pr(
             integration=integration,
             ci_run=ci_run,
@@ -410,8 +418,6 @@ async def test_enable_auto_merge_gql_error():
     gql_resp.status_code = 200
     gql_resp.json.return_value = {"errors": [{"message": "auto-merge not enabled"}]}
     gql_resp.text = '{"errors": [...]}'
-
-    call_count = {"n": 0}
 
     async def side_effect_client():
         pass
@@ -645,8 +651,10 @@ async def test_async_lookup_history_unreliable_returns_none():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.ci_fixer.should_use_history", return_value=False):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.ci_fixer.should_use_history", return_value=False),
+    ):
         result = await agent._async_lookup_fix_history("fp_hash_abc")
 
     assert result is None
@@ -670,8 +678,10 @@ async def test_async_lookup_history_corrupt_json():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.ci_fixer.should_use_history", return_value=True):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.ci_fixer.should_use_history", return_value=True),
+    ):
         result = await agent._async_lookup_fix_history("fp_hash_abc")
 
     assert result is None
@@ -682,7 +692,15 @@ async def test_async_lookup_history_hit():
     """Valid history → returns patch list."""
     agent = _make_agent()
 
-    patches = [{"path": "src/foo.py", "start_line": 1, "end_line": 2, "corrected_lines": ["x\n"], "reason": ""}]
+    patches = [
+        {
+            "path": "src/foo.py",
+            "start_line": 1,
+            "end_line": 2,
+            "corrected_lines": ["x\n"],
+            "reason": "",
+        }
+    ]
     mock_fp = MagicMock()
     mock_fp.success_count = 5
     mock_fp.failure_count = 1
@@ -696,8 +714,10 @@ async def test_async_lookup_history_hit():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx), \
-         patch("phalanx.agents.ci_fixer.should_use_history", return_value=True):
+    with (
+        patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx),
+        patch("phalanx.agents.ci_fixer.should_use_history", return_value=True),
+    ):
         result = await agent._async_lookup_fix_history("fp_hash_abc")
 
     assert result is not None
@@ -727,7 +747,11 @@ async def test_update_fingerprint_run_missing():
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx):
         await agent._update_fingerprint_on_success(
             fingerprint_hash="fp_abc",
-            patches=[FilePatch(path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason="")],
+            patches=[
+                FilePatch(
+                    path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason=""
+                )
+            ],
             tool_version="ruff 0.4.0",
             parsed_log=ParsedLog(tool="ruff"),
         )
@@ -745,7 +769,11 @@ async def test_update_fingerprint_exception_logged():
 
         await agent._update_fingerprint_on_success(
             fingerprint_hash="fp_abc",
-            patches=[FilePatch(path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason="")],
+            patches=[
+                FilePatch(
+                    path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason=""
+                )
+            ],
             tool_version="ruff 0.4.0",
             parsed_log=ParsedLog(tool="ruff"),
         )
@@ -790,7 +818,11 @@ async def test_update_fingerprint_existing_entry_increments():
     with patch("phalanx.agents.ci_fixer.get_db", return_value=mock_ctx):
         await agent._update_fingerprint_on_success(
             fingerprint_hash="fp_abc",
-            patches=[FilePatch(path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason="")],
+            patches=[
+                FilePatch(
+                    path="src/foo.py", start_line=1, end_line=2, corrected_lines=["x\n"], reason=""
+                )
+            ],
             tool_version="ruff 0.4.0",
             parsed_log=ParsedLog(tool="ruff"),
         )
@@ -839,9 +871,11 @@ async def test_commit_to_safe_branch_no_changes(tmp_path):
     mock_repo.untracked_files = []
     mock_repo.remotes = []
 
-    with patch("phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
-               new_callable=AsyncMock,
-               return_value={"sha": None, "message": "no_changes"}):
+    with patch(
+        "phalanx.agents.ci_fixer.CIFixerAgent._commit_to_safe_branch",
+        new_callable=AsyncMock,
+        return_value={"sha": None, "message": "no_changes"},
+    ):
         result = await agent._commit_to_safe_branch(
             workspace=tmp_path,
             source_branch="main",

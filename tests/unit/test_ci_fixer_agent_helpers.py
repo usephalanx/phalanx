@@ -7,10 +7,8 @@ the DB, Celery, or GitHub — those require integration tests.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from phalanx.agents.ci_fixer import (
     CIFixerAgent,
@@ -21,6 +19,8 @@ from phalanx.agents.ci_fixer import (
 from phalanx.ci_fixer.analyst import FilePatch
 from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -34,8 +34,9 @@ def _make_agent() -> CIFixerAgent:
         return agent
 
 
-def _lint_parsed(file: str = "phalanx/foo.py", code: str = "F401",
-                 msg: str = "unused import 'os'") -> ParsedLog:
+def _lint_parsed(
+    file: str = "phalanx/foo.py", code: str = "F401", msg: str = "unused import 'os'"
+) -> ParsedLog:
     return ParsedLog(
         tool="ruff",
         lint_errors=[LintError(file=file, line=5, col=1, code=code, message=msg)],
@@ -61,12 +62,22 @@ class TestComputeFingerprint:
 
     def test_same_error_class_same_hash(self):
         # Different line numbers → same hash (lines stripped)
-        p1 = ParsedLog(tool="ruff", lint_errors=[
-            LintError(file="phalanx/foo.py", line=3, col=1, code="F401", message="unused import 'os'"),
-        ])
-        p2 = ParsedLog(tool="ruff", lint_errors=[
-            LintError(file="phalanx/foo.py", line=99, col=1, code="F401", message="unused import 'os'"),
-        ])
+        p1 = ParsedLog(
+            tool="ruff",
+            lint_errors=[
+                LintError(
+                    file="phalanx/foo.py", line=3, col=1, code="F401", message="unused import 'os'"
+                ),
+            ],
+        )
+        p2 = ParsedLog(
+            tool="ruff",
+            lint_errors=[
+                LintError(
+                    file="phalanx/foo.py", line=99, col=1, code="F401", message="unused import 'os'"
+                ),
+            ],
+        )
         assert _compute_fingerprint(p1) == _compute_fingerprint(p2)
 
     def test_different_error_code_different_hash(self):
@@ -90,11 +101,13 @@ class TestComputeFingerprint:
     def test_test_failure_included(self):
         parsed = ParsedLog(
             tool="pytest",
-            test_failures=[TestFailure(
-                test_id="tests/unit/test_foo.py::test_bar",
-                file="tests/unit/test_foo.py",
-                message="AssertionError",
-            )],
+            test_failures=[
+                TestFailure(
+                    test_id="tests/unit/test_foo.py::test_bar",
+                    file="tests/unit/test_foo.py",
+                    message="AssertionError",
+                )
+            ],
         )
         h = _compute_fingerprint(parsed)
         assert len(h) == 16
@@ -106,14 +119,26 @@ class TestComputeFingerprint:
 
     def test_parametrized_tests_normalized(self):
         """test[param1] and test[param2] should yield same fingerprint."""
-        p1 = ParsedLog(tool="pytest", test_failures=[
-            TestFailure(test_id="tests/test_foo.py::test_bar[case1]",
-                        file="tests/test_foo.py", message=""),
-        ])
-        p2 = ParsedLog(tool="pytest", test_failures=[
-            TestFailure(test_id="tests/test_foo.py::test_bar[case2]",
-                        file="tests/test_foo.py", message=""),
-        ])
+        p1 = ParsedLog(
+            tool="pytest",
+            test_failures=[
+                TestFailure(
+                    test_id="tests/test_foo.py::test_bar[case1]",
+                    file="tests/test_foo.py",
+                    message="",
+                ),
+            ],
+        )
+        p2 = ParsedLog(
+            tool="pytest",
+            test_failures=[
+                TestFailure(
+                    test_id="tests/test_foo.py::test_bar[case2]",
+                    file="tests/test_foo.py",
+                    message="",
+                ),
+            ],
+        )
         assert _compute_fingerprint(p1) == _compute_fingerprint(p2)
 
     def test_numbers_in_messages_normalized(self):
@@ -144,11 +169,13 @@ class TestFormatErrorDetail:
     def test_test_failures_formatted(self):
         parsed = ParsedLog(
             tool="pytest",
-            test_failures=[TestFailure(
-                test_id="tests/unit/test_foo.py::test_bar",
-                file="tests/unit/test_foo.py",
-                message="",
-            )],
+            test_failures=[
+                TestFailure(
+                    test_id="tests/unit/test_foo.py::test_bar",
+                    file="tests/unit/test_foo.py",
+                    message="",
+                )
+            ],
         )
         result = _format_error_detail(parsed)
         assert "test_bar" in result
@@ -225,8 +252,7 @@ class TestApplyPatches:
         assert "import os" not in result
 
     def test_missing_file_skipped(self, tmp_path):
-        patch = FilePatch(path="src/missing.py", start_line=1, end_line=1,
-                          corrected_lines=["x\n"])
+        patch = FilePatch(path="src/missing.py", start_line=1, end_line=1, corrected_lines=["x\n"])
         agent = self._agent()
         written = agent._apply_patches(tmp_path, [patch])
         assert written == []
@@ -234,8 +260,7 @@ class TestApplyPatches:
     def test_bounds_out_of_range_skipped(self, tmp_path):
         lines = ["a\n", "b\n"]
         _write(tmp_path, "src/foo.py", lines)
-        patch = FilePatch(path="src/foo.py", start_line=5, end_line=10,
-                          corrected_lines=["x\n"])
+        patch = FilePatch(path="src/foo.py", start_line=5, end_line=10, corrected_lines=["x\n"])
         agent = self._agent()
         written = agent._apply_patches(tmp_path, [patch])
         assert written == []
@@ -245,8 +270,7 @@ class TestApplyPatches:
         _write(tmp_path, "src/foo.py", lines)
         # Add 35 lines — exceeds _MAX_TOTAL_LINE_DELTA=30
         huge = [f"added {i}\n" for i in range(35)]
-        patch = FilePatch(path="src/foo.py", start_line=1, end_line=1,
-                          corrected_lines=huge)
+        patch = FilePatch(path="src/foo.py", start_line=1, end_line=1, corrected_lines=huge)
         agent = self._agent()
         written = agent._apply_patches(tmp_path, [patch])
         assert written == []
@@ -255,12 +279,12 @@ class TestApplyPatches:
         lines = ["line 1\n", "import os\n", "import sys\n", "line 4\n"]
         _write(tmp_path, "src/foo.py", lines)
 
-        p1 = FilePatch(path="src/foo.py", start_line=2, end_line=2,
-                       corrected_lines=["# os removed\n"])
+        p1 = FilePatch(
+            path="src/foo.py", start_line=2, end_line=2, corrected_lines=["# os removed\n"]
+        )
         # After p1, file changes — p2 targets a different file
         _write(tmp_path, "src/bar.py", ["x = 1\n", "y = 2\n"])
-        p2 = FilePatch(path="src/bar.py", start_line=1, end_line=1,
-                       corrected_lines=["x = 10\n"])
+        p2 = FilePatch(path="src/bar.py", start_line=1, end_line=1, corrected_lines=["x = 10\n"])
 
         agent = self._agent()
         written = agent._apply_patches(tmp_path, [p1, p2])

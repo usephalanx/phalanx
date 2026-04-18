@@ -12,19 +12,18 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from phalanx.ci_fixer.analyst import (
     FilePatch,
     FileWindow,
-    FixPlan,
     RootCauseAnalyst,
     _is_test_file,
 )
-from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
+from phalanx.ci_fixer.log_parser import LintError, ParsedLog
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -47,20 +46,25 @@ def _lint_log(file: str, line: int = 1, code: str = "F401") -> ParsedLog:
     )
 
 
-def _patch_json(path: str, start: int, end: int, corrected: list[str],
-                confidence: str = "high") -> str:
-    return json.dumps({
-        "confidence": confidence,
-        "root_cause": "test root cause",
-        "patches": [{
-            "path": path,
-            "start_line": start,
-            "end_line": end,
-            "corrected_lines": corrected,
-            "reason": "test",
-        }],
-        "needs_new_test": False,
-    })
+def _patch_json(
+    path: str, start: int, end: int, corrected: list[str], confidence: str = "high"
+) -> str:
+    return json.dumps(
+        {
+            "confidence": confidence,
+            "root_cause": "test root cause",
+            "patches": [
+                {
+                    "path": path,
+                    "start_line": start,
+                    "end_line": end,
+                    "corrected_lines": corrected,
+                    "reason": "test",
+                }
+            ],
+            "needs_new_test": False,
+        }
+    )
 
 
 # ── FilePatch.delta ────────────────────────────────────────────────────────────
@@ -68,23 +72,19 @@ def _patch_json(path: str, start: int, end: int, corrected: list[str],
 
 class TestFilePatchDelta:
     def test_no_change(self):
-        p = FilePatch(path="f.py", start_line=1, end_line=3,
-                      corrected_lines=["a\n", "b\n", "c\n"])
+        p = FilePatch(path="f.py", start_line=1, end_line=3, corrected_lines=["a\n", "b\n", "c\n"])
         assert p.delta == 0
 
     def test_line_removed(self):
-        p = FilePatch(path="f.py", start_line=1, end_line=3,
-                      corrected_lines=["a\n", "b\n"])
+        p = FilePatch(path="f.py", start_line=1, end_line=3, corrected_lines=["a\n", "b\n"])
         assert p.delta == -1
 
     def test_line_added(self):
-        p = FilePatch(path="f.py", start_line=1, end_line=2,
-                      corrected_lines=["a\n", "b\n", "c\n"])
+        p = FilePatch(path="f.py", start_line=1, end_line=2, corrected_lines=["a\n", "b\n", "c\n"])
         assert p.delta == 1
 
     def test_original_window_size(self):
-        p = FilePatch(path="f.py", start_line=5, end_line=10,
-                      corrected_lines=["x\n"])
+        p = FilePatch(path="f.py", start_line=5, end_line=10, corrected_lines=["x\n"])
         assert p.original_window_size == 6
 
 
@@ -169,7 +169,7 @@ class TestReadWindows:
             ],
         )
         windows = analyst._read_windows(tmp_path, parsed)
-        assert len(windows) == 1   # merged, not two separate windows
+        assert len(windows) == 1  # merged, not two separate windows
 
     def test_max_files_respected(self, tmp_path):
         for i in range(6):
@@ -183,7 +183,7 @@ class TestReadWindows:
         )
         analyst = _make_analyst("{}")
         windows = analyst._read_windows(tmp_path, parsed)
-        assert len(windows) <= 4   # _MAX_FILES = 4
+        assert len(windows) <= 4  # _MAX_FILES = 4
 
 
 # ── _parse_and_validate_patches ────────────────────────────────────────────────
@@ -203,31 +203,59 @@ class TestParseAndValidatePatches:
 
     def test_valid_patch_accepted(self):
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/foo.py", "start_line": 1, "end_line": 5,
-                "corrected_lines": ["a\n", "b\n", "c\n", "d\n"], "reason": "ok"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": ["a\n", "b\n", "c\n", "d\n"],
+                "reason": "ok",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert len(patches) == 1
         assert patches[0].delta == -1
 
     def test_unknown_file_rejected(self):
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/bar.py", "start_line": 1, "end_line": 5,
-                "corrected_lines": ["x\n"], "reason": "bad"}]
+        raw = [
+            {
+                "path": "src/bar.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": ["x\n"],
+                "reason": "bad",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert patches == []
 
     def test_test_file_rejected(self):
         w = self._window("tests/test_foo.py", 1, 5, 5)
-        raw = [{"path": "tests/test_foo.py", "start_line": 1, "end_line": 5,
-                "corrected_lines": ["x\n"], "reason": "bad"}]
+        raw = [
+            {
+                "path": "tests/test_foo.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": ["x\n"],
+                "reason": "bad",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert patches == []
 
     def test_delta_too_large_rejected(self):
         w = self._window("src/foo.py", 1, 5, 5)
         big = [f"line {i}\n" for i in range(50)]
-        raw = [{"path": "src/foo.py", "start_line": 1, "end_line": 5,
-                "corrected_lines": big, "reason": "too big"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": big,
+                "reason": "too big",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert patches == []
 
@@ -239,15 +267,29 @@ class TestParseAndValidatePatches:
 
     def test_empty_corrected_lines_rejected(self):
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/foo.py", "start_line": 1, "end_line": 5,
-                "corrected_lines": [], "reason": "empty"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": [],
+                "reason": "empty",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert patches == []
 
     def test_lines_without_newline_get_newline_appended(self):
         w = self._window("src/foo.py", 1, 3, 3)
-        raw = [{"path": "src/foo.py", "start_line": 1, "end_line": 3,
-                "corrected_lines": ["no newline", "also no newline"], "reason": "ok"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 3,
+                "corrected_lines": ["no newline", "also no newline"],
+                "reason": "ok",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert len(patches) == 1
         assert all(line.endswith("\n") for line in patches[0].corrected_lines)
@@ -255,8 +297,15 @@ class TestParseAndValidatePatches:
     def test_line_range_within_tolerance_accepted(self):
         """start/end off by ≤2 lines → not rejected; LLM values passed through."""
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/foo.py", "start_line": 2, "end_line": 6,  # off by 1
-                "corrected_lines": ["a\n", "b\n"], "reason": "off by one"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 2,
+                "end_line": 6,  # off by 1
+                "corrected_lines": ["a\n", "b\n"],
+                "reason": "off by one",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         # Accepted — within tolerance (off by 1 ≤ 2)
         assert len(patches) == 1
@@ -267,8 +316,15 @@ class TestParseAndValidatePatches:
     def test_line_range_beyond_tolerance_clamped(self):
         """start/end off by >2 lines → clamped to window bounds."""
         w = self._window("src/foo.py", 1, 5, 5)
-        raw = [{"path": "src/foo.py", "start_line": 10, "end_line": 20,  # way off
-                "corrected_lines": ["a\n", "b\n"], "reason": "way off"}]
+        raw = [
+            {
+                "path": "src/foo.py",
+                "start_line": 10,
+                "end_line": 20,  # way off
+                "corrected_lines": ["a\n", "b\n"],
+                "reason": "way off",
+            }
+        ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         # Clamped to window bounds (1..5)
         assert len(patches) == 1
@@ -284,7 +340,7 @@ class TestAnalyzeIntegration:
 
     def test_high_confidence_fix_applied(self, tmp_path):
         _write(tmp_path, "src/foo.py", self._FILE)
-        corrected = self._FILE[1:]   # remove "import os\n"
+        corrected = self._FILE[1:]  # remove "import os\n"
         response = _patch_json("src/foo.py", 1, len(self._FILE), corrected)
         analyst = _make_analyst(response)
         plan = analyst.analyze(_lint_log("src/foo.py"), tmp_path)

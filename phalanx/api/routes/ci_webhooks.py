@@ -193,7 +193,7 @@ def _verify_buildkite_signature(body: bytes, token: str, stored_token: str) -> b
 # ── GitHub App webhook ─────────────────────────────────────────────────────────
 
 
-@router.post("/webhook/github", status_code=status.HTTP_200_OK)
+@router.post("/github", status_code=status.HTTP_200_OK)
 async def github_webhook(
     request: Request,
     x_hub_signature_256: str = Header(default=""),
@@ -273,7 +273,7 @@ async def github_webhook(
 # ── Buildkite webhook ──────────────────────────────────────────────────────────
 
 
-@router.post("/webhook/buildkite", status_code=status.HTTP_200_OK)
+@router.post("/buildkite", status_code=status.HTTP_200_OK)
 async def buildkite_webhook(
     request: Request,
     x_buildkite_token: str = Header(default=""),
@@ -336,44 +336,141 @@ async def buildkite_webhook(
     }
 
 
-# ── CircleCI webhook (Phase 2 stub) ────────────────────────────────────────────
+# ── CircleCI webhook ───────────────────────────────────────────────────────────
 
 
-@router.post("/webhook/circleci", status_code=status.HTTP_200_OK)
-async def circleci_webhook(request: Request):
-    """CircleCI webhook — Phase 2."""
-    return {"status": "coming_soon", "provider": "circleci"}
+def _verify_circleci_signature(body: bytes, signature: str, secret: str) -> bool:
+    """
+    Verify CircleCI webhook signature.
+    CircleCI sends: circleci-signature: v1=<hex_hmac_sha256>
+    """
+    if not secret:
+        return True
+    expected = "v1=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature or "")
+
+
+@router.post("/circleci", status_code=status.HTTP_200_OK)
+async def circleci_webhook(
+    request: Request,
+    circleci_signature: str = Header(default="", alias="circleci-signature"),
+):
+    """
+    Receives CircleCI webhook events.
+
+    Handles:
+    - workflow-completed with status=failed → dispatch CI fix
+
+    Setup in CircleCI: Project Settings → Webhooks
+    Add URL: https://api.usephalanx.com/webhook/circleci
+    Events: Workflow Completed
+    Signing secret: set CIRCLECI_WEBHOOK_SECRET in phalanx env
+
+    Payload shape (workflow-completed):
+      {
+        "type": "workflow-completed",
+        "workflow": {
+          "id": "<workflow_uuid>",
+          "name": "<workflow_name>",
+          "status": "failed",
+          "created_at": "...",
+          "stopped_at": "..."
+        },
+        "pipeline": {
+          "id": "<pipeline_uuid>",
+          "number": 42,
+          "trigger": {"type": "webhook", ...},
+          "vcs": {
+            "origin_repository_url": "https://github.com/owner/repo",
+            "branch": "fix/my-branch",
+            "revision": "<commit_sha>",
+            "commit": {"subject": "...", "author": {"login": "..."}}
+          }
+        },
+        "project": {"id": "...", "name": "repo", "slug": "github/owner/repo"},
+        "organization": {"name": "owner", ...}
+      }
+    """
+    body = await request.body()
+
+    if not _verify_circleci_signature(body, circleci_signature, settings.circleci_webhook_secret):
+        log.warning("ci_webhook.circleci.invalid_signature")
+        raise HTTPException(status_code=401, detail="Invalid CircleCI signature")
+
+    payload = json.loads(body)
+    event_type = payload.get("type")
+
+    if event_type != "workflow-completed":
+        return {"status": "ignored", "type": event_type}
+
+    workflow = payload.get("workflow", {})
+    if workflow.get("status") not in ("failed", "error", "failing", "canceled"):
+        return {"status": "ignored", "workflow_status": workflow.get("status")}
+
+    pipeline = payload.get("pipeline", {})
+    vcs = pipeline.get("vcs", {})
+
+    # Extract repo name from the VCS URL (always GitHub for phalanx)
+    repo_url = vcs.get("origin_repository_url", "")
+    repo_full_name = _parse_repo_name(repo_url)
+    if not repo_full_name:
+        # Fallback: try project slug (format: "github/owner/repo")
+        slug = payload.get("project", {}).get("slug", "")
+        if slug.startswith("github/"):
+            repo_full_name = slug[len("github/") :]
+    if not repo_full_name:
+        return {"status": "skipped", "reason": "cannot_parse_repo"}
+
+    branch = vcs.get("branch", "")
+    commit_sha = vcs.get("revision", "")
+    pr_author: str | None = vcs.get("commit", {}).get("author", {}).get("login") or vcs.get(
+        "commit", {}
+    ).get("committer", {}).get("login")
+
+    # CircleCI build_id = workflow ID (used to fetch job list + logs)
+    workflow_id = workflow.get("id", "")
+    workflow_name = workflow.get("name", "")
+    build_url = (
+        f"https://app.circleci.com/pipelines/github/{repo_full_name}"
+        f"/{pipeline.get('number', '')}/workflows/{workflow_id}"
+    )
+
+    # PR number: CircleCI doesn't directly provide it in workflow webhooks.
+    # It may be in the branch name (e.g. "pull/42") or absent.
+    pr_number: int | None = None
+    if branch.startswith("pull/"):
+        import contextlib  # noqa: PLC0415
+
+        with contextlib.suppress(IndexError, ValueError):
+            pr_number = int(branch.split("/")[1])
+
+    event = CIFailureEvent(
+        provider="circleci",
+        repo_full_name=repo_full_name,
+        branch=branch,
+        commit_sha=commit_sha,
+        build_id=workflow_id,
+        build_url=build_url,
+        failed_jobs=[workflow_name] if workflow_name else [],
+        pr_number=pr_number,
+        pr_author=pr_author,
+        raw_payload=payload,
+    )
+
+    ci_run = await _dispatch_ci_fix(event)
+    return {
+        "status": "dispatched" if ci_run else "skipped",
+        "ci_fix_run_id": ci_run.id if ci_run else None,
+    }
 
 
 # ── Jenkins webhook (Phase 2 stub) ─────────────────────────────────────────────
 
 
-@router.post("/webhook/jenkins", status_code=status.HTTP_200_OK)
+@router.post("/jenkins", status_code=status.HTTP_200_OK)
 async def jenkins_webhook(request: Request):
     """Jenkins webhook — Phase 2."""
     return {"status": "coming_soon", "provider": "jenkins"}
-
-
-# ── Short-path aliases (router is mounted at /webhook, so /github → /webhook/github) ───────────
-
-
-@router.post("/github", status_code=status.HTTP_200_OK)
-async def github_webhook_alias(
-    request: Request,
-    x_hub_signature_256: str = Header(default=""),
-    x_github_event: str = Header(default=""),
-):
-    """Alias for /webhook/github — correct path when router is mounted at /webhook prefix."""
-    return await github_webhook(request, x_hub_signature_256, x_github_event)
-
-
-@router.post("/buildkite", status_code=status.HTTP_200_OK)
-async def buildkite_webhook_alias(
-    request: Request,
-    x_buildkite_token: str = Header(default=""),
-):
-    """Alias for /webhook/buildkite."""
-    return await buildkite_webhook(request, x_buildkite_token)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

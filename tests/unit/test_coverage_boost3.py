@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # verification_profiles.py
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,7 +132,11 @@ class TestRunProfileChecks:
         from phalanx.agents.verification_profiles import run_profile_checks
 
         profile = MagicMock()
-        profile.build_cmd = ["python", "-c", "import sys; print('error: build failed', file=sys.stderr); sys.exit(1)"]
+        profile.build_cmd = [
+            "python",
+            "-c",
+            "import sys; print('error: build failed', file=sys.stderr); sys.exit(1)",
+        ]
         profile.typecheck_cmd = None
         profile.lint_cmd = None
         profile.test_cmd = None
@@ -270,9 +273,9 @@ class TestVerificationHelpers:
 
     def test_run_helper_timeout(self, tmp_path):
         """_run catches TimeoutExpired."""
-        from phalanx.agents.verification_profiles import _run
-
         import subprocess
+
+        from phalanx.agents.verification_profiles import _run
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
             success, stdout, stderr = _run(["sleep", "999"], tmp_path, timeout=1)
@@ -367,14 +370,23 @@ async def test_ux_execute_success():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("phalanx.agents.ux_designer.get_db", return_value=mock_ctx), \
-         patch.object(agent, "_load_planner_context", new_callable=AsyncMock, return_value=""), \
-         patch.object(agent, "_generate_design", new_callable=AsyncMock, return_value=mock_design_str), \
-         patch.object(agent, "_self_check_design", return_value="self-check passed"), \
-         patch.object(agent, "_write_design_handoff", new_callable=AsyncMock, return_value="build with modern style"), \
-         patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock), \
-         patch.object(agent, "_trace", new_callable=AsyncMock), \
-         patch("pathlib.Path.write_text"):
+    with (
+        patch("phalanx.agents.ux_designer.get_db", return_value=mock_ctx),
+        patch.object(agent, "_load_planner_context", new_callable=AsyncMock, return_value=""),
+        patch.object(
+            agent, "_generate_design", new_callable=AsyncMock, return_value=mock_design_str
+        ),
+        patch.object(agent, "_self_check_design", return_value="self-check passed"),
+        patch.object(
+            agent,
+            "_write_design_handoff",
+            new_callable=AsyncMock,
+            return_value="build with modern style",
+        ),
+        patch.object(agent, "_persist_design_artifact", new_callable=AsyncMock),
+        patch.object(agent, "_trace", new_callable=AsyncMock),
+        patch("pathlib.Path.write_text"),
+    ):
         result = await agent.execute()
 
     assert result.success is True
@@ -402,25 +414,29 @@ async def test_ux_generate_design():
     mock_wo.title = "My App"
     mock_wo.description = "An app"
 
-    design_response = json.dumps({
-        "design_spec": {
-            "brand": {"personality": "modern"},
-            "color": {"primary": "#000"},
-            "typography": {},
-            "spacing": {},
-            "components": {},
-            "logo": "",
-            "ux_patterns": {},
-            "accessibility": {},
-        },
-        "handoff_summary": "Modern design.",
-    })
+    json.dumps(
+        {
+            "design_spec": {
+                "brand": {"personality": "modern"},
+                "color": {"primary": "#000"},
+                "typography": {},
+                "spacing": {},
+                "components": {},
+                "logo": "",
+                "ux_patterns": {},
+                "accessibility": {},
+            },
+            "handoff_summary": "Modern design.",
+        }
+    )
 
     if hasattr(agent, "_generate_design"):
         mock_task = MagicMock()
         mock_task.title = "My App"
         mock_task.description = "An app"
-        with patch.object(agent, "_call_claude", new_callable=AsyncMock, return_value="# Design\n\nModern."):
+        with patch.object(
+            agent, "_call_claude", new_callable=AsyncMock, return_value="# Design\n\nModern."
+        ):
             result = await agent._generate_design(
                 task=mock_task,
                 app_type="web",
@@ -502,14 +518,16 @@ async def test_release_generate_notes_valid_json():
     mock_wo.title = "Feature X"
     mock_wo.description = "Build X"
 
-    llm_response = json.dumps({
-        "title": "Release Notes: Feature X",
-        "summary": "X was built",
-        "changes": [{"type": "feat", "description": "Added X"}],
-        "testing": "Tests passed",
-        "rollback": "Revert PR",
-        "breaking_changes": [],
-    })
+    llm_response = json.dumps(
+        {
+            "title": "Release Notes: Feature X",
+            "summary": "X was built",
+            "changes": [{"type": "feat", "description": "Added X"}],
+            "testing": "Tests passed",
+            "rollback": "Revert PR",
+            "breaking_changes": [],
+        }
+    )
 
     with patch.object(agent, "_call_claude", return_value=llm_response):
         result = await agent._generate_release_notes(mock_run, mock_wo, [])

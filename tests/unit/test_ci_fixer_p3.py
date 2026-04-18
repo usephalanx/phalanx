@@ -10,21 +10,16 @@ Phase 3 unit tests for CI Fixer:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure
 from phalanx.ci_fixer.suppressor import (
-    _FLAKY_THRESHOLD,
     _MIN_OBSERVATIONS,
     is_flaky_suppressed,
     record_flaky_pattern,
     should_use_history,
 )
-from phalanx.ci_fixer.log_parser import LintError, ParsedLog, TestFailure, TypeError
 from phalanx.db.models import CIFailureFingerprint, CIFlakyPattern
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -33,10 +28,7 @@ def _lint_log(*errors: tuple) -> ParsedLog:
     """errors: list of (file, code) tuples."""
     return ParsedLog(
         tool="ruff",
-        lint_errors=[
-            LintError(file=f, line=1, col=1, code=c, message="test")
-            for f, c in errors
-        ],
+        lint_errors=[LintError(file=f, line=1, col=1, code=c, message="test") for f, c in errors],
     )
 
 
@@ -61,7 +53,8 @@ def _make_flaky_pattern(
 def _make_fingerprint(
     success_count: int = 3,
     failure_count: int = 1,
-    last_good_patch_json: str | None = '[{"path":"src/foo.py","start_line":1,"end_line":1,"corrected_lines":["x\\n"],"reason":""}]',
+    last_good_patch_json: str
+    | None = '[{"path":"src/foo.py","start_line":1,"end_line":1,"corrected_lines":["x\\n"],"reason":""}]',
     hash_: str = "abc123def456abcd",
 ) -> CIFailureFingerprint:
     fp = MagicMock(spec=CIFailureFingerprint)
@@ -125,30 +118,40 @@ class TestIsFlakySupressed:
     def test_insufficient_observations_not_suppressed(self):
         """< MIN_OBSERVATIONS → not suppressed regardless of rate."""
         parsed = _lint_log(("src/foo.py", "F401"))
-        patterns = [_make_flaky_pattern(
-            "src/foo.py", "F401",
-            flaky_count=2, total_count=_MIN_OBSERVATIONS - 1,
-        )]
+        patterns = [
+            _make_flaky_pattern(
+                "src/foo.py",
+                "F401",
+                flaky_count=2,
+                total_count=_MIN_OBSERVATIONS - 1,
+            )
+        ]
         assert not is_flaky_suppressed(parsed, patterns)
 
     def test_below_threshold_not_suppressed(self):
         """flaky_rate < FLAKY_THRESHOLD → not suppressed."""
         parsed = _lint_log(("src/foo.py", "F401"))
-        patterns = [_make_flaky_pattern(
-            "src/foo.py", "F401",
-            flaky_count=1, total_count=10,  # 10% flaky rate
-        )]
+        patterns = [
+            _make_flaky_pattern(
+                "src/foo.py",
+                "F401",
+                flaky_count=1,
+                total_count=10,  # 10% flaky rate
+            )
+        ]
         assert not is_flaky_suppressed(parsed, patterns)
 
     def test_test_failures_not_suppressed(self):
         """Test failures never suppressed (too risky)."""
         parsed = ParsedLog(
             tool="pytest",
-            test_failures=[TestFailure(
-                test_id="tests/test_foo.py::test_bar",
-                file="tests/test_foo.py",
-                message="",
-            )],
+            test_failures=[
+                TestFailure(
+                    test_id="tests/test_foo.py::test_bar",
+                    file="tests/test_foo.py",
+                    message="",
+                )
+            ],
         )
         patterns = [_make_flaky_pattern("tests/test_foo.py", "F401")]
         assert not is_flaky_suppressed(parsed, patterns)
@@ -278,6 +281,7 @@ class TestRecordFlakyPattern:
 def test_commit_dedup_window_constant():
     """The 5-minute dedup window constant is present and reasonable."""
     from phalanx.api.routes.ci_webhooks import _COMMIT_DEDUP_WINDOW_MINUTES
+
     assert 1 <= _COMMIT_DEDUP_WINDOW_MINUTES <= 60
 
 
@@ -289,6 +293,7 @@ class TestHistoryWeighting:
 
     def _make_agent(self):
         from phalanx.agents.ci_fixer import CIFixerAgent
+
         with patch("phalanx.agents.base.BaseAgent.__init__", return_value=None):
             agent = CIFixerAgent.__new__(CIFixerAgent)
             agent.ci_fix_run_id = "test-run-001"
@@ -297,7 +302,6 @@ class TestHistoryWeighting:
 
     def test_unreliable_fingerprint_returns_none(self):
         """failure_count >= success_count → _lookup returns None."""
-        import asyncio
         from unittest.mock import AsyncMock
 
         agent = self._make_agent()
@@ -305,7 +309,6 @@ class TestHistoryWeighting:
         fp = _make_fingerprint(success_count=1, failure_count=3)
 
         async def mock_lookup(fp_hash):
-            from phalanx.db.models import CIFailureFingerprint
             # Simulate DB returning a fingerprint with bad stats
             mock_result = MagicMock()
             mock_result.scalar_one_or_none.return_value = fp
@@ -325,8 +328,15 @@ class TestHistoryWeighting:
         from unittest.mock import AsyncMock
 
         agent = self._make_agent()
-        expected = [{"path": "src/foo.py", "start_line": 1,
-                     "end_line": 1, "corrected_lines": ["x\n"], "reason": ""}]
+        expected = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 1,
+                "corrected_lines": ["x\n"],
+                "reason": "",
+            }
+        ]
 
         with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as m:
             m.return_value = expected

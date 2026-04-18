@@ -50,8 +50,8 @@ class FileWindow:
     """A contiguous slice of a file that was shown to the LLM."""
 
     path: str
-    start_line: int   # 1-indexed, inclusive
-    end_line: int     # 1-indexed, inclusive
+    start_line: int  # 1-indexed, inclusive
+    end_line: int  # 1-indexed, inclusive
     original_lines: list[str]
 
 
@@ -65,8 +65,8 @@ class FilePatch:
     """
 
     path: str
-    start_line: int          # 1-indexed
-    end_line: int            # 1-indexed
+    start_line: int  # 1-indexed
+    end_line: int  # 1-indexed
     corrected_lines: list[str]
     reason: str = ""
 
@@ -91,7 +91,7 @@ class FixPlan:
       "low"    → agent does NOT commit; logs for human review
     """
 
-    confidence: str   # "high" | "medium" | "low"
+    confidence: str  # "high" | "medium" | "low"
     root_cause: str
     patches: list[FilePatch] = field(default_factory=list)
     needs_new_test: bool = False
@@ -178,7 +178,7 @@ class RootCauseAnalyst:
 
     def analyze(
         self,
-        parsed_log: "ParsedLog",
+        parsed_log: ParsedLog,
         workspace: Path,
         fingerprint_hash: str | None = None,
     ) -> FixPlan:
@@ -275,9 +275,7 @@ class RootCauseAnalyst:
 
     # ── File reading ───────────────────────────────────────────────────────────
 
-    def _read_windows(
-        self, workspace: Path, parsed_log: "ParsedLog"
-    ) -> list[FileWindow]:
+    def _read_windows(self, workspace: Path, parsed_log: ParsedLog) -> list[FileWindow]:
         """
         For each file in parsed_log.all_files, read a window of ±WINDOW lines
         around every error line in that file.  Merge overlapping windows.
@@ -324,7 +322,7 @@ class RootCauseAnalyst:
             windows.append(
                 FileWindow(
                     path=rel_path,
-                    start_line=lo + 1,   # convert to 1-indexed
+                    start_line=lo + 1,  # convert to 1-indexed
                     end_line=hi,
                     original_lines=all_lines[lo:hi],
                 )
@@ -371,10 +369,7 @@ class RootCauseAnalyst:
                 continue
 
             # Ensure every line ends with \n
-            corrected = [
-                line if line.endswith("\n") else line + "\n"
-                for line in corrected
-            ]
+            corrected = [line if line.endswith("\n") else line + "\n" for line in corrected]
 
             window = window_by_path[path]
 
@@ -442,7 +437,6 @@ class RootCauseAnalyst:
         mock_log.build_errors = []
 
         # Read each file as a full window (no error lines → defaults to line 1)
-        from phalanx.ci_fixer.log_parser import LintError  # noqa: PLC0415
 
         results: list[str] = []
         for rel_path in paths[:_MAX_FILES]:
@@ -472,12 +466,10 @@ def _format_windows(windows: list[FileWindow]) -> str:
     sections: list[str] = []
     for w in windows:
         numbered = "".join(
-            f"{w.start_line + i:5d}: {line}"
-            for i, line in enumerate(w.original_lines)
+            f"{w.start_line + i:5d}: {line}" for i, line in enumerate(w.original_lines)
         )
         sections.append(
-            f"### {w.path} (lines {w.start_line}–{w.end_line} of file)\n"
-            f"```\n{numbered}```"
+            f"### {w.path} (lines {w.start_line}–{w.end_line} of file)\n```\n{numbered}```"
         )
     return "\n\n".join(sections)
 

@@ -106,6 +106,14 @@ ignore = ["E501", "B008", "N805"]
 [tool.ruff.lint.isort]
 known-first-party = ["phalanx"]
 
+[tool.ruff.lint.per-file-ignores]
+# Test files — mock class names are PascalCase by convention (N806),
+# nested with statements are intentional for readability (SIM117),
+# deferred imports inside try blocks are expected (F401),
+# duplicate test function names from copy-paste scaffolding (F811),
+# and late imports after helper definitions are acceptable (E402, SIM105).
+"tests/**" = ["N806", "SIM117", "F401", "F811", "E402", "SIM105"]
+
 # ── MyPy ─────────────────────────────────────────────────────────────────────
 [tool.mypy]
 python_version = "3.12"

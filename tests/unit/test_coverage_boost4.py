@@ -15,14 +15,13 @@ Targets phalanx/agents/qa.py uncovered lines:
 - _remove_root_conftest (lines 821-830)
 - _derive_coverage_source (lines 900-947)
 """
+
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -191,9 +190,7 @@ class TestDeriveCoverageSource:
     def test_shared_top_level_dir(self, tmp_path):
         agent = _make_qa_agent(tmp_path)
         (tmp_path / "app").mkdir()  # must exist as dir
-        context = {
-            "changed_files": ["app/routes.py", "app/models.py", "app/utils.py"]
-        }
+        context = {"changed_files": ["app/routes.py", "app/models.py", "app/utils.py"]}
         result = agent._derive_coverage_source(context)
         assert result == "app"
 
@@ -518,7 +515,9 @@ class TestBuildEvidence:
         from phalanx.agents.qa import LintResult, QAOutcome, TestSuiteResult
 
         agent = _make_qa_agent(tmp_path)
-        suite = TestSuiteResult(name="test", total=5, passed=5, failed=0, errored=0, skipped=0, duration_seconds=1.0)
+        suite = TestSuiteResult(
+            name="test", total=5, passed=5, failed=0, errored=0, skipped=0, duration_seconds=1.0
+        )
         lint = LintResult(tool="ruff", passed=True, violation_count=0, output="")
         evidence = agent._build_evidence([suite], None, [lint], QAOutcome.PASSED)
         assert evidence["gate"] == "qa"
@@ -529,9 +528,15 @@ class TestBuildEvidence:
         from phalanx.agents.qa import CoverageResult, QAOutcome, TestSuiteResult
 
         agent = _make_qa_agent(tmp_path)
-        suite = TestSuiteResult(name="test", total=3, passed=3, failed=0, errored=0, skipped=0, duration_seconds=0.5)
+        suite = TestSuiteResult(
+            name="test", total=3, passed=3, failed=0, errored=0, skipped=0, duration_seconds=0.5
+        )
         cov = CoverageResult(
-            line_coverage_pct=80.0, branch_coverage_pct=None, threshold=70.0, threshold_met=True, modules_below_threshold=[]
+            line_coverage_pct=80.0,
+            branch_coverage_pct=None,
+            threshold=70.0,
+            threshold_met=True,
+            modules_below_threshold=[],
         )
         evidence = agent._build_evidence([suite], cov, [], QAOutcome.PASSED)
         assert evidence["summary"]["coverage_pct"] == 80.0
@@ -572,7 +577,9 @@ async def test_persist_artifact_success(tmp_path):
     )
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=MagicMock(scalar_one=MagicMock(return_value="proj-1")))
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one=MagicMock(return_value="proj-1"))
+    )
     mock_session.add = MagicMock()
     mock_session.commit = AsyncMock()
     mock_ctx = AsyncMock()

@@ -8,9 +8,9 @@ name: CI — Quality Gates
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, "phalanx/ci-fix/**"]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, ci-fixer-e2e-test]
   workflow_dispatch:
 
 # Cancel in-progress runs on new push to same branch

@@ -10,16 +10,16 @@ Phase 4 unit tests for CIFixerAgent helpers:
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.agents.ci_fixer import CIFixerAgent
 from phalanx.ci_fixer.analyst import FilePatch
-from phalanx.ci_fixer.version_parity import VersionParityResult
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -182,7 +182,11 @@ async def test_enable_github_auto_merge_success():
     gql_response = MagicMock()
     gql_response.status_code = 200
     gql_response.json.return_value = {
-        "data": {"enablePullRequestAutoMerge": {"pullRequest": {"autoMergeRequest": {"mergeMethod": "SQUASH"}}}}
+        "data": {
+            "enablePullRequestAutoMerge": {
+                "pullRequest": {"autoMergeRequest": {"mergeMethod": "SQUASH"}}
+            }
+        }
     }
 
     call_count = {"get": 0, "post": 0}
@@ -265,6 +269,7 @@ async def test_open_draft_pr_creates_draft():
     ci_run.pr_number = None
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     pr_response = MagicMock()
@@ -309,6 +314,7 @@ async def test_open_draft_pr_with_auto_merge():
     ci_run.pr_number = 10
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     pr_response = MagicMock()
@@ -325,8 +331,10 @@ async def test_open_draft_pr_with_auto_merge():
     async def mock_enable_auto_merge(**kwargs):
         enable_auto_merge_called["n"] += 1
 
-    with patch("httpx.AsyncClient", return_value=mock_client), \
-         patch.object(agent, "_enable_github_auto_merge", side_effect=mock_enable_auto_merge):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch.object(agent, "_enable_github_auto_merge", side_effect=mock_enable_auto_merge),
+    ):
         pr_num = await agent._open_draft_pr(
             integration=integration,
             ci_run=ci_run,
@@ -361,6 +369,7 @@ async def test_open_draft_pr_failure_returns_none():
     ci_run.pr_number = None
 
     from phalanx.ci_fixer.log_parser import ParsedLog
+
     parsed = ParsedLog(tool="ruff")
 
     pr_response = MagicMock()
@@ -415,7 +424,6 @@ async def test_update_fingerprint_on_success_creates_new():
 
     mock_session.execute = mock_execute
 
-    from phalanx.ci_fixer.analyst import FilePatch
     from phalanx.ci_fixer.log_parser import ParsedLog
 
     patches = [FilePatch(path="src/foo.py", start_line=1, end_line=1, corrected_lines=["x\n"])]
@@ -466,7 +474,6 @@ async def test_update_fingerprint_on_success_increments_existing():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    from phalanx.ci_fixer.analyst import FilePatch
     from phalanx.ci_fixer.log_parser import ParsedLog
 
     patches = [FilePatch(path="src/foo.py", start_line=1, end_line=1, corrected_lines=["x\n"])]

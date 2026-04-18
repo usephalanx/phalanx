@@ -104,6 +104,29 @@ class Settings(BaseSettings):
     phalanx_enable_demo_deploy: bool = True
     # ── CI Webhooks ───────────────────────────────────────────────────────────
     buildkite_webhook_token: str = ""
+    circleci_token: str = ""
+    circleci_webhook_secret: str = ""
+
+    # ── Sandbox / CI Reproduction ─────────────────────────────────────────────
+    # Command used to run containers (swap to "podman" on RHEL/CoreOS hosts).
+    sandbox_docker_cmd: str = "docker"
+    # Maximum seconds the reproducer command may run inside the sandbox.
+    sandbox_timeout_seconds: int = 120
+    # Master switch — set SANDBOX_ENABLED=false in envs where Docker is absent.
+    sandbox_enabled: bool = True
+
+    # ── Sandbox Pool ──────────────────────────────────────────────────────────
+    # Containers to pre-warm per stack at startup (0 = cold-start on demand).
+    sandbox_pool_min_size: int = 1
+    # Max containers that can be simultaneously checked out per stack.
+    sandbox_pool_max_size: int = 2
+    # Seconds to wait for a free pool slot before falling back to local subprocess.
+    sandbox_checkout_timeout_seconds: int = 30
+    # Reaper kills containers held longer than this (should match fix run budget).
+    sandbox_max_hold_seconds: int = 300
+    # How often the reaper background task runs (seconds).
+    sandbox_reaper_interval_seconds: int = 60
+
     # Phase 2: streaming builder — set FORGE_STREAMING_BUILDER=1 to enable.
     # Eliminates the 20K output token ceiling by writing each file as Claude
     # generates it. Safe to enable once validated in simulation.

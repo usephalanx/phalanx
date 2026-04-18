@@ -11,21 +11,20 @@ No DB, no network, no Celery — all async DB calls are mocked.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from phalanx.ci_fixer.analyst import (
-    FilePatch,
     FileWindow,
-    FixPlan,
     RootCauseAnalyst,
 )
 from phalanx.ci_fixer.log_parser import LintError, ParsedLog
 from phalanx.ci_fixer.outcome_tracker import _parse_iso
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -53,20 +52,25 @@ def _write(tmp_path: Path, rel: str, lines: list[str]) -> Path:
     return full
 
 
-def _patch_json(path: str, start: int, end: int, corrected: list[str],
-                confidence: str = "high") -> str:
-    return json.dumps({
-        "confidence": confidence,
-        "root_cause": "test root cause",
-        "patches": [{
-            "path": path,
-            "start_line": start,
-            "end_line": end,
-            "corrected_lines": corrected,
-            "reason": "test",
-        }],
-        "needs_new_test": False,
-    })
+def _patch_json(
+    path: str, start: int, end: int, corrected: list[str], confidence: str = "high"
+) -> str:
+    return json.dumps(
+        {
+            "confidence": confidence,
+            "root_cause": "test root cause",
+            "patches": [
+                {
+                    "path": path,
+                    "start_line": start,
+                    "end_line": end,
+                    "corrected_lines": corrected,
+                    "reason": "test",
+                }
+            ],
+            "needs_new_test": False,
+        }
+    )
 
 
 # ── RootCauseAnalyst history lookup ────────────────────────────────────────────
@@ -87,13 +91,15 @@ class TestAnalystHistoryLookup:
             llm_called["n"] += 1
             return "{}"
 
-        cached_patches = [{
-            "path": "src/foo.py",
-            "start_line": 1,
-            "end_line": len(self._FILE),
-            "corrected_lines": self._FILE[1:],
-            "reason": "history",
-        }]
+        cached_patches = [
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": len(self._FILE),
+                "corrected_lines": self._FILE[1:],
+                "reason": "history",
+            }
+        ]
 
         analyst = RootCauseAnalyst(
             call_llm=llm,
@@ -140,13 +146,15 @@ class TestAnalystHistoryLookup:
             return llm_response
 
         # Return patches for a file not in windows (will fail validation)
-        bad_cached = [{
-            "path": "src/invented.py",
-            "start_line": 1,
-            "end_line": 5,
-            "corrected_lines": ["x\n"],
-            "reason": "bad",
-        }]
+        bad_cached = [
+            {
+                "path": "src/invented.py",
+                "start_line": 1,
+                "end_line": 5,
+                "corrected_lines": ["x\n"],
+                "reason": "bad",
+            }
+        ]
 
         analyst = RootCauseAnalyst(
             call_llm=llm,
@@ -226,7 +234,7 @@ class TestAnalystHistoryLookup:
             call_llm=llm,
             history_lookup=lambda fp: [],  # empty → falsy
         )
-        plan = analyst.analyze(_lint_log("src/foo.py"), tmp_path, fingerprint_hash="abc")
+        analyst.analyze(_lint_log("src/foo.py"), tmp_path, fingerprint_hash="abc")
         assert llm_called["n"] == 1
 
 
@@ -287,8 +295,13 @@ class TestLookupFixHistory:
         """Returns patch list when fingerprint found in DB."""
         agent = self._make_agent()
         expected_patches = [
-            {"path": "src/foo.py", "start_line": 1, "end_line": 3,
-             "corrected_lines": ["a\n"], "reason": "test"}
+            {
+                "path": "src/foo.py",
+                "start_line": 1,
+                "end_line": 3,
+                "corrected_lines": ["a\n"],
+                "reason": "test",
+            }
         ]
 
         with patch.object(agent, "_async_lookup_fix_history", new_callable=AsyncMock) as mock_async:
