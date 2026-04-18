@@ -1460,7 +1460,18 @@ class CIFixerAgent(BaseAgent):
     # ── Auth helpers ────────────────────────────────────────────────────────────
 
     def _decrypt_key(self, encrypted_key: str) -> str:
-        return encrypted_key  # Phase 2: KMS decrypt
+        if not encrypted_key:
+            return ""
+        enc_key = getattr(settings, "encryption_key", None)
+        if not enc_key:
+            return encrypted_key
+        try:
+            from cryptography.fernet import Fernet, InvalidToken  # noqa: PLC0415
+
+            f = Fernet(enc_key.encode())
+            return f.decrypt(encrypted_key.encode()).decode()
+        except (InvalidToken, Exception):
+            return encrypted_key
 
     def _get_github_token(self, integration: CIIntegration) -> str:
         return integration.github_token or settings.github_token
