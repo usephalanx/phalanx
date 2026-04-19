@@ -1,0 +1,38 @@
+id: risk-assessment
+name: "Risk Assessment"
+version: "1.0.0"
+domain: "engineering"
+category: "quality"
+stability: "stable"
+applicable_roles:
+  - commander
+  - tech_lead
+min_level: "ic5"
+
+prerequisites:
+  - system-design
+  - task-decomposition
+
+quality_criteria:
+  - "Risks are identified before work begins, not after failure"
+  - "Each risk has a severity (low/medium/high/critical) and a mitigation"
+  - "Blocking risks are escalated before task dispatch"
+  - "Risk assessment is recorded in the run's audit_log"
+
+principles:
+  - "Identify unknowns before committing to a plan."
+  - "High-severity risks require human acknowledgement before proceeding."
+  - "Mitigations are concrete actions, not vague reassurances."
+
+procedures:
+  proficient:
+    - "Review the work order for scope, dependencies, and external services."
+    - "Enumerate risks across: correctness, security, rollback-ability, and blast radius."
+    - "Assign severity and likelihood to each risk."
+    - "Define a concrete mitigation or fallback for each high/critical risk."
+    - "Surface critical risks to the human approver before plan approval."
+
+anti_patterns:
+  - "Treating risk assessment as a post-mortem step."
+  - "Marking all risks as 'low' to unblock dispatch."
+  - "Proceeding past a critical risk without explicit human sign-off."

@@ -123,8 +123,9 @@ Rules:
 "corrected_lines" (a JSON array of strings, one per line, each ending with \\n).
 3. "corrected_lines" may differ from the original window by at most \
 {max_line_delta} lines (adding or removing).  Do NOT rewrite the whole file.
-4. NEVER modify test files (paths containing /test or test_).
-5. For unused imports (F401): delete the import line only.
+4. NEVER rewrite test logic — only mechanical lint fixes (unused imports, line length)
+   in test files are allowed. Do NOT change assertions, test structure, or test data.
+5. For unused imports (F401): delete the import line only. Set corrected_lines to [].
 6. For line-too-long (E501): wrap or shorten the line only.
 7. For future-import order (F404): move the __future__ import to line 1 only.
 8. If you cannot produce a high or medium confidence fix, set \
@@ -205,11 +206,18 @@ class RootCauseAnalyst:
                 root_cause="Could not read any of the failing files from workspace",
             )
 
+        lint_only = bool(
+            parsed_log.lint_errors
+            and not parsed_log.type_errors
+            and not parsed_log.test_failures
+            and not parsed_log.build_errors
+        )
+
         # ── Phase 2: history check ─────────────────────────────────────────────
         if fingerprint_hash and self._history_lookup is not None:
             cached = self._history_lookup(fingerprint_hash)
             if cached:
-                patches = self._parse_and_validate_patches(cached, windows)
+                patches = self._parse_and_validate_patches(cached, windows, lint_only=lint_only)
                 if patches:
                     log.info(
                         "ci_analyst.history_hit",
@@ -258,7 +266,9 @@ class RootCauseAnalyst:
             log.warning("ci_analyst.json_parse_failed", error=str(exc), raw=raw[:500])
             return FixPlan(confidence="low", root_cause="LLM returned non-JSON response")
 
-        patches = self._parse_and_validate_patches(data.get("patches", []), windows)
+        patches = self._parse_and_validate_patches(
+            data.get("patches", []), windows, lint_only=lint_only
+        )
         confidence = data.get("confidence", "low")
 
         # If patch validation rejected everything, downgrade to low
@@ -283,10 +293,10 @@ class RootCauseAnalyst:
         """
         # Build map: file_path → list of error line numbers
         error_lines_by_file: dict[str, list[int]] = {}
-        for e in parsed_log.lint_errors:
-            error_lines_by_file.setdefault(e.file, []).append(e.line)
-        for e in parsed_log.type_errors:
-            error_lines_by_file.setdefault(e.file, []).append(e.line)
+        for le in parsed_log.lint_errors:
+            error_lines_by_file.setdefault(le.file, []).append(le.line)
+        for te in parsed_log.type_errors:
+            error_lines_by_file.setdefault(te.file, []).append(te.line)
         # For test failures we have no line number — read top of file
         for f in parsed_log.test_failures:
             error_lines_by_file.setdefault(f.file, []).append(1)
@@ -333,7 +343,7 @@ class RootCauseAnalyst:
     # ── Patch validation ───────────────────────────────────────────────────────
 
     def _parse_and_validate_patches(
-        self, raw_patches: list, windows: list[FileWindow]
+        self, raw_patches: list, windows: list[FileWindow], lint_only: bool = False
     ) -> list[FilePatch]:
         """
         Parse LLM patch dicts, apply guard rails, return only safe patches.
@@ -342,7 +352,8 @@ class RootCauseAnalyst:
           - path not in the windows we sent (LLM invented a file)
           - start_line / end_line don't match the window we sent (off-by-more-than-2)
           - |delta| > _MAX_LINE_DELTA  (LLM rewrote too much)
-          - path looks like a test file
+          - path looks like a test file (unless lint_only=True — lint fixes in test
+            files are valid, e.g. removing unused imports)
         """
         window_by_path = {w.path: w for w in windows}
         safe: list[FilePatch] = []
@@ -358,14 +369,14 @@ class RootCauseAnalyst:
                 log.warning("ci_analyst.patch_unknown_file", path=path)
                 continue
 
-            # Guard: never touch test files
-            if _is_test_file(path):
+            # Guard: never touch test files unless it's a lint-only fix
+            if _is_test_file(path) and not lint_only:
                 log.warning("ci_analyst.patch_test_file_rejected", path=path)
                 continue
 
-            # Guard: corrected_lines must be a non-empty list of strings
-            if not isinstance(corrected, list) or not corrected:
-                log.warning("ci_analyst.patch_empty_corrected_lines", path=path)
+            # Guard: corrected_lines must be a list (empty = delete the lines)
+            if not isinstance(corrected, list):
+                log.warning("ci_analyst.patch_invalid_corrected_lines", path=path)
                 continue
 
             # Ensure every line ends with \n
@@ -379,18 +390,23 @@ class RootCauseAnalyst:
                 log.warning("ci_analyst.patch_missing_line_range", path=path)
                 continue
 
-            if abs(start - window.start_line) > 2 or abs(end - window.end_line) > 2:
+            # Accept sub-ranges (LLM targeting a specific line within the window is correct).
+            # Clamp to window bounds if the patch extends outside.
+            if start < window.start_line or end > window.end_line:
                 log.warning(
-                    "ci_analyst.patch_line_range_mismatch",
+                    "ci_analyst.patch_line_range_outside_window",
                     path=path,
-                    expected_start=window.start_line,
-                    expected_end=window.end_line,
+                    window_start=window.start_line,
+                    window_end=window.end_line,
                     got_start=start,
                     got_end=end,
                 )
-                # Clamp to the window we actually sent — safer than rejecting
-                start = window.start_line
-                end = window.end_line
+                start = window.start_line if start < window.start_line else start
+                end = window.end_line if end > window.end_line else end
+                # If clamping made start > end, fall back to the full window
+                if start > end:
+                    start = window.start_line
+                    end = window.end_line
 
             original_size = end - start + 1
             delta = len(corrected) - original_size

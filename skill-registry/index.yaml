@@ -11,3 +11,4 @@ skills:
   task-decomposition: "skills/task-decomposition.yaml"
   system-design: "skills/system-design.yaml"
   orchestration: "skills/orchestration.yaml"
+  risk-assessment: "skills/risk-assessment.yaml"
