@@ -103,17 +103,18 @@ services:
           cpus: "1.0"
           memory: 512M
 
-  # ── Celery Worker (all queues except sre) ────────────────────────────────
+  # ── Celery Worker (general queues — NO Docker socket, NO root) ──────────
+  # Audit N1: CI Fixer moved to its own worker (phalanx-ci-fixer-worker) so
+  # Docker socket privilege is scoped to CI Fixer only, not every agent.
   phalanx-worker:
     image: phalanx-worker:latest
     <<: *forge-base
     command: >
       celery -A phalanx.queue.celery_app worker
       --loglevel=warning
-      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills,ci_fixer
+      --queues=default,commander,planner,reviewer,qa,release,security,builder,ingestion,skill_drills
       --concurrency=4
       --max-tasks-per-child=100
-    user: root
     environment:
       PHALANX_WORKER: "1"   # forces NullPool — prevents "Future attached to different loop" in forked workers
       OPENAI_MODEL_REASONING: "gpt-4.1"  # reasoning agents: Commander, Planner, QA, Reviewer, Release
@@ -121,7 +122,6 @@ services:
       - forge-repos:/tmp/forge-repos
       - ./configs:/app/configs:ro
       - ./skill-registry:/app/skill-registry:ro
-      - /var/run/docker.sock:/var/run/docker.sock  # required: CI fixer spawns sandbox containers
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,6 +139,44 @@ services:
         limits:
           cpus: "1.0"
           memory: 512M
+
+  # ── CI Fixer Worker (isolated — Docker socket for sandbox containers) ────
+  # Audit N1: split from phalanx-worker so Docker socket access is scoped
+  # only to the CI Fixer code path. Mirrors the phalanx-sre-worker pattern.
+  phalanx-ci-fixer-worker:
+    image: phalanx-worker:latest
+    <<: *forge-base
+    command: >
+      celery -A phalanx.queue.celery_app worker
+      --loglevel=warning
+      --queues=ci_fixer
+      --concurrency=2
+      --max-tasks-per-child=10
+    user: root
+    environment:
+      PHALANX_WORKER: "1"   # forces NullPool — required in all Celery workers
+      OPENAI_MODEL_REASONING: "gpt-4.1"
+    volumes:
+      - forge-repos:/tmp/forge-repos
+      - ./configs:/app/configs:ro
+      - ./skill-registry:/app/skill-registry:ro
+      - /var/run/docker.sock:/var/run/docker.sock  # required: CI fixer spawns sandbox containers
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A phalanx.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 2>&1 | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G   # sandbox container builds need headroom
 
   # ── SRE Worker (isolated — Docker socket access for demo deployments) ─────
   # Separate from phalanx-worker so Docker access is scoped only here.
