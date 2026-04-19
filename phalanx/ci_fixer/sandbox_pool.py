@@ -331,11 +331,8 @@ class SandboxPool:
             "run",
             "-d",  # detached
             "--rm",  # auto-remove when stopped
-            "--user",
-            "1000:1000",  # non-root
-            "--no-new-privileges",  # no privilege escalation
             "--network",
-            "none",  # no network (lint/type tools don't need it)
+            "bridge",  # bridge allows pip install during env setup; isolated from host
             "--memory",
             "512m",  # memory limit
             "--cpus",

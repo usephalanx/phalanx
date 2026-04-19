@@ -1,0 +1,4 @@
+aiohttp/resolver.py:131:32: error: Argument 1 to "int" has incompatible type "str | None"; expected "str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc"  [arg-type]
+                        port = int(result.service)
+                                   ^~~~~~~~~~~~~~
+Found 1 error in 1 file (checked 158 source files)

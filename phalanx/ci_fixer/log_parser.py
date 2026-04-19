@@ -159,9 +159,18 @@ _RUFF_RE = re.compile(
     re.MULTILINE,
 )
 
-# mypy: phalanx/agents/foo.py:42: error: Incompatible return value
+# ruff rich/diagnostic format (--output-format=full or terminal default):
+#   F401 [*] `sys` imported but unused
+#      --> tests/test_eval_outcome.py:259:8
+_RUFF_RICH_RE = re.compile(
+    r"^([A-Z]\d+)\s+(?:\[\*\]\s+)?(.+?)\n\s+-->\s+([\w./\-]+\.py):(\d+):(\d+)",
+    re.MULTILINE,
+)
+
+# mypy output format: phalanx/agents/foo.py:42: error: ... (no col)
+#                 or: aiohttp/resolver.py:131:32: error: ... (with col)
 _MYPY_RE = re.compile(
-    r"^([\w./\-]+\.py):(\d+):\s+error:\s+(.+)$",
+    r"^([\w./\-]+\.py):(\d+)(?::\d+)?:\s+error:\s+(.+)$",
     re.MULTILINE,
 )
 

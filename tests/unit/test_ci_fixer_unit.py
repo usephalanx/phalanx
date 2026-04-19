@@ -458,22 +458,22 @@ class TestRootCauseAnalyst:
         assert plan.confidence == "low"
         assert len(plan.patches) == 0
 
-    def test_patch_for_test_file_rejected(self, tmp_path):
-        """Patches targeting test files are always rejected."""
+    def test_patch_for_test_file_allowed_for_lint(self, tmp_path):
+        """Lint-only patches targeting test files are allowed (e.g. removing unused imports)."""
         self._write_file(tmp_path, "tests/test_foo.py")
         import json as _j
 
         response = _j.dumps(
             {
                 "confidence": "high",
-                "root_cause": "x",
+                "root_cause": "unused import in test file",
                 "patches": [
                     {
                         "path": "tests/test_foo.py",
                         "start_line": 1,
                         "end_line": 3,
                         "corrected_lines": ["x = 1\n"],
-                        "reason": "bad",
+                        "reason": "remove unused import",
                     }
                 ],
                 "needs_new_test": False,
@@ -482,7 +482,8 @@ class TestRootCauseAnalyst:
         parsed = self._make_parsed_log(file="tests/test_foo.py")
         analyst = self._make_analyst(response)
         plan = analyst.analyze(parsed, tmp_path)
-        assert len(plan.patches) == 0
+        # lint_only=True because parsed log has only lint errors → test file patches allowed
+        assert len(plan.patches) == 1
 
     def test_patch_delta_too_large_rejected(self, tmp_path):
         """corrected_lines that differ by > MAX_LINE_DELTA from the window → rejected."""

@@ -1,0 +1,11 @@
+{
+  "repo": "aio-libs/aiohttp",
+  "pr_number": 12254,
+  "head_sha": "fb3138825137e8152fad9f883c9e4eb7262e745d",
+  "branch": "fix/improve-code-quality",
+  "check_run_id": 67540870845,
+  "check_run_name": "Linter",
+  "conclusion": "failure",
+  "job_id": 67540870845,
+  "details_url": "https://github.com/aio-libs/aiohttp/actions/runs/23236273673/job/67540870845"
+}

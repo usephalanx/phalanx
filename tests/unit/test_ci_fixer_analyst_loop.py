@@ -320,6 +320,12 @@ async def test_execute_inner_commit_failed():
             new_callable=AsyncMock,
             return_value={"sha": None, "error": "commit failed"},
         ),
+        patch.object(
+            agent,
+            "_commit_to_author_branch",
+            new_callable=AsyncMock,
+            return_value={"sha": None, "error": "commit failed"},
+        ),
         patch.object(agent, "_mark_failed_with_fields", new_callable=AsyncMock),
     ):
         mock_analyst_inst = MagicMock()
@@ -405,8 +411,15 @@ async def test_execute_inner_success_path():
                 "push_failed": False,
             },
         ),
+        patch.object(
+            agent,
+            "_commit_to_author_branch",
+            new_callable=AsyncMock,
+            return_value={"sha": "abc12345", "branch": "feat/my-pr", "push_failed": False},
+        ),
         patch.object(agent, "_open_draft_pr", new_callable=AsyncMock, return_value=42),
         patch.object(agent, "_comment_on_pr", new_callable=AsyncMock),
+        patch.object(agent, "_comment_lint_fix_pushed", new_callable=AsyncMock),
         patch.object(agent, "_update_fingerprint_on_success", new_callable=AsyncMock),
     ):
         mock_analyst_inst = MagicMock()
@@ -416,7 +429,8 @@ async def test_execute_inner_success_path():
 
     assert result.success is True
     assert result.output["tool"] == "ruff"
-    assert result.output["fix_pr_number"] == 42
+    # lint_only=True → author_branch strategy → no separate fix PR opened
+    assert result.output["fix_pr_number"] is None
     assert result.output["commit_sha"] == "abc12345"
 
 
@@ -488,6 +502,13 @@ async def test_execute_inner_success_push_failed_no_pr():
                 "push_failed": True,
             },
         ),
+        patch.object(
+            agent,
+            "_commit_to_author_branch",
+            new_callable=AsyncMock,
+            return_value={"sha": "deadbeef", "branch": "feat/my-pr", "push_failed": True},
+        ),
+        patch.object(agent, "_comment_lint_fix_pushed", new_callable=AsyncMock),
         patch.object(
             agent, "_update_fingerprint_on_success", new_callable=AsyncMock
         ) as mock_fp_update,
@@ -588,8 +609,15 @@ async def test_execute_inner_validation_retry_then_pass():
             new_callable=AsyncMock,
             return_value={"sha": "abc", "push_failed": False},
         ),
+        patch.object(
+            agent,
+            "_commit_to_author_branch",
+            new_callable=AsyncMock,
+            return_value={"sha": "abc", "branch": "feat/my-pr", "push_failed": False},
+        ),
         patch.object(agent, "_open_draft_pr", new_callable=AsyncMock, return_value=11),
         patch.object(agent, "_comment_on_pr", new_callable=AsyncMock),
+        patch.object(agent, "_comment_lint_fix_pushed", new_callable=AsyncMock),
         patch.object(agent, "_update_fingerprint_on_success", new_callable=AsyncMock),
     ):
         mock_analyst_inst = MagicMock()

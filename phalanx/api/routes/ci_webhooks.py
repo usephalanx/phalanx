@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
 
 from phalanx.ci_fixer.classifier import classify_failure
 from phalanx.ci_fixer.events import CIFailureEvent
@@ -175,6 +175,96 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
     return ci_run
 
 
+async def _update_fix_branch_ci_status(
+    repo_full_name: str,
+    branch: str,
+    head_sha: str,
+    conclusion: str,
+) -> None:
+    """
+    When CI completes on a branch, check for an author_branch CIFixRun whose
+    fix_commit_sha is a prefix of head_sha. If found, record the result and
+    post a follow-up comment on the original PR.
+    """
+    status_map = {"success": "passed", "failure": "failed", "timed_out": "failed"}
+    new_status = status_map.get(conclusion, "failed")
+
+    async with get_db() as session:
+        result = await session.execute(
+            select(CIFixRun).where(
+                CIFixRun.repo_full_name == repo_full_name,
+                CIFixRun.branch == branch,
+                CIFixRun.fix_strategy == "author_branch",
+                CIFixRun.fix_branch_ci_status == "pending",
+            )
+        )
+        ci_run = result.scalar_one_or_none()
+        if ci_run is None:
+            return
+
+        # fix_commit_sha is stored as short sha (8 chars); head_sha is full 40-char
+        if ci_run.fix_commit_sha and not head_sha.startswith(ci_run.fix_commit_sha):
+            return
+
+        await session.execute(
+            update(CIFixRun)
+            .where(CIFixRun.id == ci_run.id)
+            .values(fix_branch_ci_status=new_status)
+        )
+        await session.commit()
+
+    log.info(
+        "ci_webhook.closed_loop_updated",
+        ci_fix_run_id=ci_run.id,
+        status=new_status,
+        sha=head_sha[:12],
+    )
+
+    if ci_run.pr_number:
+        await _post_closed_loop_comment(ci_run, new_status)
+
+
+async def _post_closed_loop_comment(ci_run: CIFixRun, status: str) -> None:
+    """Post a follow-up comment on the original PR with the CI result."""
+    import httpx  # noqa: PLC0415
+
+    async with get_db() as session:
+        result = await session.execute(
+            select(CIIntegration).where(CIIntegration.id == ci_run.integration_id)
+        )
+        integration = result.scalar_one_or_none()
+
+    if not integration or not integration.github_token:
+        return
+
+    if status == "passed":
+        body = (
+            "✅ **Phalanx CI Fixer** — CI passed after the lint fix commit. "
+            "Your PR is green."
+        )
+    else:
+        body = (
+            f"⚠️ **Phalanx CI Fixer** — CI re-ran after the lint fix but is still **{status}**. "
+            "The fix may have missed some errors, or a separate failure is now exposed. "
+            f"*Fix run: `{ci_run.id}`*"
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.github.com/repos/{ci_run.repo_full_name}"
+                f"/issues/{ci_run.pr_number}/comments",
+                headers={
+                    "Authorization": f"Bearer {integration.github_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                json={"body": body},
+            )
+        log.info("ci_webhook.closed_loop_comment_posted", pr=ci_run.pr_number, status=status)
+    except Exception as exc:
+        log.warning("ci_webhook.closed_loop_comment_failed", error=str(exc))
+
+
 def _verify_github_signature(body: bytes, signature: str, secret: str) -> bool:
     """Verify X-Hub-Signature-256 from GitHub webhook."""
     if not secret:
@@ -220,7 +310,31 @@ async def github_webhook(
         action = payload.get("action")
         conclusion = payload.get("check_run", {}).get("conclusion")
 
+        # Bot-loop guard: skip check_runs triggered by Phalanx's own commits.
+        # When Phalanx pushes a lint fix to the author's branch, GitHub fires
+        # another check_run webhook — we must not re-process it.
+        # NOTE: for GitHub App installs, sender.login will be "<app-name>[bot]";
+        # set settings.git_author_name to match (e.g. "phalanx[bot]") if using an App.
+        sender_login = payload.get("sender", {}).get("login", "")
+        if sender_login.lower() == settings.git_author_name.lower():
+            log.info(
+                "ci_webhook.github.bot_commit_skipped",
+                sender=sender_login,
+                repo=payload.get("repository", {}).get("full_name"),
+            )
+            return {"status": "ignored", "reason": "bot_commit"}
+
         if action != "completed" or conclusion not in ("failure", "timed_out"):
+            # Closed-loop: if CI passed/failed on a branch with a pending author_branch fix,
+            # record the result even though we won't dispatch a new fix.
+            if action == "completed" and conclusion in ("success", "failure", "timed_out"):
+                check_run = payload.get("check_run", {})
+                repo = payload.get("repository", {})
+                head_branch = check_run.get("check_suite", {}).get("head_branch") or ""
+                head_sha = check_run.get("head_sha", "")
+                await _update_fix_branch_ci_status(
+                    repo.get("full_name", ""), head_branch, head_sha, conclusion
+                )
             return {"status": "ignored", "reason": f"action={action} conclusion={conclusion}"}
 
         check_run = payload["check_run"]
@@ -259,6 +373,15 @@ async def github_webhook(
             pr_number=pr_number,
             pr_author=pr_author,
             raw_payload=payload,
+        )
+
+        # Closed-loop: if this failure is on a branch where Phalanx already
+        # pushed a lint fix, record that the fix didn't fully resolve the CI failure.
+        await _update_fix_branch_ci_status(
+            repo["full_name"],
+            check_run["check_suite"]["head_branch"] or "",
+            check_run["head_sha"],
+            conclusion,
         )
 
         ci_run = await _dispatch_ci_fix(event)

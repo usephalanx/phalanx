@@ -5,7 +5,8 @@
 
 .PHONY: help up down restart logs shell migrate migrate-new test lint format \
         validate-config validate-skills seed onboard status worker-logs \
-        flower clean reset deploy deploy-migrate ssh-server logs-server status-server
+        flower clean reset deploy deploy-migrate ssh-server logs-server status-server \
+        sim-trigger sim-trigger-fetch sim-trigger-dry
 
 COMPOSE = docker compose
 PHALANX_API = $(COMPOSE) exec phalanx-api
@@ -50,6 +51,13 @@ help:
 	@echo "  PROJECT"
 	@echo "  make onboard project=acme-website  Run onboarding for a project"
 	@echo "  make status project=acme-website   Show project status"
+	@echo ""
+	@echo "  CI FIXER SIMULATION"
+	@echo "  make gh-login           Authenticate gh CLI (one-time setup)"
+	@echo "  make sim-trigger-fetch  Discover failing PR in trigger.dev + fetch logs"
+	@echo "  make sim-trigger-dry    Dry-run fix (real clone/LLM/sandbox, skip push)"
+	@echo "  make sim-trigger        Full prod-parity run (pushes fix commit)"
+	@echo "  make sim-trigger SIM_REPO=owner/repo  Override target repo"
 	@echo ""
 	@echo "  DEPLOY"
 	@echo "  make deploy             Build locally and deploy to LightSail"
@@ -160,6 +168,21 @@ onboard:
 status:
 	@[ -n "$(project)" ] || (echo "Usage: make status project=acme-website" && exit 1)
 	$(PHALANX_API) python scripts/project_status.py --project $(project)
+
+# ── CI Fixer simulations ──────────────────────────────────────────────────────
+SIM_REPO ?= triggerdotdev/trigger.dev
+
+gh-login:
+	gh auth login --web --scopes repo,read:org
+
+sim-trigger-fetch:
+	FORGE_WORKER=1 python scripts/sim_ci_fixer_github.py --fetch --repo $(SIM_REPO)
+
+sim-trigger-dry:
+	FORGE_WORKER=1 python scripts/sim_ci_fixer_github.py --dry-run --repo $(SIM_REPO)
+
+sim-trigger:
+	FORGE_WORKER=1 python scripts/sim_ci_fixer_github.py --repo $(SIM_REPO)
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 SERVER_IP = 44.233.157.41

@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from phalanx.agents.ci_fixer import (
     CIFixerAgent,
     _cleanup_workspace,
@@ -295,3 +297,85 @@ class TestApplyPatches:
         agent = self._agent()
         written = agent._apply_patches(tmp_path, [])
         assert written == []
+
+
+# ── _commit_to_author_branch ───────────────────────────────────────────────────
+
+
+class TestCommitToAuthorBranch:
+    """Unit tests for the Tier 1 closed-loop git commit method."""
+
+    def _make_agent(self) -> CIFixerAgent:
+        with patch("phalanx.agents.base.BaseAgent.__init__", return_value=None):
+            agent = CIFixerAgent.__new__(CIFixerAgent)
+            agent.ci_fix_run_id = "test-run-cl-001"
+            agent._log = MagicMock()
+            return agent
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_a_git_repo(self, tmp_path):
+        agent = self._make_agent()
+        result = await agent._commit_to_author_branch(
+            workspace=tmp_path,
+            branch="feat/x",
+            commit_message="fix: unused import",
+            github_token="tok",
+            repo_full_name="owner/repo",
+        )
+        assert result["sha"] is None
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_error_on_branch_mismatch(self, tmp_path):
+        """If workspace is on a different branch, return an error dict."""
+        from unittest.mock import MagicMock, patch as _patch
+        import subprocess
+
+        # Init a real git repo on a branch named 'main'
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True, capture_output=True)
+        (tmp_path / "f.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+
+        agent = self._make_agent()
+        # Workspace is on 'master'/'main' but we pass branch='feat/different'
+        result = await agent._commit_to_author_branch(
+            workspace=tmp_path,
+            branch="feat/different",
+            commit_message="fix: lint",
+            github_token="",
+            repo_full_name="owner/repo",
+        )
+        assert result["sha"] is None
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_no_changes_when_nothing_to_commit(self, tmp_path):
+        import subprocess
+
+        subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@t.com"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True, capture_output=True)
+        (tmp_path / "f.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-m", "init"], check=True, capture_output=True)
+
+        # Determine actual branch name
+        import subprocess as sp
+        branch = sp.check_output(["git", "-C", str(tmp_path), "branch", "--show-current"]).decode().strip()
+
+        agent = self._make_agent()
+        with patch("phalanx.agents.ci_fixer.settings") as mock_s:
+            mock_s.git_author_name = "FORGE"
+            mock_s.git_author_email = "forge@example.com"
+            result = await agent._commit_to_author_branch(
+                workspace=tmp_path,
+                branch=branch,
+                commit_message="fix: nothing",
+                github_token="",
+                repo_full_name="owner/repo",
+            )
+        assert result.get("message") == "no_changes"
+        assert result["sha"] is None

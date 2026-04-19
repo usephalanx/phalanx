@@ -230,6 +230,7 @@ class CIFixerAgent(BaseAgent):
             branch=ci_run.branch,
             commit_sha=ci_run.commit_sha,
             github_token=self._get_github_token(integration),
+            pr_number=ci_run.pr_number,
         )
         if not cloned:
             _cleanup_workspace(workspace)
@@ -238,7 +239,12 @@ class CIFixerAgent(BaseAgent):
 
         # ── Phase 2: Sandbox provisioning + failure reproduction ──────────────
         provisioner = SandboxProvisioner()
-        sandbox_result = await provisioner.provision(workspace)
+        failing_job = ci_run.failed_jobs[0] if ci_run.failed_jobs else ""
+        sandbox_result = await provisioner.provision(
+            workspace,
+            ci_log=raw_log,
+            failing_job=failing_job,
+        )
 
         if sandbox_result:
             ctx.sandbox_id = sandbox_result.sandbox_id
@@ -286,6 +292,11 @@ class CIFixerAgent(BaseAgent):
                 )
 
             # ── 5. Analyst loop: confirm root cause → apply → validate ────────────
+
+            # Pre-scan workspace for pre-existing errors so the regression check
+            # only flags errors we actually introduced (not pre-existing noise).
+            baseline_parsed = _prescan_workspace(parsed.tool, workspace)
+
             analyst = RootCauseAnalyst(
                 call_llm=self._call_claude,
                 history_lookup=self._lookup_fix_history,
@@ -360,8 +371,21 @@ class CIFixerAgent(BaseAgent):
                     )
                     break
 
-                # Validate
-                validation = validate_fix(current_parsed, workspace, original_parsed=parsed)
+                # Sync patched files into the container before validation
+                if sandbox_result and getattr(sandbox_result, "env_ready", False):
+                    await provisioner._sync_files_to_container(
+                        container_id=sandbox_result.container_id,
+                        workspace=workspace,
+                        files=files_written,
+                    )
+
+                # Validate — use sandbox container when env is ready, else local
+                validation = validate_fix(
+                    current_parsed,
+                    workspace,
+                    original_parsed=baseline_parsed,
+                    sandbox_result=sandbox_result,
+                )
                 validation_tool_version = validation.tool_version
                 self._log.info(
                     "ci_fixer.validation",
@@ -427,6 +451,16 @@ class CIFixerAgent(BaseAgent):
 
             files_written = [p.path for p in fix_plan.patches]
 
+            # Tier classification — must be set before step 7 commit strategy decision.
+            # lint_only=True → push directly onto author's branch (closed-loop, Tier 1).
+            # lint_only=False → push to phalanx/ci-fix/* (safe branch, Tier 2+).
+            lint_only = bool(
+                parsed.lint_errors
+                and not parsed.type_errors
+                and not parsed.test_failures
+                and not parsed.build_errors
+            )
+
             # ── 6b. Phase 4: Tool version parity check ────────────────────────────
             # Compare local tool version to the version that caused the failure.
             # We use last_good_tool_version from the fingerprint as the "failure version"
@@ -437,22 +471,40 @@ class CIFixerAgent(BaseAgent):
             )
             parity_ok = parity_result.ok
 
-            # ── 7. Commit to safe branch (NEVER the author's branch) ─────────────
-            fix_branch = f"phalanx/ci-fix/{self.ci_fix_run_id}"
-            commit_result = await self._commit_to_safe_branch(
-                workspace=workspace,
-                source_branch=ci_run.branch,
-                fix_branch=fix_branch,
-                commit_message=(
-                    f"fix(ci): resolve {parsed.tool} failure [{ci_run.ci_provider}]\n\n"
-                    f"Root cause: {fix_plan.root_cause}\n"
-                    f"Files: {', '.join(files_written)}\n"
-                    f"Validated: {validation_tool_version}\n"
-                    f"CI Fix Run: {self.ci_fix_run_id}"
-                ),
-                github_token=self._get_github_token(integration),
-                repo_full_name=ci_run.repo_full_name,
+            # ── 7. Commit fix — strategy depends on failure tier ──────────────────
+            # Tier 1 (lint_only): commit directly onto the author's PR branch so
+            # their PR goes green without any manual action (closed loop).
+            # Tier 2+: push to a new phalanx/ci-fix/* branch + open draft PR.
+            commit_message = (
+                f"fix(ci): resolve {parsed.tool} {'lint ' if lint_only else ''}failure"
+                f" [{ci_run.ci_provider}]\n\n"
+                f"Root cause: {fix_plan.root_cause}\n"
+                f"Files: {', '.join(files_written)}\n"
+                f"Validated: {validation_tool_version}\n"
+                f"CI Fix Run: {self.ci_fix_run_id}"
             )
+            if lint_only:
+                fix_strategy = "author_branch"
+                fix_branch = ci_run.branch
+                commit_result = await self._commit_to_author_branch(
+                    workspace=workspace,
+                    branch=ci_run.branch,
+                    commit_message=commit_message,
+                    github_token=self._get_github_token(integration),
+                    repo_full_name=ci_run.repo_full_name,
+                )
+            else:
+                fix_strategy = "fix_branch"
+                fix_branch = f"phalanx/ci-fix/{self.ci_fix_run_id}"
+                commit_result = await self._commit_to_safe_branch(
+                    workspace=workspace,
+                    source_branch=ci_run.branch,
+                    fix_branch=fix_branch,
+                    commit_message=commit_message,
+                    github_token=self._get_github_token(integration),
+                    repo_full_name=ci_run.repo_full_name,
+                )
+
             commit_sha = commit_result.get("sha")
             push_failed = commit_result.get("push_failed", False)
 
@@ -465,57 +517,65 @@ class CIFixerAgent(BaseAgent):
                 )
                 return AgentResult(success=False, output={}, error="commit failed")
 
-            # ── 8. Open PR (draft or auto-merge depending on integration config) ────
-            # Phase 4: auto-merge only if integration.auto_merge=True AND the
-            # fingerprint has enough successful fixes AND tool version parity is OK.
-            fingerprint_success = await self._get_fingerprint_success_count(fingerprint)
-            enable_auto_merge = should_auto_merge(
-                integration_auto_merge=getattr(integration, "auto_merge", False),
-                fingerprint_success_count=fingerprint_success,
-                min_success_count=getattr(integration, "min_success_count", 3),
-                parity_ok=parity_ok,
-            )
-
+            # ── 8. Open PR — fix_branch strategy only ────────────────────────────
+            # For author_branch (lint_only), no separate PR is needed — the fix is
+            # already on the author's branch and CI will re-run automatically.
             fix_pr_number: int | None = None
-            if not push_failed and integration.github_token:
-                # Phase 1: check for an existing Phalanx fix PR targeting this branch.
-                # If one exists, push the new commit to it instead of opening a second PR.
-                existing_pr = await self._find_existing_fix_pr(integration, ci_run)
-                if existing_pr:
-                    self._log.info(
-                        "ci_fixer.reusing_existing_fix_pr",
-                        pr=existing_pr,
-                        branch=ci_run.branch,
-                    )
-                    fix_pr_number = existing_pr
-                else:
-                    fix_pr_number = await self._open_draft_pr(
+            if fix_strategy == "fix_branch":
+                fingerprint_success = await self._get_fingerprint_success_count(fingerprint)
+                enable_auto_merge = should_auto_merge(
+                    integration_auto_merge=getattr(integration, "auto_merge", False),
+                    fingerprint_success_count=fingerprint_success,
+                    min_success_count=getattr(integration, "min_success_count", 3),
+                    parity_ok=parity_ok,
+                )
+
+                if not push_failed and integration.github_token:
+                    existing_pr = await self._find_existing_fix_pr(integration, ci_run)
+                    if existing_pr:
+                        self._log.info(
+                            "ci_fixer.reusing_existing_fix_pr",
+                            pr=existing_pr,
+                            branch=ci_run.branch,
+                        )
+                        fix_pr_number = existing_pr
+                    else:
+                        fix_pr_number = await self._open_draft_pr(
+                            integration=integration,
+                            ci_run=ci_run,
+                            fix_branch=fix_branch,
+                            files_written=files_written,
+                            commit_sha=commit_sha,
+                            tool=parsed.tool,
+                            root_cause=fix_plan.root_cause,
+                            parsed=parsed,
+                            validation_tool_version=validation_tool_version,
+                            enable_auto_merge=enable_auto_merge,
+                            parity_notice=format_parity_notice(parity_result),
+                        )
+
+            # ── 9. Comment on original PR ─────────────────────────────────────────
+            if ci_run.pr_number and integration.github_token:
+                if fix_strategy == "author_branch":
+                    await self._comment_lint_fix_pushed(
                         integration=integration,
                         ci_run=ci_run,
-                        fix_branch=fix_branch,
+                        files_written=files_written,
+                        commit_sha=commit_sha,
+                        tool=parsed.tool,
+                    )
+                else:
+                    await self._comment_on_pr(
+                        integration=integration,
+                        ci_run=ci_run,
                         files_written=files_written,
                         commit_sha=commit_sha,
                         tool=parsed.tool,
                         root_cause=fix_plan.root_cause,
                         parsed=parsed,
+                        fix_pr_number=fix_pr_number,
                         validation_tool_version=validation_tool_version,
-                        enable_auto_merge=enable_auto_merge,
-                        parity_notice=format_parity_notice(parity_result),
                     )
-
-            # ── 9. Comment on original PR ─────────────────────────────────────────
-            if ci_run.pr_number and integration.github_token:
-                await self._comment_on_pr(
-                    integration=integration,
-                    ci_run=ci_run,
-                    files_written=files_written,
-                    commit_sha=commit_sha,
-                    tool=parsed.tool,
-                    root_cause=fix_plan.root_cause,
-                    parsed=parsed,
-                    fix_pr_number=fix_pr_number,
-                    validation_tool_version=validation_tool_version,
-                )
 
             # ── 10. Mark FIXED ────────────────────────────────────────────────────
             async with get_db() as session:
@@ -530,6 +590,8 @@ class CIFixerAgent(BaseAgent):
                         fingerprint_hash=fingerprint,
                         validation_tool_version=validation_tool_version,
                         tool_version_parity_ok=parity_ok,
+                        fix_strategy=fix_strategy,
+                        fix_branch_ci_status="pending" if fix_strategy == "author_branch" else None,
                         completed_at=datetime.now(UTC),
                     )
                 )
@@ -555,13 +617,21 @@ class CIFixerAgent(BaseAgent):
                 ctx.reproduction_result = ReproductionResult(verdict="skipped")
 
             # ── Phase 3: Broad verification (catch regressions post-fix) ─────────
+            # Skip for lint-only fixes — deleting an unused import cannot cause
+            # regressions, and the sandbox won't have project deps installed.
+            # lint_only already computed above (step 7 strategy decision).
             verifier = VerifierAgent()
-            verification_result = await verifier.verify(
-                workspace_path=workspace,
-                stack=ctx.sandbox_stack or "python",
-                sandbox_result=sandbox_result,
-                timeout_seconds=settings.sandbox_timeout_seconds,
-            )
+            if lint_only:
+                from phalanx.ci_fixer.context import VerificationResult as _VR
+                verification_result = _VR(verdict="skipped", output="lint-only fix — regression check skipped")
+                self._log.info("ci_fixer.verify_skipped_lint_only", tool=parsed.tool)
+            else:
+                verification_result = await verifier.verify(
+                    workspace_path=workspace,
+                    stack=ctx.sandbox_stack or "python",
+                    sandbox_result=sandbox_result,
+                    timeout_seconds=settings.sandbox_timeout_seconds,
+                )
             ctx.verification_result = verification_result
             await self._persist_context(ctx)
 
@@ -728,6 +798,7 @@ class CIFixerAgent(BaseAgent):
         branch: str,
         commit_sha: str,
         github_token: str,
+        pr_number: int | None = None,
     ) -> bool:
         try:
             from git import Repo  # noqa: PLC0415
@@ -737,14 +808,26 @@ class CIFixerAgent(BaseAgent):
 
             if (workspace / ".git").exists():
                 repo = Repo(str(workspace))
-                repo.remotes.origin.fetch()
-            else:
-                repo = Repo.clone_from(auth_url, str(workspace))
+                # Verify remote matches — stale workspaces from a different repo must be discarded
+                try:
+                    origin_url = repo.remotes.origin.url
+                except Exception:
+                    origin_url = ""
+                if repo_url not in origin_url and auth_url not in origin_url:
+                    import shutil  # noqa: PLC0415
 
-            try:
-                repo.git.checkout(branch)
-            except Exception:
-                repo.git.checkout("-b", branch, commit_sha)
+                    shutil.rmtree(str(workspace))
+                    repo = Repo.clone_from(auth_url, str(workspace))
+                    repo.remotes.origin.fetch(f"+refs/pull/{pr_number}/head:refs/remotes/origin/pr/{pr_number}")
+                else:
+                    repo.remotes.origin.fetch(f"+refs/pull/{pr_number}/head:refs/remotes/origin/pr/{pr_number}")
+            else:
+                # Clone default branch, then fetch the exact PR head ref
+                repo = Repo.clone_from(auth_url, str(workspace))
+                repo.remotes.origin.fetch(f"+refs/pull/{pr_number}/head:refs/remotes/origin/pr/{pr_number}")
+
+            # Checkout the exact PR commit SHA on a local branch
+            repo.git.checkout("-b", branch, commit_sha)
 
             self._log.info("ci_fixer.git.cloned", repo=repo_full_name, branch=branch)
             return True
@@ -818,6 +901,67 @@ class CIFixerAgent(BaseAgent):
             return {"sha": sha, "branch": fix_branch, "push_failed": push_failed}
         except Exception as exc:
             self._log.warning("ci_fixer.git.commit_failed", error=str(exc))
+            return {"sha": None, "error": str(exc)}
+
+    async def _commit_to_author_branch(
+        self,
+        workspace: Path,
+        branch: str,
+        commit_message: str,
+        github_token: str,
+        repo_full_name: str,
+    ) -> dict[str, Any]:
+        """
+        Commit all workspace changes directly onto 'branch' (the author's PR branch)
+        and push to origin. Only called for lint_only=True (Tier 1) fixes.
+
+        The workspace was already cloned on 'branch' in step 4, so no checkout needed.
+        """
+        try:
+            from git import Actor, Repo  # noqa: PLC0415
+            from git.exc import InvalidGitRepositoryError  # noqa: PLC0415
+
+            try:
+                repo = Repo(str(workspace))
+            except InvalidGitRepositoryError:
+                return {"sha": None, "error": "not a git repo"}
+
+            current = repo.active_branch.name
+            if current != branch:
+                self._log.warning(
+                    "ci_fixer.git.author_branch_mismatch",
+                    expected=branch,
+                    actual=current,
+                )
+                return {"sha": None, "error": f"expected branch {branch}, got {current}"}
+
+            repo.git.add("-A")
+
+            if not repo.index.diff("HEAD") and not repo.untracked_files:
+                return {"sha": None, "message": "no_changes"}
+
+            author = Actor(settings.git_author_name, settings.git_author_email)
+            commit = repo.index.commit(commit_message, author=author, committer=author)
+            sha = commit.hexsha[:8]
+            self._log.info("ci_fixer.git.committed_author_branch", sha=sha, branch=branch)
+
+            push_failed = False
+            if github_token and repo.remotes:
+                try:
+                    auth_url = f"https://github.com/{repo_full_name}.git".replace(
+                        "https://", f"https://{github_token}@"
+                    )
+                    repo.git.push(auth_url, f"HEAD:{branch}")
+                    self._log.info("ci_fixer.git.pushed_author_branch", branch=branch, sha=sha)
+                except Exception as push_exc:
+                    self._log.warning(
+                        "ci_fixer.git.push_author_branch_failed", error=str(push_exc)
+                    )
+                    push_failed = True
+
+            return {"sha": sha, "branch": branch, "push_failed": push_failed}
+        except Exception as exc:
+            self._log.warning("ci_fixer.git.author_branch_commit_failed", error=str(exc))
             return {"sha": None, "error": str(exc)}
 
     # ── Draft PR creation ──────────────────────────────────────────────────────
@@ -1119,6 +1263,41 @@ class CIFixerAgent(BaseAgent):
         except Exception as exc:
             self._log.warning("ci_fixer.pr_comment_failed", error=str(exc))
 
+    async def _comment_lint_fix_pushed(
+        self,
+        integration: CIIntegration,
+        ci_run: CIFixRun,
+        files_written: list[str],
+        commit_sha: str,
+        tool: str,
+    ) -> None:
+        """Comment for author_branch strategy: fix pushed, CI is re-running."""
+        import httpx  # noqa: PLC0415
+
+        files_list = "\n".join(f"- `{f}`" for f in files_written)
+        body = (
+            f"🔧 **Phalanx CI Fixer** pushed a `{tool}` lint fix directly to this branch "
+            f"(commit `{commit_sha}`).\n\n"
+            f"**Files changed:**\n{files_list}\n\n"
+            f"CI is re-running automatically — a follow-up comment will appear once "
+            f"the result is known.\n\n"
+            f"*Fix run: `{self.ci_fix_run_id}`*"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.github.com/repos/{ci_run.repo_full_name}"
+                    f"/issues/{ci_run.pr_number}/comments",
+                    headers={
+                        "Authorization": f"Bearer {integration.github_token}",
+                        "Accept": "application/vnd.github+json",
+                    },
+                    json={"body": body},
+                )
+            self._log.info("ci_fixer.pr_commented_lint_fix_pushed", pr=ci_run.pr_number)
+        except Exception as exc:
+            self._log.warning("ci_fixer.pr_comment_lint_push_failed", error=str(exc))
+
     async def _comment_unable_to_fix(
         self,
         integration: CIIntegration,
@@ -1329,15 +1508,18 @@ class CIFixerAgent(BaseAgent):
 
     def _lookup_fix_history(self, fingerprint_hash: str) -> list[dict] | None:
         """
-        Synchronous history lookup — returns previously-successful patch dicts
-        for this fingerprint, or None if no successful history exists.
+        Synchronous history lookup called from the synchronous RootCauseAnalyst.
 
-        Synchronous because RootCauseAnalyst.analyze() is synchronous
-        (Anthropic SDK _call_claude is synchronous).  We run the async DB call
-        in a new event loop via asyncio.run() to stay compatible.
+        Runs the async DB query in a dedicated background thread so we avoid
+        the 'asyncio.run() cannot be called from a running event loop' error
+        that occurs when this is called from within an async context.
         """
+        import concurrent.futures  # noqa: PLC0415
+
         try:
-            return asyncio.run(self._async_lookup_fix_history(fingerprint_hash))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(asyncio.run, self._async_lookup_fix_history(fingerprint_hash))
+                return future.result(timeout=10)
         except Exception as exc:
             self._log.warning("ci_fixer.history_lookup_failed", error=str(exc))
             return None
@@ -1560,6 +1742,45 @@ def _cleanup_workspace(workspace: Path) -> None:
             log.debug("ci_fixer.workspace_cleaned", path=str(workspace))
     except Exception as exc:
         log.warning("ci_fixer.workspace_cleanup_failed", path=str(workspace), error=str(exc))
+
+
+def _prescan_workspace(tool: str, workspace: Path) -> ParsedLog:
+    """
+    Scan the workspace for pre-existing errors BEFORE applying any patches.
+    Used as the baseline for the regression check so we never flag errors
+    that were already present in the codebase (e.g. pre-existing I001 in alembic/).
+    Falls back to an empty ParsedLog on any error.
+    """
+    import subprocess as _sp  # noqa: PLC0415
+
+    try:
+        if tool == "ruff":
+            result = _sp.run(
+                ["ruff", "check", "."],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                return ParsedLog(tool="ruff")
+            from phalanx.ci_fixer.log_parser import parse_log  # noqa: PLC0415
+            return parse_log(result.stdout + result.stderr)
+        elif tool == "mypy":
+            result = _sp.run(
+                ["mypy", "."],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                return ParsedLog(tool="mypy")
+            from phalanx.ci_fixer.log_parser import parse_log  # noqa: PLC0415
+            return parse_log(result.stdout + result.stderr)
+    except Exception as exc:
+        log.warning("ci_fixer.prescan_failed", tool=tool, error=str(exc))
+    return ParsedLog(tool=tool)
 
 
 # ── Celery task ────────────────────────────────────────────────────────────────

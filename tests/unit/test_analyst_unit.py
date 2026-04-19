@@ -265,7 +265,8 @@ class TestParseAndValidatePatches:
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
         assert patches == []
 
-    def test_empty_corrected_lines_rejected(self):
+    def test_empty_corrected_lines_accepted_as_deletion(self):
+        # Empty corrected_lines means "delete these lines" — valid for lint fixes
         w = self._window("src/foo.py", 1, 5, 5)
         raw = [
             {
@@ -273,11 +274,12 @@ class TestParseAndValidatePatches:
                 "start_line": 1,
                 "end_line": 5,
                 "corrected_lines": [],
-                "reason": "empty",
+                "reason": "delete unused imports",
             }
         ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
-        assert patches == []
+        assert len(patches) == 1
+        assert patches[0].corrected_lines == []
 
     def test_lines_without_newline_get_newline_appended(self):
         w = self._window("src/foo.py", 1, 3, 3)
@@ -294,33 +296,32 @@ class TestParseAndValidatePatches:
         assert len(patches) == 1
         assert all(line.endswith("\n") for line in patches[0].corrected_lines)
 
-    def test_line_range_within_tolerance_accepted(self):
-        """start/end off by ≤2 lines → not rejected; LLM values passed through."""
+    def test_line_range_sub_range_accepted(self):
+        """start/end within window → accepted as-is (precise sub-range is correct)."""
         w = self._window("src/foo.py", 1, 5, 5)
         raw = [
             {
                 "path": "src/foo.py",
                 "start_line": 2,
-                "end_line": 6,  # off by 1
+                "end_line": 4,  # sub-range within window
                 "corrected_lines": ["a\n", "b\n"],
-                "reason": "off by one",
+                "reason": "sub-range",
             }
         ]
         patches = self._analyst()._parse_and_validate_patches(raw, [w])
-        # Accepted — within tolerance (off by 1 ≤ 2)
+        # Accepted — within window bounds
         assert len(patches) == 1
-        # LLM values passed through unchanged when within tolerance
         assert patches[0].start_line == 2
-        assert patches[0].end_line == 6
+        assert patches[0].end_line == 4
 
-    def test_line_range_beyond_tolerance_clamped(self):
-        """start/end off by >2 lines → clamped to window bounds."""
+    def test_line_range_outside_window_clamped(self):
+        """start/end outside window → clamped to window bounds."""
         w = self._window("src/foo.py", 1, 5, 5)
         raw = [
             {
                 "path": "src/foo.py",
                 "start_line": 10,
-                "end_line": 20,  # way off
+                "end_line": 20,  # way outside
                 "corrected_lines": ["a\n", "b\n"],
                 "reason": "way off",
             }

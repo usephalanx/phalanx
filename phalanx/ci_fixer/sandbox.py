@@ -4,8 +4,10 @@ for the CI reproducer and fix agents.
 
 Design:
   - Stack detection is pure file-existence: no subprocess, no LLM call
-  - provision() checks out a pre-warmed container from SandboxPool and
-    bind-mounts the workspace path into it at /workspace.
+  - provision() checks out a pre-warmed container from SandboxPool,
+    bind-mounts the workspace, then asks GPT to determine the minimum
+    environment setup commands needed to replicate CI (dep installs, etc.)
+    and runs them inside the container before handing it to the validator.
   - sandbox_enabled=False fast-path returns None → reproducer uses "skipped"
   - SandboxUnavailableError (pool timeout / Docker down) → SandboxResult
     with available=False → reproducer/verifier fall back to local subprocess
@@ -17,7 +19,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from pathlib import Path  # noqa: TC003
 
 import structlog
 
@@ -27,9 +29,6 @@ from phalanx.ci_fixer.sandbox_pool import (
     get_sandbox_pool,
 )
 from phalanx.config.settings import get_settings
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -88,8 +87,34 @@ class SandboxResult:
     mount_path: str = "/workspace"
     """Path inside the container where workspace_path is bind-mounted."""
 
+    env_ready: bool = False
+    """
+    True once GPT-derived environment setup commands have been run successfully
+    inside the container. Validators must not run until this is True.
+    """
+
+    env_setup_cmds: list[str] = field(default_factory=list)
+    """Ordered shell commands GPT determined are needed to replicate CI environment."""
+
+    validate_cmd: str = ""
+    """The exact command GPT says CI uses to run the failing tool (e.g. 'make mypy')."""
+
     extra: dict = field(default_factory=dict)
     """Reserved for future metadata (port map, resource stats, etc.)."""
+
+
+def _bootstrap_cmds_for_stack(stack: str) -> list[str]:
+    """
+    Return commands to install core OS tools (make, git) that slim images omit.
+    These run before GPT-determined dep install commands.
+    """
+    if stack in ("python", "node", "rust", "unknown"):
+        # Debian/Ubuntu-based slim images
+        return ["apt-get update -qq && apt-get install -y --no-install-recommends make git 2>/dev/null || true"]
+    if stack == "go":
+        # Alpine-based
+        return ["apk add --no-cache make git 2>/dev/null || true"]
+    return []
 
 
 class SandboxProvisioner:
@@ -121,17 +146,20 @@ class SandboxProvisioner:
         self,
         workspace_path: Path,
         stack_hint: str | None = None,
+        ci_log: str = "",
+        failing_job: str = "",
     ) -> SandboxResult | None:
         """
         Return a SandboxResult for workspace_path, or None if sandbox is disabled.
 
         Args:
             workspace_path: Absolute path to the cloned repo on the host.
-            stack_hint:     Override stack detection (e.g. caller already knows
-                            the stack from structured_failure).
+            stack_hint:     Override stack detection.
+            ci_log:         Raw CI failure log — passed to GPT for env reasoning.
+            failing_job:    Name of the failing CI job (e.g. 'Linter', 'typecheck').
 
         Returns:
-            SandboxResult with container_id populated (happy path),
+            SandboxResult with container_id + env_ready=True (happy path),
             SandboxResult with available=False (pool exhausted / Docker down),
             or None (sandbox_enabled=False).
         """
@@ -150,12 +178,33 @@ class SandboxProvisioner:
                 timeout=settings.sandbox_checkout_timeout_seconds,
             )
 
-            # Bind-mount the workspace into the container.
-            # docker run used --volume /tmp:/hosttmp; we create a per-run symlink
-            # inside the container pointing /workspace → the actual cloned path.
-            # For simplicity we use docker cp for the initial seed if the bind
-            # mount path isn't already accessible.
             await self._bind_workspace(container.container_id, workspace_path)
+
+            # Ask GPT what env setup commands are needed to replicate CI
+            env_plan = await self._ask_gpt_env_setup(
+                workspace_path=workspace_path,
+                ci_log=ci_log,
+                failing_job=failing_job,
+                stack=stack,
+            )
+
+            # Always ensure core build tools (make, git) are present — slim images omit them
+            bootstrap_cmds = _bootstrap_cmds_for_stack(stack)
+            if bootstrap_cmds:
+                await self._run_env_setup(
+                    container_id=container.container_id,
+                    cmds=bootstrap_cmds,
+                )
+
+            env_ready = False
+            if env_plan["setup_cmds"]:
+                env_ready = await self._run_env_setup(
+                    container_id=container.container_id,
+                    cmds=env_plan["setup_cmds"],
+                )
+            else:
+                # GPT determined no setup needed (e.g. pure ruff — no deps required)
+                env_ready = True
 
             result = SandboxResult(
                 sandbox_id=sandbox_id,
@@ -164,6 +213,9 @@ class SandboxProvisioner:
                 workspace_path=str(workspace_path),
                 available=True,
                 container_id=container.container_id,
+                env_ready=env_ready,
+                env_setup_cmds=env_plan["setup_cmds"],
+                validate_cmd=env_plan.get("validate_cmd", ""),
             )
 
             log.info(
@@ -171,6 +223,9 @@ class SandboxProvisioner:
                 sandbox_id=sandbox_id,
                 stack=stack,
                 container_id=container.container_id,
+                env_ready=env_ready,
+                setup_cmds=env_plan["setup_cmds"],
+                validate_cmd=env_plan.get("validate_cmd", ""),
             )
             return result
 
@@ -205,6 +260,239 @@ class SandboxProvisioner:
                 available=False,
                 container_id="",
             )
+
+    async def _ask_gpt_env_setup(
+        self,
+        workspace_path: Path,
+        ci_log: str,
+        failing_job: str,
+        stack: str,
+    ) -> dict:
+        """
+        Ask GPT-5.4-pro (reasoning model) what shell commands are needed to
+        replicate the CI environment for the failing job inside a bare container.
+
+        Reads CI YAML and key manifest files from the workspace to give GPT
+        full context — the same context a human engineer would look at when
+        setting up the repo locally for the first time.
+
+        Returns dict: {"setup_cmds": [...], "validate_cmd": "..."}
+        Falls back to empty setup (no deps) on any failure — never blocks the run.
+        """
+        import asyncio  # noqa: PLC0415
+
+        try:
+            from phalanx.agents.openai_client import OpenAIClient  # noqa: PLC0415
+
+            # Gather context files from the workspace
+            context_parts: list[str] = []
+
+            # 1. CI workflow files
+            workflows_dir = workspace_path / ".github" / "workflows"
+            if workflows_dir.is_dir():
+                for yml in sorted(workflows_dir.glob("*.yml"))[:3]:
+                    try:
+                        content = yml.read_text(errors="replace")[:3000]
+                        context_parts.append(f"=== .github/workflows/{yml.name} ===\n{content}")
+                    except Exception:
+                        pass
+
+            # 2. Dependency manifest files
+            manifest_candidates = [
+                "pyproject.toml",
+                "setup.cfg",
+                "setup.py",
+                "requirements.txt",
+                "requirements-dev.txt",
+                "requirements/lint.in",
+                "requirements/lint.txt",
+                "Makefile",
+                "tox.ini",
+                "package.json",
+                "go.mod",
+                "Cargo.toml",
+            ]
+            for fname in manifest_candidates:
+                fpath = workspace_path / fname
+                if fpath.exists():
+                    try:
+                        content = fpath.read_text(errors="replace")[:2000]
+                        context_parts.append(f"=== {fname} ===\n{content}")
+                    except Exception:
+                        pass
+
+            context_text = (
+                "\n\n".join(context_parts) if context_parts else "(no config files found)"
+            )
+            log_preview = ci_log[:1500] if ci_log else "(no log provided)"
+
+            system_prompt = (
+                "You are a senior DevOps and CI engineer with deep expertise in "
+                "replicating CI environments locally. You understand GitHub Actions, "
+                "Python packaging, Node.js, Go modules, and how CI pipelines install "
+                "dependencies before running linters and type checkers.\n\n"
+                "Your job: given a CI failure log, the failing job name, the repo's "
+                "CI workflow YAML, and its dependency manifest files — determine the "
+                "MINIMUM ordered shell commands needed to install EXTERNAL dependencies "
+                f"inside a bare {stack} container so the failing lint/type tool can run.\n\n"
+                "CRITICAL CONSTRAINTS — read carefully before answering:\n"
+                "- The repo source is ALREADY present at /workspace. Do NOT install the "
+                "repo itself (no `pip install .`, `pip install -e .`, or any self-install "
+                "of the project). The tool will run directly against the source files.\n"
+                "- Only install EXTERNAL packages: type stubs, lint tools, third-party "
+                "libraries that the failing tool needs to import. Nothing else.\n"
+                "- Do NOT include checkout, git clone, git submodule, or any git commands.\n"
+                "- Do NOT include cache steps, upload-artifact steps, or actions/checkout.\n"
+                "- Do NOT include test execution or build commands.\n"
+                "- Use the exact dependency install commands from the CI YAML where possible.\n"
+                "- If the tool is ruff or a pure linter with no third-party imports, "
+                "setup_cmds can be empty — ruff needs no deps.\n"
+                "- Set validate_cmd to the exact command CI uses to run the failing tool.\n"
+                "- Working directory inside the container is /workspace.\n\n"
+                "Respond ONLY with valid JSON, no prose:\n"
+                '{"setup_cmds": ["cmd1", "cmd2", ...], "validate_cmd": "cmd"}'
+            )
+
+            user_message = (
+                f"FAILING JOB: {failing_job or 'unknown'}\n\n"
+                f"CI FAILURE LOG (truncated):\n{log_preview}\n\n"
+                f"REPO CONFIG FILES:\n{context_text}"
+            )
+
+            client = OpenAIClient(model=settings.openai_model_reasoning)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: client.call(
+                    messages=[{"role": "user", "content": user_message}],
+                    system=system_prompt,
+                    max_tokens=1024,
+                    temperature=0.1,
+                ),
+            )
+
+            setup_cmds = result.get("setup_cmds", [])
+            validate_cmd = result.get("validate_cmd", "")
+
+            if not isinstance(setup_cmds, list):
+                setup_cmds = []
+
+            log.info(
+                "ci_fixer.sandbox_env_plan",
+                failing_job=failing_job,
+                setup_cmds=setup_cmds,
+                validate_cmd=validate_cmd,
+            )
+            return {"setup_cmds": setup_cmds, "validate_cmd": validate_cmd}
+
+        except Exception as exc:
+            log.warning(
+                "ci_fixer.sandbox_env_plan_failed",
+                error=str(exc),
+                fallback="no env setup",
+            )
+            return {"setup_cmds": [], "validate_cmd": ""}
+
+    async def _run_env_setup(self, container_id: str, cmds: list[str]) -> bool:
+        """
+        Run the GPT-determined environment setup commands sequentially inside
+        the container at /workspace. Returns True if all commands succeed.
+
+        Any single command failure aborts the sequence and returns False —
+        a half-set-up environment is worse than none.
+        """
+        import asyncio  # noqa: PLC0415
+
+        docker_cmd = settings.sandbox_docker_cmd
+        for cmd in cmds:
+            log.info("ci_fixer.sandbox_env_run", container_id=container_id, cmd=cmd)
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    docker_cmd,
+                    "exec",
+                    "--workdir",
+                    "/workspace",
+                    "--env",
+                    "HOME=/root",
+                    "--env",
+                    "PIP_CACHE_DIR=/tmp/pip-cache",
+                    container_id,
+                    "sh",
+                    "-c",
+                    cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=300,  # dep installs can be slow
+                )
+                if proc.returncode != 0:
+                    log.warning(
+                        "ci_fixer.sandbox_env_cmd_failed",
+                        container_id=container_id,
+                        cmd=cmd,
+                        returncode=proc.returncode,
+                        stderr=stderr.decode(errors="replace").strip()[-500:],
+                    )
+                    return False
+                log.info(
+                    "ci_fixer.sandbox_env_cmd_ok",
+                    container_id=container_id,
+                    cmd=cmd,
+                )
+            except TimeoutError:
+                log.warning(
+                    "ci_fixer.sandbox_env_cmd_timeout",
+                    container_id=container_id,
+                    cmd=cmd,
+                )
+                return False
+            except Exception as exc:
+                log.warning(
+                    "ci_fixer.sandbox_env_cmd_error",
+                    container_id=container_id,
+                    cmd=cmd,
+                    error=str(exc),
+                )
+                return False
+
+        return True
+
+    async def _sync_files_to_container(
+        self,
+        container_id: str,
+        workspace: Path,
+        files: list[str],
+    ) -> None:
+        """
+        Copy specific patched files from the local workspace into the container.
+        Called after each patch is applied so the container sees the updated source.
+        """
+        import asyncio  # noqa: PLC0415
+
+        cmd = settings.sandbox_docker_cmd
+        for rel_path in files:
+            src = workspace / rel_path
+            if not src.exists():
+                continue
+            dest = f"{container_id}:/workspace/{rel_path}"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    cmd, "cp", str(src), dest,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode != 0:
+                    log.warning(
+                        "ci_fixer.sandbox_sync_failed",
+                        file=rel_path,
+                        error=stderr.decode().strip(),
+                    )
+                else:
+                    log.info("ci_fixer.sandbox_sync_ok", file=rel_path, container_id=container_id)
+            except Exception as exc:
+                log.warning("ci_fixer.sandbox_sync_error", file=rel_path, error=str(exc))
 
     async def release(self, sandbox_result: SandboxResult) -> None:
         """

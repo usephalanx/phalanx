@@ -741,7 +741,7 @@ class TestBuildkiteLogFetcher:
 # ── Webhook route integration (early-return paths, no DB) ──────────────────────
 
 import json as _json  # noqa: E402
-from unittest.mock import patch as _patch  # noqa: E402
+from unittest.mock import AsyncMock as _AsyncMock, patch as _patch  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -788,9 +788,18 @@ class TestGitHubWebhookRoutes:
     def test_check_run_success_conclusion_is_ignored(self):
         payload = {
             "action": "completed",
-            "check_run": {"conclusion": "success", "check_suite": {}},
+            "check_run": {
+                "conclusion": "success",
+                "head_sha": "aabb",
+                "check_suite": {"head_branch": "feat/x"},
+            },
+            "repository": {"full_name": "owner/repo"},
         }
-        r = self._post(payload)
+        with _patch(
+            "phalanx.api.routes.ci_webhooks._update_fix_branch_ci_status",
+            new_callable=_AsyncMock,
+        ):
+            r = self._post(payload)
         assert r.status_code == 200
         assert r.json()["status"] == "ignored"
 
@@ -810,7 +819,8 @@ class TestGitHubWebhookRoutes:
             },
             "repository": {"full_name": "acme/backend"},
         }
-        with _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None):
+        with _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None), \
+             _patch("phalanx.api.routes.ci_webhooks._update_fix_branch_ci_status", new_callable=_AsyncMock):
             r = self._post(payload)
         assert r.status_code == 200
         assert r.json()["status"] == "skipped"
@@ -1047,3 +1057,160 @@ class TestCircleCIWebhookRoutes:
                 },
             )
         assert r.status_code == 401
+
+
+# ── Closed-loop: bot guard + fix_branch_ci_status ─────────────────────────────
+
+from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock  # noqa: E402
+
+
+class TestBotLoopGuard:
+    """Bot commits must not re-trigger the CI fixer (infinite loop prevention)."""
+
+    def setup_method(self):
+        self.client = TestClient(_make_app())
+
+    def _post(self, payload, event="check_run"):
+        return self.client.post(
+            "/webhook/github",
+            content=_json.dumps(payload).encode(),
+            headers={
+                "x-github-event": event,
+                "x-hub-signature-256": "",
+                "content-type": "application/json",
+            },
+        )
+
+    def test_bot_sender_check_run_ignored(self):
+        """check_run whose sender.login matches settings.git_author_name → ignored."""
+        payload = {
+            "action": "completed",
+            "check_run": {
+                "id": 99,
+                "name": "lint",
+                "conclusion": "failure",
+                "head_sha": "aabbccdd",
+                "details_url": "",
+                "check_suite": {"head_branch": "feat/x", "pull_requests": []},
+            },
+            "repository": {"full_name": "owner/repo"},
+            "sender": {"login": "FORGE"},
+        }
+        with _patch("phalanx.api.routes.ci_webhooks.settings") as mock_settings:
+            mock_settings.github_webhook_secret = ""
+            mock_settings.git_author_name = "FORGE"
+            r = self._post(payload)
+        assert r.status_code == 200
+        assert r.json() == {"status": "ignored", "reason": "bot_commit"}
+
+    def test_non_bot_sender_not_filtered(self):
+        """check_run from a normal user is NOT filtered by the bot guard."""
+        payload = {
+            "action": "completed",
+            "check_run": {
+                "id": 100,
+                "name": "lint",
+                "conclusion": "failure",
+                "head_sha": "aabbccdd",
+                "details_url": "",
+                "check_suite": {"head_branch": "feat/x", "pull_requests": []},
+            },
+            "repository": {"full_name": "owner/repo"},
+            "sender": {"login": "human-developer"},
+        }
+        with _patch("phalanx.api.routes.ci_webhooks.settings") as mock_settings, \
+             _patch("phalanx.api.routes.ci_webhooks._dispatch_ci_fix", return_value=None), \
+             _patch("phalanx.api.routes.ci_webhooks._update_fix_branch_ci_status", new_callable=_AsyncMock):
+            mock_settings.github_webhook_secret = ""
+            mock_settings.git_author_name = "FORGE"
+            r = self._post(payload)
+        assert r.status_code == 200
+        assert r.json()["status"] == "skipped"  # dispatch returned None
+
+    def test_bot_check_case_insensitive(self):
+        """Comparison is case-insensitive."""
+        payload = {
+            "action": "completed",
+            "check_run": {
+                "id": 101,
+                "name": "lint",
+                "conclusion": "failure",
+                "head_sha": "aabb",
+                "details_url": "",
+                "check_suite": {"head_branch": "main", "pull_requests": []},
+            },
+            "repository": {"full_name": "owner/repo"},
+            "sender": {"login": "forge"},  # lowercase
+        }
+        with _patch("phalanx.api.routes.ci_webhooks.settings") as mock_settings:
+            mock_settings.github_webhook_secret = ""
+            mock_settings.git_author_name = "FORGE"  # uppercase in settings
+            r = self._post(payload)
+        assert r.status_code == 200
+        assert r.json()["reason"] == "bot_commit"
+
+
+class TestUpdateFixBranchCiStatus:
+    """Unit tests for the _update_fix_branch_ci_status helper."""
+
+    @pytest.mark.asyncio
+    async def test_updates_pending_run_to_passed(self):
+        from phalanx.api.routes.ci_webhooks import _update_fix_branch_ci_status
+
+        ci_run = _MagicMock()
+        ci_run.id = "run-123"
+        ci_run.fix_commit_sha = "abc12345"
+        ci_run.fix_strategy = "author_branch"
+        ci_run.fix_branch_ci_status = "pending"
+        ci_run.pr_number = 7
+        ci_run.integration_id = "intg-1"
+
+        mock_session = _AsyncMock()
+        mock_session.execute = _AsyncMock(
+            return_value=_MagicMock(scalar_one_or_none=_MagicMock(return_value=ci_run))
+        )
+        mock_session.commit = _AsyncMock()
+
+        with _patch("phalanx.api.routes.ci_webhooks.get_db") as mock_get_db, \
+             _patch("phalanx.api.routes.ci_webhooks._post_closed_loop_comment", new_callable=_AsyncMock):
+            mock_get_db.return_value.__aenter__ = _AsyncMock(return_value=mock_session)
+            mock_get_db.return_value.__aexit__ = _AsyncMock(return_value=False)
+            await _update_fix_branch_ci_status("owner/repo", "feat/x", "abc12345ff", "success")
+
+        mock_session.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_matching_run_is_noop(self):
+        from phalanx.api.routes.ci_webhooks import _update_fix_branch_ci_status
+
+        mock_session = _AsyncMock()
+        mock_session.execute = _AsyncMock(
+            return_value=_MagicMock(scalar_one_or_none=_MagicMock(return_value=None))
+        )
+
+        with _patch("phalanx.api.routes.ci_webhooks.get_db") as mock_get_db:
+            mock_get_db.return_value.__aenter__ = _AsyncMock(return_value=mock_session)
+            mock_get_db.return_value.__aexit__ = _AsyncMock(return_value=False)
+            await _update_fix_branch_ci_status("owner/repo", "feat/x", "nomatch", "success")
+
+        mock_session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sha_prefix_mismatch_is_noop(self):
+        """fix_commit_sha doesn't match head_sha prefix → no update."""
+        from phalanx.api.routes.ci_webhooks import _update_fix_branch_ci_status
+
+        ci_run = _MagicMock()
+        ci_run.fix_commit_sha = "deadbeef"
+
+        mock_session = _AsyncMock()
+        mock_session.execute = _AsyncMock(
+            return_value=_MagicMock(scalar_one_or_none=_MagicMock(return_value=ci_run))
+        )
+
+        with _patch("phalanx.api.routes.ci_webhooks.get_db") as mock_get_db:
+            mock_get_db.return_value.__aenter__ = _AsyncMock(return_value=mock_session)
+            mock_get_db.return_value.__aexit__ = _AsyncMock(return_value=False)
+            await _update_fix_branch_ci_status("owner/repo", "feat/x", "aabbccddeeff", "success")
+
+        mock_session.commit.assert_not_called()

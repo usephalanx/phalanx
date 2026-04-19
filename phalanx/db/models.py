@@ -819,7 +819,11 @@ class CIFixRun(Base):
     fix_commit_sha: Mapped[str | None] = mapped_column(String(40))
     fix_pr_number: Mapped[int | None] = mapped_column(Integer)
     fix_branch: Mapped[str | None] = mapped_column(String(255))
-    """Branch Phalanx pushed the fix to — always phalanx/ci-fix/{run_id}, never the author's branch."""
+    """Branch Phalanx pushed the fix to — phalanx/ci-fix/{run_id} for fix_branch strategy, or ci_run.branch for author_branch."""
+    fix_strategy: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    """'author_branch' (lint-only: commit directly onto author's PR branch) | 'fix_branch' (separate phalanx/ci-fix/* PR)."""
+    fix_branch_ci_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    """CI result after fix commit: 'pending' | 'passed' | 'failed' | 'preexisting'. Only set for author_branch strategy."""
     fingerprint_hash: Mapped[str | None] = mapped_column(String(16))
     """sha256[:16] of normalised errors — stable identity for this failure class (V2 history)."""
     validation_tool_version: Mapped[str | None] = mapped_column(String(100))
