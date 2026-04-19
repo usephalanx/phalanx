@@ -1,0 +1,23 @@
+============================= test session starts ==============================
+collected 12 items
+
+tests/test_pagination.py::test_page_size_one PASSED                     [  8%]
+tests/test_pagination.py::test_page_size_default PASSED                 [ 16%]
+tests/test_pagination.py::test_last_page_slice FAILED                   [ 25%]
+tests/test_pagination.py::test_empty_collection PASSED                  [ 33%]
+
+=================================== FAILURES ===================================
+____________________________ test_last_page_slice ______________________________
+
+    def test_last_page_slice():
+        items = list(range(25))
+        page = paginate(items, page=3, per_page=10)
+>       assert len(page) == 5
+E       assert 4 == 5
+E        +  where 4 = len([20, 21, 22, 23])
+
+tests/test_pagination.py:22: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pagination.py::test_last_page_slice - assert 4 == 5
+========================= 1 failed, 11 passed in 0.07s =========================
+Error: Process completed with exit code 1.

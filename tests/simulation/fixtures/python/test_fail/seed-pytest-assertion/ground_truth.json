@@ -1,0 +1,6 @@
+{
+  "fix_commit_sha": "seedfix2222222222222222222222222222222",
+  "fix_diff": "diff --git a/src/pagination.py b/src/pagination.py\n--- a/src/pagination.py\n+++ b/src/pagination.py\n@@ -1,5 +1,5 @@\n def paginate(items, page, per_page):\n     start = (page - 1) * per_page\n-    end = page * per_page - 1\n+    end = start + per_page\n     return items[start:end]\n",
+  "fix_type": "code_change",
+  "resolution": "correct the slice upper bound to start + per_page so the last page includes its final element"
+}

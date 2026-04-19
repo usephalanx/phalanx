@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+collected 45 items
+
+tests/test_api_integration.py::test_upstream_health_check FAILED          [ 2%]
+tests/test_api_integration.py::test_upstream_search PASSED                [ 4%]
+...
+=================================== FAILURES ===================================
+_______________________ test_upstream_health_check ______________________________
+
+    @pytest.mark.integration
+    def test_upstream_health_check():
+        response = httpx.get("https://api.upstream.example.com/health", timeout=2.0)
+>       assert response.status_code == 200
+E       httpx.ReadTimeout
+
+tests/test_api_integration.py:14: ReadTimeout
+=========================== short test summary info ============================
+FAILED tests/test_api_integration.py::test_upstream_health_check - httpx.ReadTimeout
+===================== 1 failed, 44 passed in 4.12s =============================
+
+(retry 1/2)
+tests/test_api_integration.py::test_upstream_health_check PASSED          [ 2%]
+============================== 45 passed in 2.03s ==============================
+Error: Process completed with exit code 1.

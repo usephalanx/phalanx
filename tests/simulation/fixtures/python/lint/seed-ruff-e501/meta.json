@@ -1,0 +1,14 @@
+{
+  "fixture_id": "seed-ruff-e501",
+  "language": "python",
+  "failure_class": "lint",
+  "origin_repo": "phalanx-seed/python-lint",
+  "origin_commit_sha": "seedsha1111111111111111111111111111111",
+  "origin_pr_number": 1,
+  "license": "MIT",
+  "redaction_report": {
+    "log": {"total_matches": 0, "by_label": {}, "detect_secrets_used": false},
+    "diff": {"total_matches": 0, "by_label": {}, "detect_secrets_used": false}
+  },
+  "notes": "Hand-crafted seed for a classic ruff E501 line-too-long failure. Used for scoring-harness smoke tests before live harvest lands real fixtures."
+}

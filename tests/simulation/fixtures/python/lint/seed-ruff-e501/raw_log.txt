@@ -1,0 +1,12 @@
+Run ruff check src/
+src/api/handlers.py:42:101: E501 Line too long (112 > 100)
+   |
+40 |     return JSONResponse(
+41 |         status_code=200,
+42 |         content={"message": "this is a verbose error message that makes the line too long for ruff's default line length limit"},
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^ E501
+43 |     )
+44 |
+   |
+Found 1 error.
+Error: Process completed with exit code 1.

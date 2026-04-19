@@ -1,0 +1,9 @@
+{
+  "title": "feat(api): verbose error message for handler failures",
+  "body": "Adds a longer error message for the 200 response path. Will make test failures easier to diagnose.",
+  "state": "open",
+  "author": "seed-author",
+  "head_branch": "feat/verbose-error-msg",
+  "base_branch": "main",
+  "diff": "diff --git a/src/api/handlers.py b/src/api/handlers.py\n--- a/src/api/handlers.py\n+++ b/src/api/handlers.py\n@@ -39,7 +39,7 @@ def handle_request(req):\n     return JSONResponse(\n         status_code=200,\n-        content={\"message\": \"ok\"},\n+        content={\"message\": \"this is a verbose error message that makes the line too long for ruff's default line length limit\"},\n     )\n"
+}

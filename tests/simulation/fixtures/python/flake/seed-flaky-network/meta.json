@@ -1,0 +1,13 @@
+{
+  "fixture_id": "seed-flaky-network",
+  "language": "python",
+  "failure_class": "flake",
+  "origin_repo": "phalanx-seed/python-flake",
+  "origin_commit_sha": "seedsha3333333333333333333333333333333",
+  "origin_pr_number": 12,
+  "license": "MIT",
+  "redaction_report": {
+    "log": {"total_matches": 0, "by_label": {}, "detect_secrets_used": false}
+  },
+  "notes": "Hand-crafted seed for an intermittent network timeout. The same test passes on retry; ground_truth is 'mark flaky with TODO' rather than a code change."
+}

@@ -1,0 +1,6 @@
+{
+  "fix_commit_sha": "seedfix1111111111111111111111111111111",
+  "fix_diff": "diff --git a/src/api/handlers.py b/src/api/handlers.py\n--- a/src/api/handlers.py\n+++ b/src/api/handlers.py\n@@ -39,7 +39,10 @@ def handle_request(req):\n     return JSONResponse(\n         status_code=200,\n-        content={\"message\": \"this is a verbose error message that makes the line too long for ruff's default line length limit\"},\n+        content={\n+            \"message\": (\n+                \"this is a verbose error message that makes the line too long \"\n+                \"for ruff's default line length limit\"\n+            )\n+        },\n     )\n",
+  "fix_type": "code_change",
+  "resolution": "wrap string literal across multiple lines"
+}

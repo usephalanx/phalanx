@@ -1,0 +1,13 @@
+{
+  "fixture_id": "seed-pytest-assertion",
+  "language": "python",
+  "failure_class": "test_fail",
+  "origin_repo": "phalanx-seed/python-test-fail",
+  "origin_commit_sha": "seedsha2222222222222222222222222222222",
+  "origin_pr_number": 7,
+  "license": "MIT",
+  "redaction_report": {
+    "log": {"total_matches": 0, "by_label": {}, "detect_secrets_used": false}
+  },
+  "notes": "Hand-crafted seed for a clear pytest assertion failure caused by an off-by-one. Used for scoring-harness smoke tests."
+}

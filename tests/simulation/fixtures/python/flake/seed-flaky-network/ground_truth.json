@@ -1,0 +1,6 @@
+{
+  "fix_commit_sha": "seedfix3333333333333333333333333333333",
+  "fix_diff": "diff --git a/tests/test_api_integration.py b/tests/test_api_integration.py\n--- a/tests/test_api_integration.py\n+++ b/tests/test_api_integration.py\n@@ -11,6 +11,7 @@ from tests.fixtures import upstream_client\n \n \n @pytest.mark.integration\n+@pytest.mark.flaky(reruns=2, reruns_delay=1)  # TODO(PHX-999): upstream occasionally > 2s; tighten timeout once infra owner bumps SLA\n def test_upstream_health_check():\n     response = httpx.get(\"https://api.upstream.example.com/health\", timeout=2.0)\n     assert response.status_code == 200\n",
+  "fix_type": "mark_flaky_with_todo",
+  "resolution": "mark test as flaky with a TODO tracking the upstream SLA fix — do not change application code since this is not this PR's problem"
+}

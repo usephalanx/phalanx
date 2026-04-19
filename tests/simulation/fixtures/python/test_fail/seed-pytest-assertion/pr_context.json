@@ -1,0 +1,9 @@
+{
+  "title": "fix(pagination): off-by-one in last-page slice",
+  "body": "Pagination slice was dropping the last element. The test exposes this but the fix is incomplete.",
+  "state": "open",
+  "author": "seed-author",
+  "head_branch": "fix/pagination-off-by-one",
+  "base_branch": "main",
+  "diff": "diff --git a/src/pagination.py b/src/pagination.py\n--- a/src/pagination.py\n+++ b/src/pagination.py\n@@ -1,5 +1,5 @@\n def paginate(items, page, per_page):\n     start = (page - 1) * per_page\n-    end = page * per_page - 1\n+    end = page * per_page\n     return items[start:end]\n"
+}
