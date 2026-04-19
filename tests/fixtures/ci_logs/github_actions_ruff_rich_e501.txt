@@ -1,0 +1,226 @@
+﻿2026-04-19T22:44:16.9009002Z Current runner version: '2.333.1'
+2026-04-19T22:44:16.9047005Z ##[group]Runner Image Provisioner
+2026-04-19T22:44:16.9048172Z Hosted Compute Agent
+2026-04-19T22:44:16.9048904Z Version: 20260213.493
+2026-04-19T22:44:16.9049987Z Commit: 5c115507f6dd24b8de37d8bbe0bb4509d0cc0fa3
+2026-04-19T22:44:16.9050961Z Build Date: 2026-02-13T00:28:41Z
+2026-04-19T22:44:16.9052293Z Worker ID: {4f6b38e7-9534-4824-a029-e51ac495c90d}
+2026-04-19T22:44:16.9053460Z Azure Region: westcentralus
+2026-04-19T22:44:16.9054258Z ##[endgroup]
+2026-04-19T22:44:16.9056181Z ##[group]Operating System
+2026-04-19T22:44:16.9057119Z Ubuntu
+2026-04-19T22:44:16.9057886Z 24.04.4
+2026-04-19T22:44:16.9058505Z LTS
+2026-04-19T22:44:16.9059218Z ##[endgroup]
+2026-04-19T22:44:16.9059925Z ##[group]Runner Image
+2026-04-19T22:44:16.9060733Z Image: ubuntu-24.04
+2026-04-19T22:44:16.9061585Z Version: 20260413.86.1
+2026-04-19T22:44:16.9063690Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260413.86/images/ubuntu/Ubuntu2404-Readme.md
+2026-04-19T22:44:16.9065914Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260413.86
+2026-04-19T22:44:16.9067344Z ##[endgroup]
+2026-04-19T22:44:16.9068917Z ##[group]GITHUB_TOKEN Permissions
+2026-04-19T22:44:16.9072683Z Checks: write
+2026-04-19T22:44:16.9073465Z Contents: read
+2026-04-19T22:44:16.9074203Z Metadata: read
+2026-04-19T22:44:16.9075040Z ##[endgroup]
+2026-04-19T22:44:16.9077910Z Secret source: Actions
+2026-04-19T22:44:16.9078861Z Prepare workflow directory
+2026-04-19T22:44:16.9731243Z Prepare all required actions
+2026-04-19T22:44:16.9827779Z Getting action download info
+2026-04-19T22:44:17.4900118Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+2026-04-19T22:44:17.6131374Z Download action repository 'actions/setup-python@v5' (SHA:a26af69be951a213d495a4c3e4e4022e16d87065)
+2026-04-19T22:44:17.8025770Z Complete job name: Lint
+2026-04-19T22:44:17.8736443Z ##[group]Run actions/checkout@v4
+2026-04-19T22:44:17.8737203Z with:
+2026-04-19T22:44:17.8737687Z   repository: usephalanx/phalanx-ci-fixer-testbed
+2026-04-19T22:44:17.8738443Z   token: ***
+2026-04-19T22:44:17.8738834Z   ssh-strict: true
+2026-04-19T22:44:17.8739212Z   ssh-user: git
+2026-04-19T22:44:17.8739604Z   persist-credentials: true
+2026-04-19T22:44:17.8740032Z   clean: true
+2026-04-19T22:44:17.8740415Z   sparse-checkout-cone-mode: true
+2026-04-19T22:44:17.8740874Z   fetch-depth: 1
+2026-04-19T22:44:17.8741244Z   fetch-tags: false
+2026-04-19T22:44:17.8741631Z   show-progress: true
+2026-04-19T22:44:17.8742190Z   lfs: false
+2026-04-19T22:44:17.8742557Z   submodules: false
+2026-04-19T22:44:17.8742949Z   set-safe-directory: true
+2026-04-19T22:44:17.8743569Z ##[endgroup]
+2026-04-19T22:44:18.0900330Z Syncing repository: usephalanx/phalanx-ci-fixer-testbed
+2026-04-19T22:44:18.0903921Z ##[group]Getting Git version info
+2026-04-19T22:44:18.0906289Z Working directory is '/home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed'
+2026-04-19T22:44:18.0908978Z [command]/usr/bin/git version
+2026-04-19T22:44:18.0911467Z git version 2.53.0
+2026-04-19T22:44:18.0916222Z ##[endgroup]
+2026-04-19T22:44:18.0923669Z Temporarily overriding HOME='/home/runner/work/_temp/563e1dd3-8e66-4b99-930e-652c94951097' before making global git config changes
+2026-04-19T22:44:18.0926473Z Adding repository directory to the temporary git global config as a safe directory
+2026-04-19T22:44:18.0929112Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed
+2026-04-19T22:44:18.0934267Z Deleting the contents of '/home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed'
+2026-04-19T22:44:18.0936520Z ##[group]Initializing the repository
+2026-04-19T22:44:18.0938439Z [command]/usr/bin/git init /home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed
+2026-04-19T22:44:18.0940392Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-04-19T22:44:18.0942862Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-04-19T22:44:18.0945052Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-04-19T22:44:18.0947026Z hint: call:
+2026-04-19T22:44:18.0947947Z hint:
+2026-04-19T22:44:18.0949231Z hint: 	git config --global init.defaultBranch <name>
+2026-04-19T22:44:18.0950603Z hint:
+2026-04-19T22:44:18.0952236Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-04-19T22:44:18.0954180Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-04-19T22:44:18.0956038Z hint:
+2026-04-19T22:44:18.0956954Z hint: 	git branch -m <name>
+2026-04-19T22:44:18.0958234Z hint:
+2026-04-19T22:44:18.0959488Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-04-19T22:44:18.0962244Z Initialized empty Git repository in /home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed/.git/
+2026-04-19T22:44:18.0966453Z [command]/usr/bin/git remote add origin https://github.com/usephalanx/phalanx-ci-fixer-testbed
+2026-04-19T22:44:18.0972208Z ##[endgroup]
+2026-04-19T22:44:18.0973359Z ##[group]Disabling automatic garbage collection
+2026-04-19T22:44:18.0974295Z [command]/usr/bin/git config --local gc.auto 0
+2026-04-19T22:44:18.0976198Z ##[endgroup]
+2026-04-19T22:44:18.0977129Z ##[group]Setting up auth
+2026-04-19T22:44:18.0978073Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-04-19T22:44:18.0981233Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-04-19T22:44:18.1068856Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-04-19T22:44:18.1100756Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-04-19T22:44:18.1355848Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-04-19T22:44:18.1408150Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-04-19T22:44:18.1650472Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-04-19T22:44:18.1689432Z ##[endgroup]
+2026-04-19T22:44:18.1690985Z ##[group]Fetching the repository
+2026-04-19T22:44:18.1699963Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +36ff09e5fb656543004f8295e669a4cc7655954c:refs/remotes/pull/1/merge
+2026-04-19T22:44:18.5350762Z From https://github.com/usephalanx/phalanx-ci-fixer-testbed
+2026-04-19T22:44:18.5352975Z  * [new ref]         36ff09e5fb656543004f8295e669a4cc7655954c -> pull/1/merge
+2026-04-19T22:44:18.5366387Z ##[endgroup]
+2026-04-19T22:44:18.5367951Z ##[group]Determining the checkout info
+2026-04-19T22:44:18.5369755Z ##[endgroup]
+2026-04-19T22:44:18.5374573Z [command]/usr/bin/git sparse-checkout disable
+2026-04-19T22:44:18.5415115Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-04-19T22:44:18.5445189Z ##[group]Checking out the ref
+2026-04-19T22:44:18.5448586Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/1/merge
+2026-04-19T22:44:18.5492896Z Note: switching to 'refs/remotes/pull/1/merge'.
+2026-04-19T22:44:18.5493741Z 
+2026-04-19T22:44:18.5494576Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-04-19T22:44:18.5497486Z changes and commit them, and you can discard any commits you make in this
+2026-04-19T22:44:18.5499485Z state without impacting any branches by switching back to a branch.
+2026-04-19T22:44:18.5500825Z 
+2026-04-19T22:44:18.5501628Z If you want to create a new branch to retain commits you create, you may
+2026-04-19T22:44:18.5503735Z do so (now or later) by using -c with the switch command. Example:
+2026-04-19T22:44:18.5505329Z 
+2026-04-19T22:44:18.5505854Z   git switch -c <new-branch-name>
+2026-04-19T22:44:18.5506666Z 
+2026-04-19T22:44:18.5507166Z Or undo this operation with:
+2026-04-19T22:44:18.5507856Z 
+2026-04-19T22:44:18.5508317Z   git switch -
+2026-04-19T22:44:18.5509141Z 
+2026-04-19T22:44:18.5509992Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-04-19T22:44:18.5511200Z 
+2026-04-19T22:44:18.5512807Z HEAD is now at 36ff09e Merge c834ac3f48af7aebd45b79bb3e306e868bd86334 into afc7c1dd7d7c7e3c86cd10f72dfc3255c4b1a2b2
+2026-04-19T22:44:18.5516403Z ##[endgroup]
+2026-04-19T22:44:18.5542431Z [command]/usr/bin/git log -1 --format=%H
+2026-04-19T22:44:18.5567372Z 36ff09e5fb656543004f8295e669a4cc7655954c
+2026-04-19T22:44:18.5836214Z ##[group]Run actions/setup-python@v5
+2026-04-19T22:44:18.5837089Z with:
+2026-04-19T22:44:18.5837658Z   python-version: 3.12
+2026-04-19T22:44:18.5838291Z   check-latest: false
+2026-04-19T22:44:18.5839134Z   token: ***
+2026-04-19T22:44:18.5839779Z   update-environment: true
+2026-04-19T22:44:18.5840555Z   allow-prereleases: false
+2026-04-19T22:44:18.5841334Z   freethreaded: false
+2026-04-19T22:44:18.5842199Z ##[endgroup]
+2026-04-19T22:44:18.7635309Z ##[group]Installed versions
+2026-04-19T22:44:18.7736792Z Successfully set up CPython (3.12.13)
+2026-04-19T22:44:18.7738745Z ##[endgroup]
+2026-04-19T22:44:18.7898786Z ##[group]Run python -m pip install --upgrade pip
+2026-04-19T22:44:18.7899586Z [36;1mpython -m pip install --upgrade pip[0m
+2026-04-19T22:44:18.7900185Z [36;1mpip install -e ".[dev]"[0m
+2026-04-19T22:44:18.7937562Z shell: /usr/bin/bash -e {0}
+2026-04-19T22:44:18.7938081Z env:
+2026-04-19T22:44:18.7938594Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:18.7939438Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-04-19T22:44:18.7940251Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:18.7941012Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:18.7941793Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:18.7942929Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-04-19T22:44:18.7943550Z ##[endgroup]
+2026-04-19T22:44:19.8377548Z Requirement already satisfied: pip in /opt/hostedtoolcache/Python/3.12.13/x64/lib/python3.12/site-packages (26.0.1)
+2026-04-19T22:44:20.5647472Z Obtaining file:///home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed
+2026-04-19T22:44:20.5674535Z   Installing build dependencies: started
+2026-04-19T22:44:21.7040784Z   Installing build dependencies: finished with status 'done'
+2026-04-19T22:44:21.7063135Z   Checking if build backend supports build_editable: started
+2026-04-19T22:44:22.0496381Z   Checking if build backend supports build_editable: finished with status 'done'
+2026-04-19T22:44:22.0513622Z   Getting requirements to build editable: started
+2026-04-19T22:44:22.4030575Z   Getting requirements to build editable: finished with status 'done'
+2026-04-19T22:44:22.4149762Z   Preparing editable metadata (pyproject.toml): started
+2026-04-19T22:44:22.6047445Z   Preparing editable metadata (pyproject.toml): finished with status 'done'
+2026-04-19T22:44:22.7482395Z Collecting pytest>=8.3.0 (from calc==0.1.0)
+2026-04-19T22:44:22.8477970Z   Downloading pytest-9.0.3-py3-none-any.whl.metadata (7.6 kB)
+2026-04-19T22:44:22.8808933Z Collecting pytest-cov>=6.0.0 (from calc==0.1.0)
+2026-04-19T22:44:22.9011723Z   Downloading pytest_cov-7.1.0-py3-none-any.whl.metadata (32 kB)
+2026-04-19T22:44:23.3022436Z Collecting ruff>=0.8.0 (from calc==0.1.0)
+2026-04-19T22:44:23.3222967Z   Downloading ruff-0.15.11-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (26 kB)
+2026-04-19T22:44:23.3544567Z Collecting iniconfig>=1.0.1 (from pytest>=8.3.0->calc==0.1.0)
+2026-04-19T22:44:23.3738560Z   Downloading iniconfig-2.3.0-py3-none-any.whl.metadata (2.5 kB)
+2026-04-19T22:44:23.4035064Z Collecting packaging>=22 (from pytest>=8.3.0->calc==0.1.0)
+2026-04-19T22:44:23.4047556Z   Using cached packaging-26.1-py3-none-any.whl.metadata (3.5 kB)
+2026-04-19T22:44:23.4300960Z Collecting pluggy<2,>=1.5 (from pytest>=8.3.0->calc==0.1.0)
+2026-04-19T22:44:23.4495023Z   Downloading pluggy-1.6.0-py3-none-any.whl.metadata (4.8 kB)
+2026-04-19T22:44:23.4828495Z Collecting pygments>=2.7.2 (from pytest>=8.3.0->calc==0.1.0)
+2026-04-19T22:44:23.5021554Z   Downloading pygments-2.20.0-py3-none-any.whl.metadata (2.5 kB)
+2026-04-19T22:44:23.8859675Z Collecting coverage>=7.10.6 (from coverage[toml]>=7.10.6->pytest-cov>=6.0.0->calc==0.1.0)
+2026-04-19T22:44:23.9056794Z   Downloading coverage-7.13.5-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (8.5 kB)
+2026-04-19T22:44:23.9329534Z Downloading pytest-9.0.3-py3-none-any.whl (375 kB)
+2026-04-19T22:44:24.0105553Z Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+2026-04-19T22:44:24.0348784Z Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+2026-04-19T22:44:24.0393241Z Using cached packaging-26.1-py3-none-any.whl (95 kB)
+2026-04-19T22:44:24.0596827Z Downloading pygments-2.20.0-py3-none-any.whl (1.2 MB)
+2026-04-19T22:44:24.1217131Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 23.8 MB/s  0:00:00
+2026-04-19T22:44:24.1403197Z Downloading pytest_cov-7.1.0-py3-none-any.whl (22 kB)
+2026-04-19T22:44:24.1625114Z Downloading coverage-7.13.5-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (254 kB)
+2026-04-19T22:44:24.1856105Z Downloading ruff-0.15.11-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (11.3 MB)
+2026-04-19T22:44:24.2881293Z    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.3/11.3 MB 111.0 MB/s  0:00:00
+2026-04-19T22:44:24.3099829Z Building wheels for collected packages: calc
+2026-04-19T22:44:24.3110049Z   Building editable for calc (pyproject.toml): started
+2026-04-19T22:44:24.5751351Z   Building editable for calc (pyproject.toml): finished with status 'done'
+2026-04-19T22:44:24.5758278Z   Created wheel for calc: filename=calc-0.1.0-0.editable-py3-none-any.whl size=1260 sha256=69cfe8712e4084b800364e1b0b139efda63cdd90bc9e16c0652d876fa81a2022
+2026-04-19T22:44:24.5760265Z   Stored in directory: /tmp/pip-ephem-wheel-cache-zslb1otm/wheels/4a/07/06/ca381a71303ef1f11eb17fd7697558cdcb2caaab997ca99f93
+2026-04-19T22:44:24.5779042Z Successfully built calc
+2026-04-19T22:44:24.5936224Z Installing collected packages: ruff, pygments, pluggy, packaging, iniconfig, coverage, calc, pytest, pytest-cov
+2026-04-19T22:44:25.9666937Z 
+2026-04-19T22:44:25.9693842Z Successfully installed calc-0.1.0 coverage-7.13.5 iniconfig-2.3.0 packaging-26.1 pluggy-1.6.0 pygments-2.20.0 pytest-9.0.3 pytest-cov-7.1.0 ruff-0.15.11
+2026-04-19T22:44:26.1435342Z ##[group]Run ruff check .
+2026-04-19T22:44:26.1435620Z [36;1mruff check .[0m
+2026-04-19T22:44:26.1459879Z shell: /usr/bin/bash -e {0}
+2026-04-19T22:44:26.1460112Z env:
+2026-04-19T22:44:26.1460373Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:26.1460798Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib/pkgconfig
+2026-04-19T22:44:26.1461202Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:26.1461592Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:26.1462185Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.13/x64
+2026-04-19T22:44:26.1462754Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.13/x64/lib
+2026-04-19T22:44:26.1463186Z ##[endgroup]
+2026-04-19T22:44:26.1628351Z E501 Line too long (129 > 100)
+2026-04-19T22:44:26.1634038Z   --> src/calc/formatting.py:13:101
+2026-04-19T22:44:26.1634708Z    |
+2026-04-19T22:44:26.1635256Z 12 | def verbose_description() -> str:
+2026-04-19T22:44:26.1636393Z 13 |     return "This is a very long descriptive message intended to trip ruff's E501 line-length check deliberately for the testbed."
+2026-04-19T22:44:26.1637610Z    |                                                                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-19T22:44:26.1638305Z    |
+2026-04-19T22:44:26.1638575Z 
+2026-04-19T22:44:26.1638843Z Found 1 error.
+2026-04-19T22:44:26.1673776Z ##[error]Process completed with exit code 1.
+2026-04-19T22:44:26.1869437Z Post job cleanup.
+2026-04-19T22:44:26.2897725Z [command]/usr/bin/git version
+2026-04-19T22:44:26.2950407Z git version 2.53.0
+2026-04-19T22:44:26.2996232Z Temporarily overriding HOME='/home/runner/work/_temp/290de37e-54b9-4bee-ad05-699a35f6005a' before making global git config changes
+2026-04-19T22:44:26.2997753Z Adding repository directory to the temporary git global config as a safe directory
+2026-04-19T22:44:26.3003162Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/phalanx-ci-fixer-testbed/phalanx-ci-fixer-testbed
+2026-04-19T22:44:26.3732514Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-04-19T22:44:26.3804915Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-04-19T22:44:26.4203004Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-04-19T22:44:26.4232640Z http.https://github.com/.extraheader
+2026-04-19T22:44:26.4272898Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-04-19T22:44:26.4322548Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-04-19T22:44:26.4714911Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-04-19T22:44:26.4783035Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-04-19T22:44:26.5268091Z Cleaning up orphan processes
+2026-04-19T22:44:26.5547832Z ##[warning]Node.js 20 actions are deprecated. The following actions are running on Node.js 20 and may not work as expected: actions/checkout@v4, actions/setup-python@v5. Actions will be forced to run with Node.js 24 by default starting June 2nd, 2026. Node.js 20 will be removed from the runner on September 16th, 2026. Please check if updated versions of these actions are available that support Node.js 24. To opt into Node.js 24 now, set the FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true environment variable on the runner or in your workflow file. Once Node.js 24 becomes the default, you can temporarily opt out by setting ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

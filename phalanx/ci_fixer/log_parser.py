@@ -162,8 +162,14 @@ _RUFF_RE = re.compile(
 # ruff rich/diagnostic format (--output-format=full or terminal default):
 #   F401 [*] `sys` imported but unused
 #      --> tests/test_eval_outcome.py:259:8
+#
+# Note: `\n\s*-->` not `\n\s+-->` — the `\s*` is critical. The timestamp
+# cleaner's `\s*` trailing consumer eats leading indentation on the `-->`
+# line when preceded by a GitHub Actions timestamp, so in cleaned output
+# the arrow can start at column 0. A `\s+` here would miss exactly the
+# case this regex exists to handle.
 _RUFF_RICH_RE = re.compile(
-    r"^([A-Z]\d+)\s+(?:\[\*\]\s+)?(.+?)\n\s+-->\s+([\w./\-]+\.py):(\d+):(\d+)",
+    r"^([A-Z]\d+)\s+(?:\[\*\]\s+)?(.+?)\n\s*-->\s+([\w./\-]+\.py):(\d+):(\d+)",
     re.MULTILINE,
 )
 
@@ -257,7 +263,11 @@ def parse_log(raw: str) -> ParsedLog:
 
     # Determine primary tool
     if lint_errors:
-        tool = "ruff" if _RUFF_RE.search(text) else "eslint"
+        tool = (
+            "ruff"
+            if (_RUFF_RE.search(text) or _RUFF_RICH_RE.search(text))
+            else "eslint"
+        )
     elif type_errors:
         tool = "mypy" if _MYPY_RE.search(text) else "tsc"
     elif test_failures:
@@ -280,16 +290,43 @@ def parse_log(raw: str) -> ParsedLog:
 
 
 def _parse_ruff(text: str) -> list[LintError]:
+    """Parse ruff output in BOTH formats:
+      - classic: `file.py:line:col: CODE message`   (--output-format=concise)
+      - rich:    `CODE message\\n  --> file.py:line:col`   (default since ruff 0.5)
+
+    We dedupe on (file, line, col, code) because a single run rarely emits
+    both formats, but if something upstream has both we'd otherwise double
+    every error.
+    """
     errors: list[LintError] = []
-    for m in _RUFF_RE.finditer(text):
+    seen: set[tuple[str, int, int, str]] = set()
+
+    def _add(file: str, line: int, col: int, code: str, message: str) -> None:
+        key = (file, line, col, code)
+        if key in seen:
+            return
+        seen.add(key)
         errors.append(
-            LintError(
-                file=m.group(1),
-                line=int(m.group(2)),
-                col=int(m.group(3)),
-                code=m.group(4),
-                message=m.group(5).strip(),
-            )
+            LintError(file=file, line=line, col=col, code=code, message=message)
+        )
+
+    # Classic concise format.
+    for m in _RUFF_RE.finditer(text):
+        _add(
+            file=m.group(1),
+            line=int(m.group(2)),
+            col=int(m.group(3)),
+            code=m.group(4),
+            message=m.group(5).strip(),
+        )
+    # Rich diagnostic format — group order differs: (code, message, file, line, col).
+    for m in _RUFF_RICH_RE.finditer(text):
+        _add(
+            file=m.group(3),
+            line=int(m.group(4)),
+            col=int(m.group(5)),
+            code=m.group(1),
+            message=m.group(2).strip(),
         )
     return errors
 
