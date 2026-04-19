@@ -286,13 +286,15 @@ def _parse_ruff(text: str) -> list[LintError]:
         key = (m.group(1), int(m.group(2)), m.group(4))
         if key not in seen:
             seen.add(key)
-            errors.append(LintError(
-                file=m.group(1),
-                line=int(m.group(2)),
-                col=int(m.group(3)),
-                code=m.group(4),
-                message=m.group(5).strip(),
-            ))
+            errors.append(
+                LintError(
+                    file=m.group(1),
+                    line=int(m.group(2)),
+                    col=int(m.group(3)),
+                    code=m.group(4),
+                    message=m.group(5).strip(),
+                )
+            )
 
     # Also parse rich/diagnostic format (--output-format=full or terminal default):
     #   F401 [*] `sys` imported but unused
@@ -301,13 +303,15 @@ def _parse_ruff(text: str) -> list[LintError]:
         key = (m.group(3), int(m.group(4)), m.group(1))
         if key not in seen:
             seen.add(key)
-            errors.append(LintError(
-                file=m.group(3),
-                line=int(m.group(4)),
-                col=int(m.group(5)),
-                code=m.group(1),
-                message=m.group(2).strip(),
-            ))
+            errors.append(
+                LintError(
+                    file=m.group(3),
+                    line=int(m.group(4)),
+                    col=int(m.group(5)),
+                    code=m.group(1),
+                    message=m.group(2).strip(),
+                )
+            )
 
     return errors
 

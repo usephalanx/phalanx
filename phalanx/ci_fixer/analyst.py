@@ -206,7 +206,12 @@ class RootCauseAnalyst:
                 root_cause="Could not read any of the failing files from workspace",
             )
 
-        lint_only = bool(parsed_log.lint_errors and not parsed_log.type_errors and not parsed_log.test_failures and not parsed_log.build_errors)
+        lint_only = bool(
+            parsed_log.lint_errors
+            and not parsed_log.type_errors
+            and not parsed_log.test_failures
+            and not parsed_log.build_errors
+        )
 
         # ── Phase 2: history check ─────────────────────────────────────────────
         if fingerprint_hash and self._history_lookup is not None:
@@ -261,7 +266,9 @@ class RootCauseAnalyst:
             log.warning("ci_analyst.json_parse_failed", error=str(exc), raw=raw[:500])
             return FixPlan(confidence="low", root_cause="LLM returned non-JSON response")
 
-        patches = self._parse_and_validate_patches(data.get("patches", []), windows, lint_only=lint_only)
+        patches = self._parse_and_validate_patches(
+            data.get("patches", []), windows, lint_only=lint_only
+        )
         confidence = data.get("confidence", "low")
 
         # If patch validation rejected everything, downgrade to low
