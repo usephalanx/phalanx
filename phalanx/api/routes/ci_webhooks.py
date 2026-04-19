@@ -53,6 +53,9 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
     from phalanx.agents.ci_fixer import (
         execute_task,  # noqa: PLC0415 (avoid circular at module level)
     )
+    from phalanx.agents.ci_fixer_v2_task import (
+        execute_v2_task,  # noqa: PLC0415
+    )
 
     async with get_db() as session:
         # Find matching integration
@@ -159,11 +162,16 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         await session.commit()
         await session.refresh(ci_run)
 
-    # Dispatch async — return immediately to webhook caller
-    execute_task.apply_async(
-        args=[ci_run.id],
-        queue="ci_fixer",
-    )
+    # Dispatch async — return immediately to webhook caller.
+    # Feature flag selects the v2 agent (spec §14 cutover). Legacy v1
+    # path stays available until v2 clears the MVP exit gates; both
+    # share the `ci_fixer` queue (N1-scoped worker with Docker socket).
+    if settings.phalanx_ci_fixer_v2_enabled:
+        execute_v2_task.apply_async(args=[ci_run.id], queue="ci_fixer")
+        pipeline_version = "v2"
+    else:
+        execute_task.apply_async(args=[ci_run.id], queue="ci_fixer")
+        pipeline_version = "v1"
 
     log.info(
         "ci_webhook.dispatched",
@@ -171,6 +179,7 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         repo=event.repo_full_name,
         branch=event.branch,
         provider=event.provider,
+        pipeline_version=pipeline_version,
     )
     return ci_run
 

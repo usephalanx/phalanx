@@ -24,6 +24,7 @@ celery_app = Celery(
         "phalanx.agents.release",
         "phalanx.agents.sre",
         "phalanx.agents.ci_fixer",
+        "phalanx.agents.ci_fixer_v2_task",
         "phalanx.workflow.advance_run",
         "phalanx.maintenance.tasks",
         "phalanx.memory.tasks",
