@@ -198,11 +198,12 @@ async def _get_github_token(run: CIFixRun) -> str | None:
             from phalanx.config.settings import get_settings  # noqa: PLC0415
 
             settings = get_settings()
-            if settings.encryption_key:
+            enc_key = getattr(settings, "encryption_key", None)
+            if enc_key:
                 try:
                     from cryptography.fernet import Fernet  # noqa: PLC0415
 
-                    f = Fernet(settings.encryption_key.encode())
+                    f = Fernet(enc_key.encode())
                     return f.decrypt(integration.ci_api_key_enc.encode()).decode()
                 except Exception:
                     pass

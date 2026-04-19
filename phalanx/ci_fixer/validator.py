@@ -180,19 +180,21 @@ def _regression_check(
 
     # Build set of pre-existing (file, code) pairs
     pre_existing: set[tuple[str, str]] = set()
-    for e in original_parsed.lint_errors:
-        pre_existing.add((e.file, e.code))
-    for e in original_parsed.type_errors:
-        pre_existing.add((e.file, getattr(e, "code", e.message[:30])))
+    for le in original_parsed.lint_errors:
+        pre_existing.add((le.file, le.code))
+    for te in original_parsed.type_errors:
+        pre_existing.add((te.file, getattr(te, "code", te.message[:30])))
 
-    regressions = []
-    for e in new_parsed.lint_errors:
-        if (e.file, e.code) not in pre_existing:
-            regressions.append(e)
-    for e in new_parsed.type_errors:
-        key = (e.file, getattr(e, "code", e.message[:30]))
+    from phalanx.ci_fixer.log_parser import LintError, TypeError as TypeErr  # noqa: PLC0415
+
+    regressions: list[LintError | TypeErr] = []
+    for le in new_parsed.lint_errors:
+        if (le.file, le.code) not in pre_existing:
+            regressions.append(le)
+    for te in new_parsed.type_errors:
+        key = (te.file, getattr(te, "code", te.message[:30]))
         if key not in pre_existing:
-            regressions.append(e)
+            regressions.append(te)
 
     return regressions
 

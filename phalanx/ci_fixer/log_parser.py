@@ -84,22 +84,22 @@ class ParsedLog:
         """All unique files mentioned across all error types."""
         seen: set[str] = set()
         files: list[str] = []
-        for e in self.lint_errors:
-            if e.file not in seen:
-                seen.add(e.file)
-                files.append(e.file)
-        for e in self.type_errors:
-            if e.file not in seen:
-                seen.add(e.file)
-                files.append(e.file)
-        for e in self.test_failures:
-            if e.file not in seen:
-                seen.add(e.file)
-                files.append(e.file)
-        for e in self.build_errors:
-            if e.file and e.file not in seen:
-                seen.add(e.file)
-                files.append(e.file)
+        for le in self.lint_errors:
+            if le.file not in seen:
+                seen.add(le.file)
+                files.append(le.file)
+        for te in self.type_errors:
+            if te.file not in seen:
+                seen.add(te.file)
+                files.append(te.file)
+        for tf in self.test_failures:
+            if tf.file not in seen:
+                seen.add(tf.file)
+                files.append(tf.file)
+        for be in self.build_errors:
+            if be.file and be.file not in seen:
+                seen.add(be.file)
+                files.append(be.file)
         return files
 
     def summary(self) -> str:
@@ -128,24 +128,24 @@ class ParsedLog:
 
         if self.type_errors:
             lines.append("TYPE ERRORS:")
-            for e in self.type_errors[:10]:
-                lines.append(f"  {e.file}:{e.line}: {e.message}")
+            for te in self.type_errors[:10]:
+                lines.append(f"  {te.file}:{te.line}: {te.message}")
             lines.append("")
 
         if self.test_failures:
             lines.append("TEST FAILURES:")
-            for f in self.test_failures[:10]:
-                lines.append(f"  {f.test_id}")
-                if f.message:
-                    for msg_line in f.message.splitlines()[:5]:
+            for tf in self.test_failures[:10]:
+                lines.append(f"  {tf.test_id}")
+                if tf.message:
+                    for msg_line in tf.message.splitlines()[:5]:
                         lines.append(f"    {msg_line}")
             lines.append("")
 
         if self.build_errors:
             lines.append("BUILD ERRORS:")
-            for e in self.build_errors[:5]:
-                prefix = f"  {e.file}: " if e.file else "  "
-                lines.append(f"{prefix}{e.message}")
+            for be in self.build_errors[:5]:
+                prefix = f"  {be.file}: " if be.file else "  "
+                lines.append(f"{prefix}{be.message}")
             lines.append("")
 
         return "\n".join(lines)
@@ -153,13 +153,21 @@ class ParsedLog:
 
 # ── Regex patterns ─────────────────────────────────────────────────────────────
 
-# ruff: phalanx/agents/foo.py:1:10: F401 'os' imported but unused
+# ruff standard format: phalanx/agents/foo.py:1:10: F401 'os' imported but unused
 _RUFF_RE = re.compile(
     r"^([\w./\-]+\.py):(\d+):(\d+):\s+([A-Z]\d+)\s+(.+)$",
     re.MULTILINE,
 )
 
-# mypy: phalanx/agents/foo.py:42: error: Incompatible return value
+# ruff rich/diagnostic format (--output-format=full or terminal default):
+#   F401 [*] `sys` imported but unused
+#      --> tests/test_eval_outcome.py:259:8
+_RUFF_RICH_RE = re.compile(
+    r"^([A-Z]\d+)\s+(?:\[\*\]\s+)?(.+?)\n\s+-->\s+([\w./\-]+\.py):(\d+):(\d+)",
+    re.MULTILINE,
+)
+
+# mypy output format: phalanx/agents/foo.py:42: error: Incompatible return value
 _MYPY_RE = re.compile(
     r"^([\w./\-]+\.py):(\d+):\s+error:\s+(.+)$",
     re.MULTILINE,
@@ -248,7 +256,7 @@ def parse_log(raw: str) -> ParsedLog:
 
     # Determine primary tool
     if lint_errors:
-        tool = "ruff" if _RUFF_RE.search(text) else "eslint"
+        tool = "ruff" if (_RUFF_RE.search(text) or _RUFF_RICH_RE.search(text)) else "eslint"
     elif type_errors:
         tool = "mypy" if _MYPY_RE.search(text) else "tsc"
     elif test_failures:
@@ -272,16 +280,35 @@ def parse_log(raw: str) -> ParsedLog:
 
 def _parse_ruff(text: str) -> list[LintError]:
     errors: list[LintError] = []
+    seen: set[tuple] = set()
+
     for m in _RUFF_RE.finditer(text):
-        errors.append(
-            LintError(
+        key = (m.group(1), int(m.group(2)), m.group(4))
+        if key not in seen:
+            seen.add(key)
+            errors.append(LintError(
                 file=m.group(1),
                 line=int(m.group(2)),
                 col=int(m.group(3)),
                 code=m.group(4),
                 message=m.group(5).strip(),
-            )
-        )
+            ))
+
+    # Also parse rich/diagnostic format (--output-format=full or terminal default):
+    #   F401 [*] `sys` imported but unused
+    #      --> tests/test_eval_outcome.py:259:8
+    for m in _RUFF_RICH_RE.finditer(text):
+        key = (m.group(3), int(m.group(4)), m.group(1))
+        if key not in seen:
+            seen.add(key)
+            errors.append(LintError(
+                file=m.group(3),
+                line=int(m.group(4)),
+                col=int(m.group(5)),
+                code=m.group(1),
+                message=m.group(2).strip(),
+            ))
+
     return errors
 
 
