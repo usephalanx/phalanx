@@ -23,7 +23,8 @@ import structlog
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from phalanx.ci_fixer.log_parser import ParsedLog
+    from phalanx.ci_fixer.log_parser import LintError, ParsedLog
+    from phalanx.ci_fixer.log_parser import TypeError as TypeErr
 
 log = structlog.get_logger(__name__)
 
@@ -184,8 +185,6 @@ def _regression_check(
         pre_existing.add((le.file, le.code))
     for te in original_parsed.type_errors:
         pre_existing.add((te.file, getattr(te, "code", te.message[:30])))
-
-    from phalanx.ci_fixer.log_parser import LintError, TypeError as TypeErr  # noqa: PLC0415
 
     regressions: list[LintError | TypeErr] = []
     for le in new_parsed.lint_errors:
