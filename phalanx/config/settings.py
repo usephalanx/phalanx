@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     # CIFixerV2Agent instead of the legacy CIFixerAgent. Default off
     # until MVP exit gates pass (spec §14).
     phalanx_ci_fixer_v2_enabled: bool = False
+    # Git author identity for CI Fixer v2 commits. Distinct from the
+    # global git_author_name/email so v1 attribution stays unchanged
+    # while v2 commits land under a Phalanx-branded identity (audit A
+    # residue — full rebrand of git_author_name is a separate effort).
+    git_author_name_ci_fixer: str = "Phalanx CI Fixer"
+    git_author_email_ci_fixer: str = "ci-fixer@usephalanx.com"
     # ── CI Webhooks ───────────────────────────────────────────────────────────
     buildkite_webhook_token: str = ""
     circleci_token: str = ""

@@ -230,3 +230,61 @@ async def test_commit_and_push_surfaces_git_binary_missing(monkeypatch):
     result = await tool.handler(_ctx(), _valid_input())
     assert result.ok is False
     assert "git_binary_missing" in (result.error or "")
+
+
+async def test_commit_uses_v2_specific_git_author_settings(monkeypatch):
+    """commit_and_push must use settings.git_author_name_ci_fixer /
+    _email_ci_fixer so commits attribute to 'Phalanx CI Fixer', not
+    legacy 'FORGE' (audit item A residue)."""
+    calls = _patch_git(
+        monkeypatch,
+        [
+            (0, "", ""),              # checkout -B
+            (0, "", ""),              # add
+            (0, "", ""),              # commit
+            (0, "shaface\n", ""),     # rev-parse HEAD
+            (0, "", ""),              # push
+        ],
+    )
+    from phalanx.config.settings import get_settings
+
+    s = get_settings()
+    # The commit call should carry -c user.name + -c user.email with
+    # the CI-Fixer-specific identity.
+    tool = tools_base.get("commit_and_push")
+    result = await tool.handler(_ctx(), _valid_input())
+    assert result.ok is True
+
+    commit_args = calls[2]  # sequence: checkout / add / commit / rev-parse / push
+    argv_joined = " ".join(commit_args)
+    assert "user.name=" in argv_joined
+    assert s.git_author_name_ci_fixer in argv_joined
+    assert "user.email=" in argv_joined
+    assert s.git_author_email_ci_fixer in argv_joined
+
+
+async def test_commit_falls_back_to_legacy_author_when_v2_setting_empty(monkeypatch):
+    """If an operator explicitly blanks the v2-specific settings, we
+    fall back to the legacy (v1) git_author_name/email rather than
+    committing with empty author info."""
+    calls = _patch_git(
+        monkeypatch,
+        [
+            (0, "", ""),
+            (0, "", ""),
+            (0, "", ""),
+            (0, "sha\n", ""),
+            (0, "", ""),
+        ],
+    )
+    from phalanx.config.settings import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "git_author_name_ci_fixer", "")
+    monkeypatch.setattr(s, "git_author_email_ci_fixer", "")
+
+    tool = tools_base.get("commit_and_push")
+    await tool.handler(_ctx(), _valid_input())
+    commit_argv = " ".join(calls[2])
+    assert f"user.name={s.git_author_name}" in commit_argv
+    assert f"user.email={s.git_author_email}" in commit_argv

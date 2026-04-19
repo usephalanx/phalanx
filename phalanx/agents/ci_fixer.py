@@ -1717,6 +1717,12 @@ def _compute_fingerprint(parsed: ParsedLog) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+# Public alias — CI Fixer v2 imports this for its fetch_ci_log tool.
+# Keeping the implementation here avoids a second copy; moving it into
+# its own module is deferred until v1 retirement.
+compute_fingerprint = _compute_fingerprint
+
+
 def _format_error_detail(parsed: ParsedLog) -> str:
     lines: list[str] = []
     if parsed.lint_errors:

@@ -649,8 +649,12 @@ async def _handle_commit_and_push(
 
     from phalanx.config.settings import get_settings
 
-    author_name = get_settings().git_author_name
-    author_email = get_settings().git_author_email
+    _settings = get_settings()
+    # Prefer v2-specific CI Fixer identity; fall back to the legacy
+    # global identity if the v2 setting is empty. Keeps v1 agents'
+    # commit attribution unchanged.
+    author_name = _settings.git_author_name_ci_fixer or _settings.git_author_name
+    author_email = _settings.git_author_email_ci_fixer or _settings.git_author_email
 
     # Shared git-config flags so we don't mutate the workspace's config.
     config_flags = [

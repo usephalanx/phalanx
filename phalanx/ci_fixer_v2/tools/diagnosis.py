@@ -99,6 +99,70 @@ async def _fetch_log_via_v1(
     return await fetcher.fetch(event, api_key)
 
 
+async def _compute_and_persist_fingerprint(
+    ctx: AgentContext, log_text: str
+) -> str | None:
+    """Best-effort fingerprint side-effect from fetch_ci_log.
+
+    Parses the fetched log via v1's log_parser, computes the stable
+    sha256[:16] identity via the shared `compute_fingerprint` helper,
+    writes it to AgentContext AND to CIFixRun.fingerprint_hash in DB.
+
+    Any failure here is LOGGED, not raised — the agent can still run
+    without fingerprint memory (query_fingerprint will miss, the run
+    behaves like a fresh failure). Returns the hash on success or
+    None on failure / when ctx already has one set.
+    """
+    if ctx.fingerprint_hash:
+        return ctx.fingerprint_hash
+    try:
+        from phalanx.agents.ci_fixer import compute_fingerprint
+        from phalanx.ci_fixer.log_parser import parse_log
+
+        parsed = parse_log(log_text)
+        fingerprint = compute_fingerprint(parsed)
+    except Exception as exc:
+        log.warning(
+            "v2.tools.fetch_ci_log.fingerprint_compute_failed",
+            error=str(exc),
+        )
+        return None
+
+    ctx.fingerprint_hash = fingerprint
+
+    try:
+        await _persist_fingerprint_to_ci_fix_run(ctx.ci_fix_run_id, fingerprint)
+    except Exception as exc:
+        # DB write failure is non-fatal — ctx carries the fingerprint
+        # for in-memory use; v1 subsystems (outcome_tracker, pattern
+        # promoter) that key off CIFixRun.fingerprint_hash won't see it,
+        # but that only degrades post-run learning — not this run's fix.
+        log.warning(
+            "v2.tools.fetch_ci_log.fingerprint_persist_failed",
+            ci_fix_run_id=ctx.ci_fix_run_id,
+            error=str(exc),
+        )
+    return fingerprint
+
+
+async def _persist_fingerprint_to_ci_fix_run(
+    ci_fix_run_id: str, fingerprint_hash: str
+) -> None:
+    """Write fingerprint_hash back to CIFixRun. Test seam."""
+    from sqlalchemy import update
+
+    from phalanx.db.models import CIFixRun
+    from phalanx.db.session import get_db
+
+    async with get_db() as session:
+        await session.execute(
+            update(CIFixRun)
+            .where(CIFixRun.id == ci_fix_run_id)
+            .values(fingerprint_hash=fingerprint_hash)
+        )
+        await session.commit()
+
+
 async def _handle_fetch_ci_log(
     ctx: AgentContext, tool_input: dict[str, Any]
 ) -> ToolResult:
@@ -135,6 +199,10 @@ async def _handle_fetch_ci_log(
         )
         return ToolResult(ok=False, error=f"fetch_failed: {exc}")
 
+    # Side-effect: compute + persist fingerprint so query_fingerprint and
+    # v1 post-run subsystems can find this run in memory.
+    fingerprint = await _compute_and_persist_fingerprint(ctx, text)
+
     return ToolResult(
         ok=True,
         data={
@@ -142,6 +210,7 @@ async def _handle_fetch_ci_log(
             "provider": ctx.ci_provider,
             "job_id": job_id,
             "char_count": len(text),
+            "fingerprint_hash": fingerprint or "",
         },
     )
 
