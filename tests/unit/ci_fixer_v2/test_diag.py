@@ -184,7 +184,8 @@ async def test_check_docker_missing_binary(monkeypatch):
 async def test_check_sandbox_images_detects_missing(monkeypatch):
     class _Result:
         returncode = 0
-        stdout = "phalanx-sandbox:python\nubuntu:22.04\n"
+        # Only python is present; node/go/rust are missing.
+        stdout = "phalanx-sandbox-python:latest\nubuntu:22.04\n"
         stderr = ""
 
     def _run(*_a, **_k):
@@ -193,9 +194,9 @@ async def test_check_sandbox_images_detects_missing(monkeypatch):
     monkeypatch.setattr(diag.subprocess, "run", _run)
     result = await diag.check_sandbox_images()
     assert result.ok is False
-    # node + multi are missing — call them out.
-    assert "phalanx-sandbox:node" in result.detail
-    assert "phalanx-sandbox:multi" in result.detail
+    assert "phalanx-sandbox-node:latest" in result.detail
+    assert "phalanx-sandbox-go:latest" in result.detail
+    assert "phalanx-sandbox-rust:latest" in result.detail
 
 
 async def test_check_sandbox_images_all_present(monkeypatch):
@@ -203,9 +204,10 @@ async def test_check_sandbox_images_all_present(monkeypatch):
         returncode = 0
         stdout = "\n".join(
             [
-                "phalanx-sandbox:python",
-                "phalanx-sandbox:node",
-                "phalanx-sandbox:multi",
+                "phalanx-sandbox-python:latest",
+                "phalanx-sandbox-node:latest",
+                "phalanx-sandbox-go:latest",
+                "phalanx-sandbox-rust:latest",
                 "postgres:16",
             ]
         )
@@ -214,4 +216,4 @@ async def test_check_sandbox_images_all_present(monkeypatch):
     monkeypatch.setattr(diag.subprocess, "run", lambda *a, **k: _Result())
     result = await diag.check_sandbox_images()
     assert result.ok is True
-    assert "all 3 present" in result.detail
+    assert f"all {len(diag.SANDBOX_IMAGES_EXPECTED)} present" in result.detail

@@ -46,9 +46,13 @@ REQUIRED_ENV_VARS: tuple[str, ...] = (
 
 
 SANDBOX_IMAGES_EXPECTED: tuple[str, ...] = (
-    "phalanx-sandbox:python",
-    "phalanx-sandbox:node",
-    "phalanx-sandbox:multi",
+    # Image names match what `docker/sandbox/*/Dockerfile` builds produce.
+    # Hyphen separator, not colon-tagged — the colon form was a docs-only
+    # fiction in the original spec draft.
+    "phalanx-sandbox-python:latest",
+    "phalanx-sandbox-node:latest",
+    "phalanx-sandbox-go:latest",
+    "phalanx-sandbox-rust:latest",
 )
 
 
@@ -83,10 +87,13 @@ async def check_openai_model() -> DiagResult:
 
     try:
         client = AsyncOpenAI(api_key=settings.openai_api_key)
+        # Reasoning models (o-series, gpt-5.x) reject the legacy
+        # `max_tokens` param and require `max_completion_tokens`.
+        # Older chat models accept both; this name is forward-compatible.
         resp = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=8,
+            max_completion_tokens=16,
         )
         if resp and resp.choices:
             return DiagResult("openai_model", True, f"{model} reachable")
