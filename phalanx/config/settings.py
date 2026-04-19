@@ -102,6 +102,17 @@ class Settings(BaseSettings):
     phalanx_enable_prompt_enrichment: bool = True
     phalanx_enable_slack_threading: bool = False
     phalanx_enable_demo_deploy: bool = True
+
+    # ── CI Fixer v2 ───────────────────────────────────────────────────────────
+    # Main-agent reasoning model for CI Fixer v2 (spec §3).
+    # Routed through this indirection so model swaps are config-only.
+    openai_model_reasoning_ci_fixer: str = "gpt-5.4"
+    # Coder subagent model invoked via delegate_to_coder (spec §5).
+    anthropic_model_ci_fixer_coder: str = "claude-sonnet-4-6"
+    # Feature flag — when True, the ci_fixer webhook dispatches to
+    # CIFixerV2Agent instead of the legacy CIFixerAgent. Default off
+    # until MVP exit gates pass (spec §14).
+    phalanx_ci_fixer_v2_enabled: bool = False
     # ── CI Webhooks ───────────────────────────────────────────────────────────
     buildkite_webhook_token: str = ""
     circleci_token: str = ""
