@@ -482,6 +482,7 @@ class MemoryFact(Base):
             "is_standing",
             postgresql_where=Column("is_standing").is_(True),
         ),
+        Index("idx_memory_facts_project_agent_role", "project_id", "agent_role"),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -489,6 +490,9 @@ class MemoryFact(Base):
     fact_type: Mapped[str] = mapped_column(String(100), nullable=False)
     # architecture | constraint | convention | dependency | team_preference
     # tech_stack | external_service | artifact_summary | escalation_resolution
+    agent_role: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # NULL = legacy shared fact (pre-v2). CI Fixer v2 writes 'ci_fixer';
+    # engineering agents write their own role.
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
@@ -834,6 +838,8 @@ class CIFixRun(Base):
     """Phase 4: True when tool version at fix time matches failure-time version (within minor version)."""
     pipeline_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     """CIFixContext serialized as JSON — full multi-agent pipeline state (Phase 1+)."""
+    cost_breakdown_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """v2 cost breakdown JSON: {gpt_reasoning, sonnet_coder, sandbox_runtime_seconds, total_cost_usd}."""
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     attempt: Mapped[int] = mapped_column(Integer, default=1)
     error: Mapped[str | None] = mapped_column(Text)
