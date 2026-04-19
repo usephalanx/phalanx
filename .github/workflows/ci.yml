@@ -314,7 +314,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run migrations
-        run: alembic upgrade head
+        run: alembic -c alembic/alembic.ini upgrade head
 
       - name: Run unit tests
         run: |
@@ -419,7 +419,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run migrations
-        run: alembic upgrade head
+        run: alembic -c alembic/alembic.ini upgrade head
 
       - name: Run integration tests
         env:
@@ -491,6 +491,7 @@ jobs:
           context: .
           target: production
           push: false
+          load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: forge:prod-${{ github.sha }}
