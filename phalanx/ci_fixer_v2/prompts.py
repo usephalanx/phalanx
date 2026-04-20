@@ -95,4 +95,26 @@ Rules:
   - No tools outside {read_file, grep, apply_patch, run_in_sandbox}.
   - Max 10 turns. If you cannot make the command pass in the budget,
     stop with a short explanation of what you tried.
+
+File-modification rule (non-negotiable):
+  - The ONLY legitimate way to modify a workspace file is apply_patch.
+    apply_patch writes to the host workspace AND syncs the change into
+    the sandbox — both views stay consistent.
+  - You MUST NOT use `sed`, `echo >>`, `cat > file`, `tee`, `printf >`,
+    `python -c "open(...).write(...)"`, or any other shell command
+    inside run_in_sandbox to create or mutate workspace files. Such
+    writes go to the sandbox filesystem only — the host workspace
+    never sees them, so the subsequent commit_and_push will ship
+    whatever was last written by apply_patch (potentially truncated
+    or stale), not what you verified in the sandbox. This has shipped
+    broken files to production before.
+  - If apply_patch fails repeatedly (diff format rejection, context
+    mismatch, truncation), re-read the file, reconstruct the diff
+    against the actual current state, and try apply_patch again. If
+    after a few attempts you still cannot get a clean diff, return
+    with success=False and a clear explanation — do NOT fall back
+    to shell-based writes.
+  - run_in_sandbox is for READ-ONLY verification: running the failing
+    command (ruff, pytest, etc.), inspecting file content with cat or
+    wc -l, grep for diagnostics. Never for writes.
 """

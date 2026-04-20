@@ -201,6 +201,24 @@ async def run_coder_subagent(
             logger.info("v2.coder.end_turn", turn=turn, notes=last_notes[:200])
             break
 
+        # max_tokens stop means Sonnet's output was truncated mid-stream.
+        # Any apply_patch call in this turn contains an incomplete diff;
+        # applying it would ship a truncated file (we've seen this bug
+        # drop whole function bodies). Surface loudly so the coder — or
+        # the next main-agent turn — can react, not silently succeed.
+        if response.stop_reason == "max_tokens":
+            logger.warning(
+                "v2.coder.response_truncated",
+                turn=turn,
+                tool_uses=[t.name for t in response.tool_uses],
+                hint=(
+                    "Sonnet hit max_tokens mid-response; any apply_patch "
+                    "diff in this turn is likely incomplete. Reconstruct "
+                    "against the live file and split large patches across "
+                    "multiple turns."
+                ),
+            )
+
         # Echo the assistant turn into the messages (bare minimum content).
         assistant_blocks: list[dict[str, Any]] = []
         if response.text:

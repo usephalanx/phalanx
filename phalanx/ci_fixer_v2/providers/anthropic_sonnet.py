@@ -22,7 +22,13 @@ from phalanx.ci_fixer_v2.tools.base import ToolSchema
 log = structlog.get_logger(__name__)
 
 
-_DEFAULT_MAX_TOKENS: int = 8096
+_DEFAULT_MAX_TOKENS: int = 16384
+"""Sonnet output ceiling for a single coder turn. Raised from 8096
+after a coverage-case simulate run silently truncated the coder's
+apply_patch diff mid-function (ends of test bodies dropped), which
+git apply still accepted, which shipped a broken file to CI. 16k is
+generous for any single-file patch; larger changes should be split
+into multiple delegate_to_coder rounds, not crammed into one turn."""
 
 _LLM_CALL_TIMEOUT_SECONDS: float = 180.0
 """Hard wall-clock timeout on a single Sonnet request, enforced via
