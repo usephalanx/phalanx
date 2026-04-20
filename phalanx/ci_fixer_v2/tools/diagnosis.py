@@ -91,6 +91,7 @@ async def _fetch_log_via_v1(
         branch="",
         commit_sha="",
         build_id=build_id,
+        build_url="",
         failed_jobs=list(failed_jobs),
         pr_number=pr_number,
         raw_payload={},

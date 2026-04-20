@@ -231,6 +231,14 @@ async def _persist_run_outcome(
 
         run.status = _map_verdict_to_status(outcome.verdict)
         run.cost_breakdown_json = json.dumps(ctx.cost.to_dict())
+        run.tokens_used = (
+            ctx.cost.gpt_reasoning_input_tokens
+            + ctx.cost.gpt_reasoning_output_tokens
+            + ctx.cost.gpt_reasoning_thinking_tokens
+            + ctx.cost.sonnet_coder_input_tokens
+            + ctx.cost.sonnet_coder_output_tokens
+            + ctx.cost.sonnet_coder_thinking_tokens
+        )
         run.completed_at = datetime.now(tz=timezone.utc)
 
         if outcome.verdict == RunVerdict.COMMITTED:
