@@ -314,13 +314,38 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 - [x] Agent reasoning traces (`GET /runs/{run_id}/trace`)
 - [x] SRE agent — autonomous Dockerfile generation + deploy
 - [x] Workspace isolation per run
-- [x] **CI Fixer v2** — agent + tools + loop, GPT-5.4 main + Sonnet 4.6 coder, sandbox verification gate, real end-to-end PR close against prod GitHub
-- [ ] CI Fixer simulation corpus — top-5 languages × 4 failure classes, MVP exit gates (Lenient ≥ 95%, Behavioral ≥ 99%)
+- [x] **CI Fixer v2 MVP** — agent + tools + loop, GPT-5.4 main + Sonnet 4.6 coder, sandbox verification gate, real end-to-end PR close on prod GitHub
+- [ ] CI Fixer scorecard — top-5 languages × 4 failure classes (see matrix below)
 - [ ] Tier-2 memory (pgvector) for pattern recall across repos
 - [ ] Discord integration
 - [ ] Voice input via Whisper
 - [ ] Multi-project support
 - [ ] Managed cloud version (`app.usephalanx.com`)
+
+### CI Fixer Scorecard — progress
+
+End-to-end PR close on prod (real LLMs, real sandbox, real GitHub CI):
+
+| Language | Lint | Test fail | Flake | Coverage |
+|---|:---:|:---:|:---:|:---:|
+| Python     | ✅ | ✅ | ✅ | ⏳ |
+| JavaScript | ⏳ | ⏳ | ⏳ | ⏳ |
+| TypeScript | ⏳ | ⏳ | ⏳ | ⏳ |
+| Java       | ⏳ | ⏳ | ⏳ | ⏳ |
+| C#         | ⏳ | ⏳ | ⏳ | ⏳ |
+
+3 of 20 cells closed, all on [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed):
+PR #1 (lint → `acdcbc5`), PR #2 (test_fail → `07ad29d2`), PR #3 (flake → `f9719fd`). Per-cell cost range: ~\$0.17–\$0.37, 45–95k tokens, 3–7 min wall-clock.
+
+### Architecture decision: no fix-type router
+
+After running Python × {lint, test_fail, flake} end-to-end, all three traced through the **same loop, same tool sequence, same prompt** and committed on the first or second delegate round. Variance across classes (validate_cmd, target files) was already extracted from the CI log + manifest files — not hardcoded per class. A full Strategy / Router abstraction would add code without adding capability. What goes in instead:
+
+1. **Language playbooks** — deterministic env-setup per stack (Python + pyproject → `pip install -e ".[dev]"`, Node + package.json → `npm ci`, …). Skips a GPT env-planner call per run and removes drift.
+2. **Coverage rule** in base system prompt — "Never lower `--cov-fail-under` or equivalent. Add tests or escalate."
+3. **New escalation enums** — `FLAKY_TEST_DETECTED`, `COVERAGE_ADJUSTMENT_NEEDED_OUT_OF_SCOPE`.
+
+Language router (Python / JS / TS / Java / C#) is still real and already partially exists (sandbox image selection + env planner). That's the only router axis the code needs.
 
 ---
 
