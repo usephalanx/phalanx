@@ -49,7 +49,7 @@ Commander → Planner → Builder → Reviewer → QA → Security → Release �
 | **Security** | Runs detect-secrets, bandit, pip-audit, optional Trivy. Blocks on any critical finding. | — |
 | **Release** | Opens the PR, tags the release, runs health checks. Run holds until you approve the merge. | — |
 | **SRE** | Generates a Dockerfile for the built app, deploys it to the demo server, configures nginx routing. Returns a live URL. | GPT-4.1 |
-| **CI Fixer** | Triggered by CI webhook failures. Reads logs, diagnoses root cause, opens a fix PR autonomously. | GPT-4.1 |
+| **CI Fixer (v2)** | Agent + tools + loop. Reads real CI logs, queries fingerprint memory, delegates code changes to the Sonnet coder subagent, verifies the fix in a sandbox container, commits + pushes only after sandbox exit 0. Hard verification gate — never commits a fix that didn't run green in sandbox. | GPT-5.4 (main) + Sonnet 4.6 (coder) |
 | **Prompt Enricher** | Detects vague or ambiguous work orders and resolves intent before planning begins. | GPT-4.1 |
 
 ---
@@ -60,6 +60,65 @@ Commander → Planner → Builder → Reviewer → QA → Security → Release �
 - **QA.md recipe** — builder generates a machine-readable test recipe (stack, runner, install steps, coverage threshold). QA follows it exactly.
 - **Agent traces** — every agent decision is recorded. Inspect at `GET /runs/{run_id}/trace`.
 - **Live demo URL** — SRE deploys the finished app to `demo.usephalanx.com/{slug}` after every successful run.
+
+---
+
+## CI Fixer v2
+
+The CI Fixer is its own architecture: **single agent + tools + loop**, not a pipeline. When a PR's CI fails, the agent is given the failing log and a set of tools; it decides each step.
+
+```
+                           ┌────────────────────────┐
+  CI webhook / simulate →  │    Main agent          │   GPT-5.4 (reasoning)
+                           │  diagnose → decide     │   ──────────────────
+                           │  → act → verify        │   Tools:
+                           │  → coordinate          │    fetch_ci_log
+                           └──────────┬─────────────┘    get_pr_context / diff
+                                      │                  query_fingerprint
+                      delegate_to_coder                  read_file / grep / glob
+                                      ▼                  git_blame
+                           ┌────────────────────────┐    get_ci_history
+                           │   Coder subagent       │    run_in_sandbox
+                           │  patch → verify loop   │    delegate_to_coder
+                           └──────────┬─────────────┘    comment_on_pr
+                                      │                  commit_and_push
+                            apply_patch + verify         open_fix_pr
+                                      ▼                  escalate
+                           ┌────────────────────────┐   ──────────────────
+                           │   Sonnet 4.6 coder     │   Coder tools:
+                           │  (docker sandbox)      │    read_file, grep,
+                           └────────────────────────┘    apply_patch,
+                                                         run_in_sandbox
+```
+
+**Hard invariants** (enforced in the loop, not the tool):
+- `commit_and_push` is blocked unless `run_in_sandbox` has executed the ORIGINAL failing command and seen exit 0.
+- `apply_patch` auto-syncs the changed files into the sandbox so verification runs against the patched state, not a stale `docker cp` snapshot.
+- Every tool call, LLM call, and git subprocess is bounded by `asyncio.wait_for` — no single stuck call can hang the run.
+- If `fetch_ci_log` fails, the agent escalates `infra_failure_out_of_scope` rather than reasoning from partial data.
+- `preexisting_main_failure` escalation requires concrete `get_ci_history` evidence on the default branch.
+
+**Sandbox / CI parity.** The agent inspects the repo's `pyproject.toml` / `package.json` / CI workflow and mirrors CI's install steps inside the sandbox (e.g. `pip install -e ".[dev]"`) before running the validator. This catches failures that old-baked-image versions of ruff/pytest/eslint would miss.
+
+**Simulate CLI.** Skip the webhook roundtrip when debugging:
+
+```bash
+docker exec phalanx-prod-phalanx-ci-fixer-worker-1 \
+  python -m phalanx.ci_fixer_v2.simulate \
+    --repo owner/name --pr 42 \
+    --branch fix/my-branch --sha abc1234 \
+    --job-id 123456789 --failing-command "ruff check ."
+```
+
+Runs the full agent loop in-process against real LLMs + real sandbox + real GitHub. Exit 0 if the agent committed, 1 if escalated.
+
+**Preflight diag.**
+
+```bash
+python -m phalanx.ci_fixer_v2.diag [--repo owner/name]
+```
+
+Checks every dependency (env vars, OpenAI reachable, Anthropic reachable, DB migrations at head, Redis, Docker daemon, sandbox images present) before a live run.
 
 ---
 
@@ -255,6 +314,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 - [x] Agent reasoning traces (`GET /runs/{run_id}/trace`)
 - [x] SRE agent — autonomous Dockerfile generation + deploy
 - [x] Workspace isolation per run
+- [x] **CI Fixer v2** — agent + tools + loop, GPT-5.4 main + Sonnet 4.6 coder, sandbox verification gate, real end-to-end PR close against prod GitHub
+- [ ] CI Fixer simulation corpus — top-5 languages × 4 failure classes, MVP exit gates (Lenient ≥ 95%, Behavioral ≥ 99%)
+- [ ] Tier-2 memory (pgvector) for pattern recall across repos
 - [ ] Discord integration
 - [ ] Voice input via Whisper
 - [ ] Multi-project support
