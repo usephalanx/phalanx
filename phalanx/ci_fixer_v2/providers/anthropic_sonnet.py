@@ -8,6 +8,8 @@ tests.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import structlog
@@ -23,10 +25,12 @@ log = structlog.get_logger(__name__)
 _DEFAULT_MAX_TOKENS: int = 8096
 
 _LLM_CALL_TIMEOUT_SECONDS: float = 180.0
-"""Hard client-side timeout on a single Sonnet request. SDK default is
-600s — too long. A legitimate coder turn (extended thinking + tool-use
-response) completes well under 180s; beyond that it's a network hang
-and the subagent loop should surface it as provider_error on that turn."""
+"""Hard wall-clock timeout on a single Sonnet request, enforced via
+asyncio.wait_for. We do NOT rely on the Anthropic SDK's own `timeout=`
+parameter: that becomes an httpx read timeout, which resets on every
+byte (including server-sent keep-alives during extended thinking), so
+it can silently run for 20+ minutes even when set to 180s. asyncio
+cancellation is the only ironclad cap."""
 
 
 def translate_tool_schemas_to_anthropic(
@@ -122,7 +126,34 @@ async def _call_anthropic_api(
             "type": "enabled",
             "budget_tokens": thinking_budget,
         }
-    response = await client.messages.create(**kwargs)
+    log.info(
+        "v2.providers.anthropic.call_start",
+        model=model,
+        messages=len(messages),
+        max_tokens=max_tokens,
+        thinking_budget=thinking_budget,
+    )
+    started = time.monotonic()
+    try:
+        response = await asyncio.wait_for(
+            client.messages.create(**kwargs),
+            timeout=_LLM_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        log.error(
+            "v2.providers.anthropic.call_timeout",
+            model=model,
+            elapsed_s=round(time.monotonic() - started, 2),
+            limit_s=_LLM_CALL_TIMEOUT_SECONDS,
+        )
+        raise TimeoutError(
+            f"anthropic call exceeded {_LLM_CALL_TIMEOUT_SECONDS}s wall-clock"
+        ) from exc
+    log.info(
+        "v2.providers.anthropic.call_end",
+        model=model,
+        elapsed_s=round(time.monotonic() - started, 2),
+    )
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 

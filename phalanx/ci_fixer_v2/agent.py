@@ -102,10 +102,18 @@ async def run_ci_fix_v2(
     )
 
     for turn in range(max_turns):
+        logger.info("v2.agent.turn_start", turn=turn, messages=len(context.messages))
         response = await llm_call(context.messages)
         context.cost.gpt_reasoning_input_tokens += response.input_tokens
         context.cost.gpt_reasoning_output_tokens += response.output_tokens
         context.cost.gpt_reasoning_thinking_tokens += response.thinking_tokens
+        logger.info(
+            "v2.agent.turn_response",
+            turn=turn,
+            stop_reason=response.stop_reason,
+            tool_uses=[t.name for t in response.tool_uses],
+            text_preview=response.text[:120] if response.text else "",
+        )
 
         if response.stop_reason == "end_turn" and not response.tool_uses:
             # Agent signaled done without commit or escalate — treat as

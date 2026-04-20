@@ -178,10 +178,18 @@ async def run_coder_subagent(
     logger = log.bind(ci_fix_run_id=ctx.ci_fix_run_id, subagent="coder")
 
     for turn in range(max_turns):
+        logger.info("v2.coder.turn_start", turn=turn, messages=len(messages))
         response = await call(messages)
         tokens_in += response.input_tokens
         tokens_out += response.output_tokens
         tokens_thinking += response.thinking_tokens
+        logger.info(
+            "v2.coder.turn_response",
+            turn=turn,
+            stop_reason=response.stop_reason,
+            tool_uses=[t.name for t in response.tool_uses],
+            text_preview=response.text[:120] if response.text else "",
+        )
 
         if response.stop_reason == "end_turn" and not response.tool_uses:
             last_notes = response.text or last_notes

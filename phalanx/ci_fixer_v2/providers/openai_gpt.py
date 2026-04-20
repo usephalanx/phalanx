@@ -25,7 +25,9 @@ Test seams (module-level; tests patch these directly):
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any
 
 import structlog
@@ -257,10 +259,11 @@ def normalize_responses_api_response(raw: dict[str, Any]) -> LLMResponse:
 
 
 _LLM_CALL_TIMEOUT_SECONDS: float = 180.0
-"""Hard client-side timeout on a single LLM request. The SDK default is
-600s — too long. A legitimate reasoning call with tool use finishes well
-within 180s; beyond that it's a network hang and the agent loop should
-get a provider_error rather than stall the whole run."""
+"""Hard wall-clock timeout on a single LLM request, enforced via
+asyncio.wait_for. SDK's `timeout=` parameter is an httpx read timeout
+that resets on every byte; reasoning/tool-use responses can trickle
+for 20+ minutes without ever hitting it. asyncio cancellation is the
+only bound we can trust."""
 
 
 async def _call_openai_api(
@@ -294,7 +297,33 @@ async def _call_openai_api(
     if max_output_tokens is not None:
         kwargs["max_output_tokens"] = max_output_tokens
 
-    response = await client.responses.create(**kwargs)
+    log.info(
+        "v2.providers.openai.call_start",
+        model=model,
+        input_items=len(input_items),
+        reasoning_effort=reasoning_effort,
+    )
+    started = time.monotonic()
+    try:
+        response = await asyncio.wait_for(
+            client.responses.create(**kwargs),
+            timeout=_LLM_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        log.error(
+            "v2.providers.openai.call_timeout",
+            model=model,
+            elapsed_s=round(time.monotonic() - started, 2),
+            limit_s=_LLM_CALL_TIMEOUT_SECONDS,
+        )
+        raise TimeoutError(
+            f"openai call exceeded {_LLM_CALL_TIMEOUT_SECONDS}s wall-clock"
+        ) from exc
+    log.info(
+        "v2.providers.openai.call_end",
+        model=model,
+        elapsed_s=round(time.monotonic() - started, 2),
+    )
     return response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
 
