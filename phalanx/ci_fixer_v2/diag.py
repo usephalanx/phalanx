@@ -105,7 +105,7 @@ async def check_openai_model() -> DiagResult:
             input=[{"type": "message", "role": "user", "content": "ping"}],
             instructions="Respond with one word only.",
             tools=[dummy_tool],
-            reasoning={"effort": "minimal"},
+            reasoning={"effort": "low"},  # gpt-5.x accepts none/low/medium/high/xhigh; "low" is the cheapest valid ping
             tool_choice="none",  # don't make the model actually invoke the tool
             max_output_tokens=32,
             store=False,
