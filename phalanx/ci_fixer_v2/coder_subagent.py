@@ -18,6 +18,7 @@ allow-list is enforced inside the loop below.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -70,13 +71,17 @@ class CoderResult:
 
 
 def _tool_result_message(tool_use_id: str, result: Any) -> dict[str, Any]:
+    # Anthropic requires tool_result.content to be a string or a list of
+    # content blocks — a raw dict is rejected with 400 invalid_request_error.
+    # We JSON-serialize the tool payload so the model sees a faithful
+    # representation.
     return {
         "role": "user",
         "content": [
             {
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
-                "content": result.to_tool_message_content(),
+                "content": json.dumps(result.to_tool_message_content()),
             }
         ],
     }
@@ -90,7 +95,7 @@ def _tool_error_message(tool_use_id: str, error: str) -> dict[str, Any]:
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
                 "is_error": True,
-                "content": {"ok": False, "error": error},
+                "content": json.dumps({"ok": False, "error": error}),
             }
         ],
     }
