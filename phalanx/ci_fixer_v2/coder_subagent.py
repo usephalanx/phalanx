@@ -18,6 +18,7 @@ allow-list is enforced inside the loop below.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -35,6 +36,10 @@ log = structlog.get_logger(__name__)
 ALLOWED_CODER_TOOLS: frozenset[str] = frozenset(
     {"read_file", "grep", "apply_patch", "run_in_sandbox"}
 )
+
+_CODER_TOOL_DISPATCH_TIMEOUT_S: float = 300.0
+"""Wall-clock cap on a single coder-subagent tool call. Mirrors the main
+agent's guard — no single tool handler may hang the subagent loop."""
 
 
 # The subagent uses the same LLMResponse shape as the main agent but
@@ -238,7 +243,30 @@ async def run_coder_subagent(
                 continue
 
             tool = tools_module.base.get(use.name)
-            result = await tool.handler(ctx, use.input)
+            logger.info("v2.coder.tool_start", turn=turn, tool=use.name)
+            try:
+                result = await asyncio.wait_for(
+                    tool.handler(ctx, use.input),
+                    timeout=_CODER_TOOL_DISPATCH_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                from phalanx.ci_fixer_v2.tools.base import ToolResult as _ToolResult
+                logger.error(
+                    "v2.coder.tool_timeout",
+                    turn=turn,
+                    tool=use.name,
+                    limit_s=_CODER_TOOL_DISPATCH_TIMEOUT_S,
+                )
+                result = _ToolResult(
+                    ok=False,
+                    error=(
+                        f"tool_timeout: {use.name} exceeded "
+                        f"{_CODER_TOOL_DISPATCH_TIMEOUT_S}s wall-clock"
+                    ),
+                )
+            logger.info(
+                "v2.coder.tool_end", turn=turn, tool=use.name, ok=result.ok
+            )
 
             if use.name == "apply_patch":
                 attempts_used += 1

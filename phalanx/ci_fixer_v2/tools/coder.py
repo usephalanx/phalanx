@@ -27,6 +27,70 @@ log = structlog.get_logger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Workspace → sandbox sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _copy_file_into_sandbox(
+    container_id: str, workspace_path: str, rel_path: str, timeout: int = 30
+) -> tuple[bool, str]:
+    """Copy a single file from the host workspace into the sandbox's
+    `/workspace/` tree via `docker cp`.
+
+    Why this exists: the v2 sandbox is provisioned with a one-shot
+    `docker cp` of the whole workspace at checkout time — not a live
+    bind mount. When apply_patch modifies a file on the host workspace,
+    the sandbox still has the pre-patch copy, so `ruff check .` /
+    `pytest` / etc. run against stale content and report the same
+    failure forever. This helper keeps the two views in sync per-patch.
+
+    Returns (ok, stderr). Tests patch this symbol directly.
+    """
+    import asyncio
+
+    src = f"{workspace_path}/{rel_path}"
+    dst = f"{container_id}:/workspace/{rel_path}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "cp",
+            src,
+            dst,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        return False, f"docker_binary_missing: {exc}"
+    try:
+        _, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+        return False, f"docker cp timed out after {timeout}s"
+    if proc.returncode != 0:
+        return False, err_b.decode("utf-8", errors="replace")
+    return True, ""
+
+
+async def _sync_patched_files_to_sandbox(
+    container_id: str, workspace_path: str, files: list[str]
+) -> list[tuple[str, str]]:
+    """Copy each file in `files` from host → sandbox. Returns a list of
+    (file, error) for anything that failed; empty list means everything
+    synced. Continues on per-file failure so a single bad file doesn't
+    block the rest."""
+    failures: list[tuple[str, str]] = []
+    for rel in files:
+        ok, err = await _copy_file_into_sandbox(container_id, workspace_path, rel)
+        if not ok:
+            failures.append((rel, err))
+    return failures
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Shared git-with-stdin seam
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -185,10 +249,36 @@ async def _handle_apply_patch(
     ctx.invalidate_sandbox_verification()
     ctx.last_attempted_diff = diff
 
+    # Propagate the change into the sandbox. Without this the sandbox
+    # keeps its original (pre-patch) workspace copy and `run_in_sandbox`
+    # never sees the fix — verification loops forever against stale
+    # content. If sync fails for any file, surface it so the agent
+    # doesn't declare success on a half-synced workspace.
+    sync_failures: list[tuple[str, str]] = []
+    if ctx.sandbox_container_id:
+        sync_failures = await _sync_patched_files_to_sandbox(
+            ctx.sandbox_container_id, ctx.repo_workspace_path, touched
+        )
+    if sync_failures:
+        log.error(
+            "v2.tools.apply_patch.sandbox_sync_failed",
+            ci_fix_run_id=ctx.ci_fix_run_id,
+            failures=sync_failures,
+        )
+        return ToolResult(
+            ok=False,
+            error=(
+                "sandbox_sync_failed: patched on host but could not copy "
+                "to sandbox — "
+                + "; ".join(f"{f}: {e}" for f, e in sync_failures)
+            ),
+        )
+
     log.info(
         "v2.tools.apply_patch.applied",
         ci_fix_run_id=ctx.ci_fix_run_id,
         files=touched,
+        synced_to_sandbox=bool(ctx.sandbox_container_id),
     )
     return ToolResult(
         ok=True,

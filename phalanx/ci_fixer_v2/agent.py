@@ -15,11 +15,14 @@ Spec references:
 
 from __future__ import annotations
 
+import asyncio
+import time
 import structlog
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from phalanx.ci_fixer_v2 import tools as tools_module
+from phalanx.ci_fixer_v2.tools.base import ToolResult
 from phalanx.ci_fixer_v2.config import (
     MAX_MAIN_TURNS,
     EscalationReason,
@@ -28,6 +31,14 @@ from phalanx.ci_fixer_v2.config import (
 from phalanx.ci_fixer_v2.context import AgentContext
 
 log = structlog.get_logger(__name__)
+
+_TOOL_DISPATCH_TIMEOUT_S: float = 300.0
+"""Wall-clock cap on a single tool handler. Tools set their own internal
+timeouts (run_in_sandbox: 120s, git apply: 60s, etc.), but a stuck
+subprocess or network call can evade those — this outer asyncio.wait_for
+is a hard floor that guarantees the agent loop never hangs on one tool
+call. 300s is generous for legitimate work (sandbox tests can take 2+
+min on slow repos) while still cutting off real hangs."""
 
 
 # ── Provider-agnostic LLM I/O ─────────────────────────────────────────────
@@ -188,7 +199,34 @@ async def _execute_tool_uses(
             continue
 
         tool = tools_module.base.get(use.name)
-        result = await tool.handler(context, use.input)
+        logger.info("v2.tool.start", turn=turn, tool=use.name)
+        tool_started = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                tool.handler(context, use.input), timeout=_TOOL_DISPATCH_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "v2.tool.timeout",
+                turn=turn,
+                tool=use.name,
+                elapsed_s=round(time.monotonic() - tool_started, 2),
+                limit_s=_TOOL_DISPATCH_TIMEOUT_S,
+            )
+            result = ToolResult(
+                ok=False,
+                error=(
+                    f"tool_timeout: {use.name} exceeded "
+                    f"{_TOOL_DISPATCH_TIMEOUT_S}s wall-clock"
+                ),
+            )
+        logger.info(
+            "v2.tool.end",
+            turn=turn,
+            tool=use.name,
+            ok=result.ok,
+            elapsed_s=round(time.monotonic() - tool_started, 2),
+        )
 
         context.tool_invocations.append(
             _record_tool_invocation(context, turn, use, result)
