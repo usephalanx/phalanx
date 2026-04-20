@@ -22,6 +22,12 @@ log = structlog.get_logger(__name__)
 
 _DEFAULT_MAX_TOKENS: int = 8096
 
+_LLM_CALL_TIMEOUT_SECONDS: float = 180.0
+"""Hard client-side timeout on a single Sonnet request. SDK default is
+600s — too long. A legitimate coder turn (extended thinking + tool-use
+response) completes well under 180s; beyond that it's a network hang
+and the subagent loop should surface it as provider_error on that turn."""
+
 
 def translate_tool_schemas_to_anthropic(
     schemas: list[ToolSchema],
@@ -103,7 +109,7 @@ async def _call_anthropic_api(
     """Real Anthropic SDK call. Tests patch this to return a canned dict."""
     from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(api_key=api_key)
+    client = AsyncAnthropic(api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS)
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,

@@ -140,7 +140,10 @@ class Settings(BaseSettings):
     # Seconds to wait for a free pool slot before falling back to local subprocess.
     sandbox_checkout_timeout_seconds: int = 30
     # Reaper kills containers held longer than this (should match fix run budget).
-    sandbox_max_hold_seconds: int = 300
+    # v2 agent loop: up to 25 main-agent turns × ~180s per LLM call, plus coder
+    # subagent turns. 1800s (30 min) covers the worst case without the reaper
+    # terminating a legitimately-running fix.
+    sandbox_max_hold_seconds: int = 1800
     # How often the reaper background task runs (seconds).
     sandbox_reaper_interval_seconds: int = 60
 

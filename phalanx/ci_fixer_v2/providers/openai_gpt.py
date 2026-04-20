@@ -256,6 +256,13 @@ def normalize_responses_api_response(raw: dict[str, Any]) -> LLMResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_LLM_CALL_TIMEOUT_SECONDS: float = 180.0
+"""Hard client-side timeout on a single LLM request. The SDK default is
+600s — too long. A legitimate reasoning call with tool use finishes well
+within 180s; beyond that it's a network hang and the agent loop should
+get a provider_error rather than stall the whole run."""
+
+
 async def _call_openai_api(
     model: str,
     input_items: list[dict[str, Any]],
@@ -272,7 +279,7 @@ async def _call_openai_api(
     """
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncOpenAI(api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS)
 
     kwargs: dict[str, Any] = {
         "model": model,
