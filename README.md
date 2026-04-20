@@ -328,14 +328,16 @@ End-to-end PR close on prod (real LLMs, real sandbox, real GitHub CI):
 
 | Language | Lint | Test fail | Flake | Coverage |
 |---|:---:|:---:|:---:|:---:|
-| Python     | ✅ | ✅ | ✅ | ⏳ |
+| Python     | ✅ | ✅ | ✅ | ✅ |
 | JavaScript | ⏳ | ⏳ | ⏳ | ⏳ |
 | TypeScript | ⏳ | ⏳ | ⏳ | ⏳ |
 | Java       | ⏳ | ⏳ | ⏳ | ⏳ |
 | C#         | ⏳ | ⏳ | ⏳ | ⏳ |
 
-3 of 20 cells closed, all on [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed):
-PR #1 (lint → `acdcbc5`), PR #2 (test_fail → `07ad29d2`), PR #3 (flake → `f9719fd`). Per-cell cost range: ~\$0.17–\$0.37, 45–95k tokens, 3–7 min wall-clock.
+**Python row complete.** 4 of 20 cells closed, all on [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed):
+PR #1 (lint → `acdcbc5`), PR #2 (test_fail → `07ad29d2`), PR #3 (flake → `f9719fd`), PR #4 (coverage → `c41cd413`).
+
+Per-cell cost: lint ~\$0.37, test_fail ~\$0.17, flake ~\$0.19, coverage ~\$1.31 (across 3 iterations). Coverage required 2 follow-up iterations — first shipped a truncated patch (surfaced a Sonnet max_tokens bug, fixed by raising the ceiling 8k→16k + explicit coder rule against shell-based file writes); second fixed the coverage gap itself; third cleaned up a residual `ruff format` regression in a sibling CI job.
 
 ### Architecture decision: no fix-type router
 
