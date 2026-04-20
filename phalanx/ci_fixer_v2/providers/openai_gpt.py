@@ -282,7 +282,13 @@ async def _call_openai_api(
     """
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS)
+    # max_retries=0 so the SDK can't silently stack retries past our
+    # wall-clock budget. The asyncio.wait_for below is the only timeout
+    # we trust; SDK-internal retry+backoff happily burns 10+ minutes
+    # without yielding control back to user-level timeouts.
+    client = AsyncOpenAI(
+        api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS, max_retries=0
+    )
 
     kwargs: dict[str, Any] = {
         "model": model,

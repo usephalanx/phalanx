@@ -20,6 +20,7 @@ Guarantees (spec §N3 — sandbox-only validation):
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -573,6 +574,14 @@ async def _run_git_command(
 ) -> tuple[int, str, str]:
     """Run `git -C {workspace} {args...}` with bounded timeout."""
     import asyncio
+    import time
+
+    started = time.monotonic()
+    # Log BEFORE the subprocess call so a hang is immediately visible
+    # in the per-run trace. Git operations can stall on credential
+    # prompts, network, or stuck index locks — without this, a hang
+    # looks like a black-box timeout with no clue which git op stalled.
+    log.info("v2.git_command.start", args=args[:3], workspace=workspace)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -582,6 +591,15 @@ async def _run_git_command(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Force non-interactive: git won't prompt for credentials
+            # or ssh passphrase even if config is weird. A prompt on
+            # stdin would make the subprocess hang indefinitely since
+            # we're not connected to a tty.
+            env={
+                **os.environ,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ASKPASS": "/bin/echo",
+            },
         )
     except FileNotFoundError as exc:
         raise RuntimeError(f"git_binary_missing: {exc}") from exc
@@ -589,12 +607,24 @@ async def _run_git_command(
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
+        log.error(
+            "v2.git_command.timeout",
+            args=args[:3],
+            elapsed_s=round(time.monotonic() - started, 2),
+            limit_s=timeout,
+        )
         proc.kill()
         try:
             await proc.wait()
         except Exception:  # pragma: no cover
             pass
         return (124, "", "git command timed out")
+    log.info(
+        "v2.git_command.end",
+        args=args[:3],
+        elapsed_s=round(time.monotonic() - started, 2),
+        exit_code=proc.returncode or 0,
+    )
     return (
         proc.returncode or 0,
         out_b.decode("utf-8", errors="replace"),

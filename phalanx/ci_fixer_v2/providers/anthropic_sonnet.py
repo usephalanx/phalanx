@@ -113,7 +113,12 @@ async def _call_anthropic_api(
     """Real Anthropic SDK call. Tests patch this to return a canned dict."""
     from anthropic import AsyncAnthropic
 
-    client = AsyncAnthropic(api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS)
+    # max_retries=0 — SDK retries can stack past our asyncio.wait_for
+    # budget silently. We'd rather see a TimeoutError / one hard fail
+    # than a 20-minute black box.
+    client = AsyncAnthropic(
+        api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS, max_retries=0
+    )
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,

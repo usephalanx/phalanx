@@ -417,9 +417,18 @@ class SandboxProvisioner:
         for cmd in cmds:
             log.info("ci_fixer.sandbox_env_run", container_id=container_id, cmd=cmd)
             try:
+                # `--user 0` = run as root inside the already-isolated
+                # container. The Dockerfile's `USER phalanx` is fine for
+                # the baked-in toolchain but blocks pip from writing to
+                # /root/.local (which is where HOME=/root wants it),
+                # blocks apt-get, and blocks writes to docker-cp'd workspace
+                # files owned by root. Since the container itself is the
+                # security boundary, running root inside is safe.
                 proc = await asyncio.create_subprocess_exec(
                     docker_cmd,
                     "exec",
+                    "--user",
+                    "0",
                     "--workdir",
                     "/workspace",
                     "--env",

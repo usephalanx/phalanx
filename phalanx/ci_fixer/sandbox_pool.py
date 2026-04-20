@@ -573,6 +573,23 @@ def wrap_shell_cmd_for_container(
 ) -> list[str]:
     """
     Wrap a shell string command to run inside a container via `docker exec sh -c`.
-    Used by ReproducerAgent which takes a shell string (not an args list).
+
+    Runs as root (`--user 0`) so validator commands can see packages that
+    env setup pip-installed to system site-packages / /root/.local. The
+    container itself is the security boundary — running root inside is
+    safe and matches what CI does (CI runners are always root).
     """
-    return [docker_cmd, "exec", "-w", "/workspace", container_id, "sh", "-c", shell_cmd]
+    return [
+        docker_cmd,
+        "exec",
+        "--user",
+        "0",
+        "-w",
+        "/workspace",
+        "-e",
+        "HOME=/root",
+        container_id,
+        "sh",
+        "-c",
+        shell_cmd,
+    ]
