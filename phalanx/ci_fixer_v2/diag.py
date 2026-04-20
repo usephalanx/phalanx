@@ -85,18 +85,33 @@ async def check_openai_model() -> DiagResult:
     except ImportError as exc:
         return DiagResult("openai_model", False, f"openai SDK not installed: {exc}")
 
+    # This ping exercises the EXACT combination the agent uses in prod:
+    #   responses.create + tools + reasoning_effort
+    # If this succeeds, agent calls will not fail on the reason that
+    # broke our first live run (Chat Completions 400 with reasoning+tools).
+    # A single tool is declared but marked uncallable via tool_choice;
+    # we only care that the endpoint accepts the shape.
+    dummy_tool = {
+        "type": "function",
+        "name": "diag_ping",
+        "description": "Preflight noop — not meant to be called.",
+        "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        "strict": False,
+    }
     try:
         client = AsyncOpenAI(api_key=settings.openai_api_key)
-        # Reasoning models (o-series, gpt-5.x) reject the legacy
-        # `max_tokens` param and require `max_completion_tokens`.
-        # Older chat models accept both; this name is forward-compatible.
-        resp = await client.chat.completions.create(
+        resp = await client.responses.create(
             model=model,
-            messages=[{"role": "user", "content": "ping"}],
-            max_completion_tokens=16,
+            input=[{"type": "message", "role": "user", "content": "ping"}],
+            instructions="Respond with one word only.",
+            tools=[dummy_tool],
+            reasoning={"effort": "minimal"},
+            tool_choice="none",  # don't make the model actually invoke the tool
+            max_output_tokens=32,
+            store=False,
         )
-        if resp and resp.choices:
-            return DiagResult("openai_model", True, f"{model} reachable")
+        if resp and getattr(resp, "output", None) is not None:
+            return DiagResult("openai_model", True, f"{model} reachable (responses+tools+reasoning)")
         return DiagResult("openai_model", False, f"empty response from {model}")
     except Exception as exc:
         return DiagResult(

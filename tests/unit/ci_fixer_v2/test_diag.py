@@ -126,13 +126,12 @@ async def test_main_async_returns_one_when_any_fail(monkeypatch, capsys):
 
 
 async def test_check_openai_model_catches_sdk_error(monkeypatch):
-    # Simulate a model-not-found 404 from the OpenAI SDK.
+    # Simulate a model-not-found 404 from the OpenAI Responses API SDK.
     class _BadClient:
-        class chat:  # noqa: N801
-            class completions:  # noqa: N801
-                @staticmethod
-                async def create(**_kw):
-                    raise RuntimeError("model 'gpt-5.4' does not exist")
+        class responses:  # noqa: N801
+            @staticmethod
+            async def create(**_kw):
+                raise RuntimeError("model 'gpt-5.4' does not exist")
 
         def __init__(self, **_kw):
             pass
