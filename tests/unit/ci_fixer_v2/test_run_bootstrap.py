@@ -25,6 +25,10 @@ def _make_inputs(**overrides) -> bootstrap.BootstrapInputs:
         pr_number=42,
         branch="feature/lint",
         original_failing_command="ruff check app/",
+        ci_build_id="job-777",
+        commit_sha="abc1234deadbeef1234567890abcdef123456789",
+        build_url="https://github.com/acme/widget/actions/runs/12345",
+        failed_jobs=["Lint"],
         github_token="ghp_test",
         openai_api_key="sk-openai",
         anthropic_api_key="sk-ant",
@@ -34,6 +38,40 @@ def _make_inputs(**overrides) -> bootstrap.BootstrapInputs:
     )
     defaults.update(overrides)
     return bootstrap.BootstrapInputs(**defaults)
+
+
+def test_build_initial_user_message_carries_run_context():
+    """Seed message must include every field the system prompt tells
+    the agent to use — repo, PR, branch, commit, job_id, build_url."""
+    inputs = _make_inputs()
+    msg = bootstrap._build_initial_user_message(inputs)
+    assert msg["role"] == "user"
+    content = msg["content"]
+    # Run identity
+    assert inputs.repo_full_name in content
+    assert str(inputs.pr_number) in content
+    assert inputs.branch in content
+    assert inputs.commit_sha[:7] in content  # short-sha display
+    # Agent's first-move hint — the job_id is critical for fetch_ci_log
+    assert inputs.ci_build_id in content
+    assert "fetch_ci_log" in content
+    # Failing command hint
+    assert inputs.original_failing_command in content
+
+
+def test_build_initial_user_message_handles_missing_optionals():
+    inputs = _make_inputs(
+        pr_number=None,
+        commit_sha="",
+        build_url="",
+        failed_jobs=[],
+        original_failing_command="",
+    )
+    msg = bootstrap._build_initial_user_message(inputs)
+    content = msg["content"]
+    # Nothing should crash; placeholders should be obvious to the agent.
+    assert "unknown" in content.lower() or "(unknown)" in content
+    assert msg["role"] == "user"
 
 
 def _patch_seams(

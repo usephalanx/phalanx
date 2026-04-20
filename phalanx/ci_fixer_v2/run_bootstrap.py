@@ -60,6 +60,13 @@ class BootstrapInputs:
     pr_number: int | None
     branch: str  # author's PR head branch (becomes author_head_branch on ctx)
     original_failing_command: str
+    # CI context needed to seed the agent's initial user message —
+    # without these the agent starts with empty context and can't
+    # meaningfully act on turn 1.
+    ci_build_id: str
+    commit_sha: str
+    build_url: str
+    failed_jobs: list[str]
     # External identities
     github_token: str
     openai_api_key: str
@@ -105,6 +112,10 @@ async def _load_run_inputs(ci_fix_run_id: str) -> BootstrapInputs:
         pr_number=run.pr_number,
         branch=run.branch,
         original_failing_command=run.failure_summary or "",
+        ci_build_id=run.ci_build_id or "",
+        commit_sha=run.commit_sha or "",
+        build_url=run.build_url or "",
+        failed_jobs=list(run.failed_jobs or []),
         github_token=gh_token,
         openai_api_key=settings.openai_api_key,
         anthropic_api_key=settings.anthropic_api_key,
@@ -112,6 +123,33 @@ async def _load_run_inputs(ci_fix_run_id: str) -> BootstrapInputs:
         anthropic_model=settings.anthropic_model_ci_fixer_coder,
         has_write_permission=integ.auto_commit,  # approximation for MVP
     )
+
+
+def _build_initial_user_message(inputs: BootstrapInputs) -> dict[str, object]:
+    """Seed message the agent sees on turn 1.
+
+    Without this, ctx.messages is [] and the agent's first LLM call
+    hits an empty conversation — the model has no idea what to do.
+    This message carries exactly the context the system prompt tells
+    the agent to use (fetch_ci_log with a job_id, query_fingerprint,
+    etc.).
+    """
+    failed_jobs_display = ", ".join(inputs.failed_jobs) if inputs.failed_jobs else "(not recorded)"
+    sha_short = inputs.commit_sha[:7] if inputs.commit_sha else "unknown"
+    content = f"""A CI failure has occurred on an open pull request. Diagnose and close the PR.
+
+Repository:        {inputs.repo_full_name}
+PR number:         {inputs.pr_number if inputs.pr_number is not None else "(unknown)"}
+Head branch:       {inputs.branch}
+Failing commit:    {sha_short}
+CI provider:       {inputs.ci_provider}
+Failing job ID:    {inputs.ci_build_id}  ← pass this as job_id to fetch_ci_log
+Failed jobs:       {failed_jobs_display}
+Build URL:         {inputs.build_url or "(not provided)"}
+Failing command:   {inputs.original_failing_command or "(inferred from log)"}
+
+Start by calling fetch_ci_log with job_id="{inputs.ci_build_id}" to see the failure. Then follow your standard diagnose → decide → act → verify → coordinate workflow. Remember: close the PR or escalate cleanly — never commit without sandbox verification."""
+    return {"role": "user", "content": content}
 
 
 async def _clone_workspace(
@@ -257,6 +295,11 @@ async def execute_v2_run(ci_fix_run_id: str) -> RunOutcome:
         fingerprint_hash=inputs.fingerprint_hash,
         author_head_branch=inputs.branch,
     )
+
+    # Seed the agent's first user message so it has context on turn 1.
+    # Without this, the agent sees an empty conversation and burns turns
+    # to no effect (root cause of the useless 25-turn loop in run #2).
+    ctx.messages.append(_build_initial_user_message(inputs))
 
     # Wire the Sonnet coder seam — delegate_to_coder → coder_subagent
     # loop → this callable.
