@@ -240,6 +240,22 @@ async def _execute_tool_uses(
                 reason = EscalationReason(reason_str)
             except ValueError:
                 reason = EscalationReason.LOW_CONFIDENCE
+            # Evidence gate: some escalation reasons are load-bearing
+            # for downstream triage (routing to infra vs. flagging a
+            # broken main). If the LLM picks one of them without proof
+            # in the tool trace, we coerce to LOW_CONFIDENCE — same
+            # shape as the commit verification gate. The LLM still
+            # escalates (its decision to stop trying is respected),
+            # but the *reason* has to be backed by evidence.
+            forced_reason = _force_low_confidence_if_no_evidence(context, reason)
+            if forced_reason is not reason:
+                logger.warning(
+                    "v2.loop.escalation_reason_forced",
+                    attempted_reason=reason.value,
+                    forced_to=forced_reason.value,
+                    turn=turn,
+                )
+                reason = forced_reason
             return RunOutcome(
                 verdict=RunVerdict.ESCALATED,
                 escalation_reason=reason,
@@ -318,3 +334,100 @@ def _record_tool_invocation(
         tool_result=result.data if result.ok else None,
         error=None if result.ok else result.error,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Escalation evidence gate
+# ─────────────────────────────────────────────────────────────────────
+#
+# Some escalation reasons are load-bearing — `infra_failure_out_of_scope`
+# routes a run to the ops oncall, `preexisting_main_failure` tells a
+# human that main itself is broken. If the LLM picks one of these
+# without evidence, the routing is wrong and the on-call gets woken
+# up for nothing. Instead of trusting the LLM's self-reported reason,
+# we enforce at the LOOP level that certain reasons require concrete
+# evidence in ctx.tool_invocations.
+#
+# When evidence is missing, we coerce to LOW_CONFIDENCE (the generic
+# "I'm stuck" reason) and log `v2.loop.escalation_reason_forced` so
+# the operator can see what the LLM *tried* to pick. The agent still
+# escalates — we don't force the loop to keep running. Its decision
+# to stop is respected; only the *reason* is rewritten.
+#
+# Same shape as the existing `verification_gate_violation` check on
+# commit_and_push: invariants live in the loop, not in the prompt.
+#
+# To add a new gated reason, add an entry to ESCALATION_EVIDENCE_GATES
+# with a function that returns True when sufficient evidence exists
+# in ctx.tool_invocations.
+
+
+def _has_infra_failure_evidence(context: AgentContext) -> bool:
+    """True iff the tool trace contains at least one signal that the
+    environment (not the agent's judgment) blocked progress.
+
+    Evidence shapes:
+      - a fetch_ci_log call that errored out (tool returned ok=False);
+      - a run_in_sandbox call that exited 127 (command not found —
+        sandbox missing a tool the CI has);
+      - a run_in_sandbox call that timed out (per _exec_argv: exit 124
+        with timed_out=True in the result payload).
+    """
+    for inv in context.tool_invocations:
+        if inv.tool_name == "fetch_ci_log" and inv.error:
+            return True
+        if inv.tool_name == "run_in_sandbox":
+            data = inv.tool_result or {}
+            if data.get("exit_code") == 127:
+                return True
+            if data.get("timed_out") is True:
+                return True
+    return False
+
+
+def _has_preexisting_main_failure_evidence(context: AgentContext) -> bool:
+    """True iff the tool trace shows get_ci_history returned failing
+    runs on the default branch. Matches on `branch in {main, master,
+    default}` AND `conclusion == failure`.
+
+    Shape of get_ci_history.data is implementation-specific; we
+    defensively check the common forms."""
+    for inv in context.tool_invocations:
+        if inv.tool_name != "get_ci_history":
+            continue
+        data = inv.tool_result or {}
+        # Preferred shape: aggregate counter
+        if data.get("recent_main_failures", 0) > 0:
+            return True
+        # Fallback: enumerate runs
+        for run in data.get("runs", []) or data.get("history", []):
+            branch = (run.get("branch") or "").lower()
+            concl = (run.get("conclusion") or "").lower()
+            if branch in ("main", "master", "default") and concl == "failure":
+                return True
+    return False
+
+
+# Reason → evidence-checker. A reason NOT in this map has no evidence
+# requirement and will pass through unchanged. This is the whitelist
+# style: we explicitly enumerate which reasons are load-bearing.
+ESCALATION_EVIDENCE_GATES: dict[
+    EscalationReason, Callable[[AgentContext], bool]
+] = {
+    EscalationReason.INFRA_FAILURE_OUT_OF_SCOPE: _has_infra_failure_evidence,
+    EscalationReason.PREEXISTING_MAIN_FAILURE: _has_preexisting_main_failure_evidence,
+}
+
+
+def _force_low_confidence_if_no_evidence(
+    context: AgentContext, reason: EscalationReason
+) -> EscalationReason:
+    """Return the input reason unchanged iff either (a) it has no
+    evidence gate, or (b) its gate finds evidence in the tool trace.
+    Otherwise, return LOW_CONFIDENCE."""
+    checker = ESCALATION_EVIDENCE_GATES.get(reason)
+    if checker is None:
+        return reason
+    if checker(context):
+        return reason
+    return EscalationReason.LOW_CONFIDENCE

@@ -88,6 +88,11 @@ async def test_escalate_rejects_missing_explanation():
 async def test_loop_terminates_with_escalate_reason():
     """Using the REAL registered escalate tool, verify the loop returns
     RunOutcome(ESCALATED) with the reason the agent supplied.
+
+    Uses `low_confidence` (an evidence-free reason) so this test stays
+    focused on "escalate terminates the loop" without entangling the
+    escalation-evidence gate introduced alongside this test. Gate-
+    specific behavior is covered by test_escalation_evidence_gate.py.
     """
     ctx = _ctx()
 
@@ -99,8 +104,8 @@ async def test_loop_terminates_with_escalate_reason():
                     id="e1",
                     name="escalate",
                     input={
-                        "reason": "preexisting_main_failure",
-                        "explanation": "this test fails on main too",
+                        "reason": "low_confidence",
+                        "explanation": "unsure what the right fix is",
                         "draft_patch": "",
                     },
                 )
@@ -109,8 +114,8 @@ async def test_loop_terminates_with_escalate_reason():
 
     outcome = await run_ci_fix_v2(ctx, scripted)
     assert outcome.verdict == RunVerdict.ESCALATED
-    assert outcome.escalation_reason == EscalationReason.PREEXISTING_MAIN_FAILURE
-    assert "main" in outcome.explanation
+    assert outcome.escalation_reason == EscalationReason.LOW_CONFIDENCE
+    assert "unsure" in outcome.explanation
 
 
 async def test_loop_treats_unknown_reason_string_as_low_confidence():
