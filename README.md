@@ -330,18 +330,19 @@ End-to-end PR close on prod (real LLMs, real sandbox, real GitHub CI):
 |---|:---:|:---:|:---:|:---:|
 | Python     | ✅ | ✅ | ✅ | ✅ |
 | TypeScript | ✅ | ✅ | ✅ | ✅ |
-| JavaScript | ⏳ | ⏳ | ⏳ | ⏳ |
+| JavaScript | ✅ | ✅ | ✅ | ✅ |
 | Java       | ⏳ | ⏳ | ⏳ | ⏳ |
 | C#         | ⏳ | ⏳ | ⏳ | ⏳ |
 
-**Python + TypeScript rows complete.** 8 of 20 cells closed end-to-end on prod, all 8 replay-gated:
+**Python + TypeScript + JavaScript rows complete.** 12 of 20 cells closed end-to-end on prod, all 12 replay-gated.
 
 - Python → [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed) PRs #1–4
 - TypeScript → [`usephalanx/phalanx-ci-fixer-testbed-ts`](https://github.com/usephalanx/phalanx-ci-fixer-testbed-ts) PRs #1–6
+- JavaScript → [`usephalanx/phalanx-ci-fixer-testbed-js`](https://github.com/usephalanx/phalanx-ci-fixer-testbed-js) PRs #1–7
 
-Per-row recording cost: Python \$0.79 total / TypeScript ~\$2.63 total (TS cells are 2–3× more expensive; coverage cell in particular takes more turns because jest test construction is harder for the coder than pytest).
+Per-row recording cost: Python ~\$0.79 / TypeScript ~\$2.63 / JavaScript ~\$2.25 (includes 2 flake retries + 1 coverage retry — both with `delegate_to_coder` escalation patterns specific to jest-style multi-line patches).
 
-TS × flake escalated on first attempt ($0.72 wasted; low-confidence after the agent correctly diagnosed), committed on retry — flake behavior is inherently noisy both in CI and in agent reasoning.
+**Observation:** `flake` is the most retry-prone cell across languages — 0 retries for Python, 1 for TS, 2 for JS. Root cause: `apply_patch` diff construction is brittler for multi-line test-block additions in JS/TS than in Python. Known sharp edge for Java/C# planning; v2 prompt tune is a follow-up.
 
 ### Regression gates (3 layers)
 

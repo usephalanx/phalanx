@@ -38,8 +38,13 @@ case "$LANG_ROW" in
     TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-ts"
     TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-ts"
     ;;
+  js|javascript)
+    LANG_ROW="js"
+    TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-js"
+    TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-js"
+    ;;
   *)
-    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts)" >&2; exit 2 ;;
+    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts|js)" >&2; exit 2 ;;
 esac
 TESTBED_REPO="${TESTBED_REPO:-$TESTBED_REPO_DEFAULT}"
 TESTBED_LOCAL="${TESTBED_LOCAL:-$TESTBED_LOCAL_DEFAULT}"
@@ -57,7 +62,11 @@ mkdir -p "$FIXTURE_DIR"
 # ── Cell config ──────────────────────────────────────────────────────────
 # name | patch | failing_command | failing_job_name | can_flake
 CELL_CONFIG() {
-  if [ "$LANG_ROW" = "ts" ]; then
+  if [ "$LANG_ROW" = "ts" ] || [ "$LANG_ROW" = "js" ]; then
+    # TS and JS testbeds share the same CI workflow shape:
+    # npm-based toolchain, Lint (eslint+prettier) + Test+Coverage (jest) jobs.
+    # Cell-to-patch mapping is identical; only the patch CONTENT differs
+    # between the two testbed repos (one patches .ts, the other .js).
     case "$1" in
       lint)      echo "01-lint.patch|npm run lint|Lint|0" ;;
       test_fail) echo "02-test-assertion.patch|npm test|Test + Coverage|0" ;;
