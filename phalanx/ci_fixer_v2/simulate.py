@@ -173,13 +173,43 @@ async def main_async(args: argparse.Namespace) -> int:
         ci_fix_run_id = await _create_ci_fix_run(args, integration_id)
         print(f"[simulate] created CIFixRun {ci_fix_run_id}")
 
+    # Record-mode scaffolding. We keep one LLMRecorder per role (main,
+    # coder) and pass a wrapper hook to execute_v2_run. The hook wraps
+    # each LLM seam with the recorder before the agent loop starts.
+    main_recorder = None
+    coder_recorder = None
+    if args.record:
+        from phalanx.ci_fixer_v2.replay import LLMRecorder
+
+        main_recorder = LLMRecorder(role="main")
+        coder_recorder = LLMRecorder(role="coder")
+        print(f"[simulate] RECORD mode: will write fixture to {args.record}")
+
+    def _wrap_llm(role: str, inner):
+        if role == "main" and main_recorder is not None:
+            return main_recorder.wrap(inner)
+        if role == "coder" and coder_recorder is not None:
+            return coder_recorder.wrap(inner)
+        return inner
+
+    # Capture the final ctx so we can serialize tool_invocations into
+    # the fixture. Closure over a list so the callback can mutate it.
+    captured_ctx = {"ctx": None}
+
+    def _capture_ctx(ctx):
+        captured_ctx["ctx"] = ctx
+
     # Run the agent
     print(
         f"[simulate] executing execute_v2_run({ci_fix_run_id}) — "
         f"repo={args.repo} pr={args.pr} branch={args.branch}"
     )
     try:
-        outcome = await execute_v2_run(ci_fix_run_id)
+        outcome = await execute_v2_run(
+            ci_fix_run_id,
+            llm_wrapper=_wrap_llm if args.record else None,
+            ctx_sink=_capture_ctx if args.record else None,
+        )
     except Exception as exc:  # surface directly, don't bury in Celery
         print(f"[simulate] run raised: {exc!r}", file=sys.stderr)
         import traceback
@@ -189,7 +219,96 @@ async def main_async(args: argparse.Namespace) -> int:
 
     await _print_outcome(ci_fix_run_id, outcome)
 
+    # Write the fixture after a successful run. We only record runs
+    # that committed cleanly — a fixture of a broken run is not a
+    # useful pin. Operator can override with --record-on-any-outcome
+    # if they want to pin an escalation case.
+    if args.record and (
+        outcome.verdict.value == "committed" or args.record_on_any_outcome
+    ):
+        await _write_fixture(
+            args.record,
+            cell=args.cell_name or f"{args.repo.replace('/', '_')}_{args.branch.replace('/', '_')}",
+            ci_fix_run_id=ci_fix_run_id,
+            main_recorder=main_recorder,
+            coder_recorder=coder_recorder,
+            outcome=outcome,
+            args=args,
+            ctx=captured_ctx["ctx"],
+        )
+        print(f"[simulate] wrote fixture → {args.record}")
+    elif args.record:
+        print(
+            f"[simulate] NOT writing fixture (verdict={outcome.verdict.value}); "
+            "use --record-on-any-outcome to override.",
+            file=sys.stderr,
+        )
+
     return 0 if outcome.verdict.value == "committed" else 1
+
+
+async def _write_fixture(
+    path: str,
+    *,
+    cell: str,
+    ci_fix_run_id: str,
+    main_recorder,
+    coder_recorder,
+    outcome,
+    args: argparse.Namespace,
+    ctx,
+) -> None:
+    """Dump a replay fixture capturing the LLM traffic + tool trace +
+    final outcome for one recorded run."""
+    from pathlib import Path
+
+    from phalanx.ci_fixer_v2.replay import Fixture, ToolCallRecord
+
+    # Pull the tool_invocations trace from the final AgentContext
+    # captured via the ctx_sink hook on execute_v2_run.
+    tool_calls: list[ToolCallRecord] = []
+    if ctx is not None:
+        for inv in ctx.tool_invocations:
+            tool_calls.append(
+                ToolCallRecord(
+                    turn=inv.turn,
+                    tool_name=inv.tool_name,
+                    tool_input=inv.tool_input,
+                    tool_result=inv.tool_result,
+                    error=inv.error,
+                )
+            )
+
+    fx = Fixture(
+        cell=cell,
+        initial_context={
+            "repo": args.repo,
+            "pr": args.pr,
+            "branch": args.branch,
+            "sha": args.sha,
+            "job_id": args.job_id,
+            "failing_command": args.failing_command,
+            "failing_job_name": args.failing_job_name,
+        },
+        llm_calls=(
+            (main_recorder.calls if main_recorder else [])
+            + (coder_recorder.calls if coder_recorder else [])
+        ),
+        tool_calls=tool_calls,
+        expected_outcome={
+            "verdict": outcome.verdict.value,
+            "escalation_reason": (
+                outcome.escalation_reason.value
+                if outcome.escalation_reason
+                else None
+            ),
+            "committed_sha": outcome.committed_sha,
+            "committed_branch": outcome.committed_branch,
+            "ci_fix_run_id": ci_fix_run_id,
+        },
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(fx.to_json())
 
 
 def main() -> int:
@@ -220,6 +339,32 @@ def main() -> int:
         "--reuse",
         default=None,
         help="Reuse an existing CIFixRun id instead of creating a new row",
+    )
+    parser.add_argument(
+        "--record",
+        default=None,
+        help=(
+            "Path to write a replay fixture JSON (e.g. "
+            "tests/fixtures/scorecard/python/test_fail.json). "
+            "Captures every main+coder LLM round-trip + the final outcome. "
+            "Re-run deterministically offline via the replay test harness."
+        ),
+    )
+    parser.add_argument(
+        "--record-on-any-outcome",
+        action="store_true",
+        help=(
+            "Write fixture even if the run escalated/failed (default: only "
+            "record committed runs — broken runs are not useful to pin)."
+        ),
+    )
+    parser.add_argument(
+        "--cell-name",
+        default=None,
+        help=(
+            "Label for the fixture's cell field (e.g. 'python_test_fail'). "
+            "Defaults to a sanitized combination of repo+branch."
+        ),
     )
     args = parser.parse_args()
     try:

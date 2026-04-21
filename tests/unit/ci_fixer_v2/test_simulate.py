@@ -25,6 +25,9 @@ def _args(**overrides) -> argparse.Namespace:
         failing_command="ruff check .",
         failing_job_name="Lint",
         reuse=None,
+        record=None,
+        record_on_any_outcome=False,
+        cell_name=None,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -45,7 +48,7 @@ async def test_simulate_creates_run_and_executes_happy_path(monkeypatch, capsys)
         captured["created_for"] = args_.repo
         return "new-run-uuid"
 
-    async def fake_execute_v2_run(run_id):
+    async def fake_execute_v2_run(run_id, llm_wrapper=None, ctx_sink=None):
         captured["run_id"] = run_id
         return RunOutcome(
             verdict=RunVerdict.COMMITTED,
@@ -85,7 +88,7 @@ async def test_simulate_reuses_existing_run_when_reuse_set(monkeypatch):
         create_called["n"] += 1
         return "SHOULD-NOT-BE-USED"
 
-    async def fake_execute_v2_run(run_id):
+    async def fake_execute_v2_run(run_id, llm_wrapper=None, ctx_sink=None):
         assert run_id == "existing-run-id"
         return RunOutcome(
             verdict=RunVerdict.ESCALATED,
@@ -131,7 +134,7 @@ async def test_simulate_surfaces_agent_exception_with_traceback(
     async def fake_create(_args, _integ):
         return "run-id"
 
-    async def boom(_run_id):
+    async def boom(_run_id, llm_wrapper=None, ctx_sink=None):
         raise RuntimeError("sandbox gone")
 
     monkeypatch.setattr(simulate, "_lookup_integration_id", fake_lookup)
@@ -167,14 +170,14 @@ async def test_simulate_committed_exits_zero_escalated_exits_one(monkeypatch):
     import phalanx.ci_fixer_v2.run_bootstrap as bootstrap_mod
 
     # committed → 0
-    async def committed(_run_id):
+    async def committed(_run_id, llm_wrapper=None, ctx_sink=None):
         return RunOutcome(verdict=RunVerdict.COMMITTED, committed_sha="s")
 
     monkeypatch.setattr(bootstrap_mod, "execute_v2_run", committed)
     assert await simulate.main_async(_args()) == 0
 
     # escalated → 1
-    async def escalated(_run_id):
+    async def escalated(_run_id, llm_wrapper=None, ctx_sink=None):
         return RunOutcome(
             verdict=RunVerdict.ESCALATED,
             escalation_reason=EscalationReason.TURN_CAP_REACHED,

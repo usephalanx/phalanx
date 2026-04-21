@@ -275,10 +275,26 @@ def _infer_strategy_from_branch(branch: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def execute_v2_run(ci_fix_run_id: str) -> RunOutcome:
+async def execute_v2_run(
+    ci_fix_run_id: str,
+    llm_wrapper: "Callable[[str, Any], Any] | None" = None,
+    ctx_sink: "Callable[[AgentContext], None] | None" = None,
+) -> RunOutcome:
     """End-to-end entry point for one v2 run. Called from the Celery
     task dispatcher (wired in Week 1.8+). Returns the RunOutcome so
     callers can feed it into outcome-polling / metrics if needed.
+
+    ``llm_wrapper`` is an optional hook used by the replay/record
+    harness: if provided, it is called once for each LLM seam as
+    ``llm_wrapper("main" | "coder", callable) → callable`` and
+    the returned wrapped callable is used in place of the real one.
+
+    ``ctx_sink`` is an optional callback that receives the fully-
+    populated AgentContext after the loop completes, just before the
+    outcome is persisted. Used by the record path to serialize
+    ctx.tool_invocations into a replay fixture without threading a
+    return value through every caller. Both hooks default to None
+    in production so there's no overhead.
     """
     inputs = await _load_run_inputs(ci_fix_run_id)
 
@@ -313,11 +329,21 @@ async def execute_v2_run(ci_fix_run_id: str) -> RunOutcome:
     # loop → this callable.
     from phalanx.ci_fixer_v2 import coder_subagent as sub_mod
 
-    sub_mod._call_sonnet_llm = _build_sonnet_llm(inputs)
+    sonnet_llm = _build_sonnet_llm(inputs)
+    if llm_wrapper is not None:
+        sonnet_llm = llm_wrapper("coder", sonnet_llm)
+    sub_mod._call_sonnet_llm = sonnet_llm
 
     main_llm = _build_main_llm(inputs)
+    if llm_wrapper is not None:
+        main_llm = llm_wrapper("main", main_llm)
     outcome = await run_ci_fix_v2(ctx, main_llm)
 
     finalize_cost_record(ctx.cost)
+    if ctx_sink is not None:
+        try:
+            ctx_sink(ctx)
+        except Exception as exc:  # record path; must not fail the run
+            log.warning("v2.bootstrap.ctx_sink_failed", error=str(exc))
     await _persist_run_outcome(ci_fix_run_id, ctx, outcome)
     return outcome
