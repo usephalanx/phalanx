@@ -26,9 +26,24 @@ SSH_KEY="${SSH_KEY:-$HOME/work/aws/LightsailDefaultKey-us-west-2.pem}"
 PROD_HOST="${PROD_HOST:-ubuntu@44.233.157.41}"
 CONTAINER="${CONTAINER:-phalanx-prod-phalanx-ci-fixer-worker-1}"
 PG_CONTAINER="${PG_CONTAINER:-phalanx-prod-postgres-1}"
-TESTBED_REPO="${TESTBED_REPO:-usephalanx/phalanx-ci-fixer-testbed}"
-TESTBED_LOCAL="${TESTBED_LOCAL:-$HOME/phalanx-ci-fixer-testbed}"
-FIXTURE_DIR="${FIXTURE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/tests/fixtures/scorecard/python}"
+# Language default: python (back-compat). Override with LANG=ts.
+LANG_ROW="${LANG_ROW:-python}"
+case "$LANG_ROW" in
+  python)
+    TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed"
+    TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed"
+    ;;
+  ts|typescript)
+    LANG_ROW="ts"
+    TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-ts"
+    TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-ts"
+    ;;
+  *)
+    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts)" >&2; exit 2 ;;
+esac
+TESTBED_REPO="${TESTBED_REPO:-$TESTBED_REPO_DEFAULT}"
+TESTBED_LOCAL="${TESTBED_LOCAL:-$TESTBED_LOCAL_DEFAULT}"
+FIXTURE_DIR="${FIXTURE_DIR:-$(cd "$(dirname "$0")/.." && pwd)/tests/fixtures/scorecard/$LANG_ROW}"
 FLAKE_MAX_RETRIGGERS="${FLAKE_MAX_RETRIGGERS:-6}"
 INTRO_CI_WAIT_SECS="${INTRO_CI_WAIT_SECS:-360}"
 
@@ -42,13 +57,23 @@ mkdir -p "$FIXTURE_DIR"
 # ── Cell config ──────────────────────────────────────────────────────────
 # name | patch | failing_command | failing_job_name | can_flake
 CELL_CONFIG() {
-  case "$1" in
-    lint)      echo "01-lint-e501.patch|ruff check .|Lint|0" ;;
-    test_fail) echo "02-test-assertion.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|0" ;;
-    flake)     echo "03-flake-sleep.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|1" ;;
-    coverage)  echo "04-coverage-drop.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|0" ;;
-    *) echo ""; return 1 ;;
-  esac
+  if [ "$LANG_ROW" = "ts" ]; then
+    case "$1" in
+      lint)      echo "01-lint.patch|npm run lint|Lint|0" ;;
+      test_fail) echo "02-test-assertion.patch|npm test|Test + Coverage|0" ;;
+      flake)     echo "03-flake-sleep.patch|npm test|Test + Coverage|1" ;;
+      coverage)  echo "04-coverage-drop.patch|npm test|Test + Coverage|0" ;;
+      *) echo ""; return 1 ;;
+    esac
+  else
+    case "$1" in
+      lint)      echo "01-lint-e501.patch|ruff check .|Lint|0" ;;
+      test_fail) echo "02-test-assertion.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|0" ;;
+      flake)     echo "03-flake-sleep.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|1" ;;
+      coverage)  echo "04-coverage-drop.patch|pytest --cov=src/calc --cov-fail-under=80 --timeout=2|Test + Coverage|0" ;;
+      *) echo ""; return 1 ;;
+    esac
+  fi
 }
 
 # ── Helpers ──────────────────────────────────────────────────────────────

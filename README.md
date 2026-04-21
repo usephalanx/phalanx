@@ -329,15 +329,19 @@ End-to-end PR close on prod (real LLMs, real sandbox, real GitHub CI):
 | Language | Lint | Test fail | Flake | Coverage |
 |---|:---:|:---:|:---:|:---:|
 | Python     | ✅ | ✅ | ✅ | ✅ |
+| TypeScript | ✅ | ✅ | ✅ | ✅ |
 | JavaScript | ⏳ | ⏳ | ⏳ | ⏳ |
-| TypeScript | ⏳ | ⏳ | ⏳ | ⏳ |
 | Java       | ⏳ | ⏳ | ⏳ | ⏳ |
 | C#         | ⏳ | ⏳ | ⏳ | ⏳ |
 
-**Python row complete.** 4 of 20 cells closed, all on [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed):
-PR #1 (lint → `acdcbc5`), PR #2 (test_fail → `07ad29d2`), PR #3 (flake → `f9719fd`), PR #4 (coverage → `c41cd413`).
+**Python + TypeScript rows complete.** 8 of 20 cells closed end-to-end on prod, all 8 replay-gated:
 
-Per-cell cost: lint ~\$0.37, test_fail ~\$0.17, flake ~\$0.19, coverage ~\$1.31 (across 3 iterations). Coverage required 2 follow-up iterations — first shipped a truncated patch (surfaced a Sonnet max_tokens bug, fixed by raising the ceiling 8k→16k + explicit coder rule against shell-based file writes); second fixed the coverage gap itself; third cleaned up a residual `ruff format` regression in a sibling CI job.
+- Python → [`usephalanx/phalanx-ci-fixer-testbed`](https://github.com/usephalanx/phalanx-ci-fixer-testbed) PRs #1–4
+- TypeScript → [`usephalanx/phalanx-ci-fixer-testbed-ts`](https://github.com/usephalanx/phalanx-ci-fixer-testbed-ts) PRs #1–6
+
+Per-row recording cost: Python \$0.79 total / TypeScript ~\$2.63 total (TS cells are 2–3× more expensive; coverage cell in particular takes more turns because jest test construction is harder for the coder than pytest).
+
+TS × flake escalated on first attempt ($0.72 wasted; low-confidence after the agent correctly diagnosed), committed on retry — flake behavior is inherently noisy both in CI and in agent reasoning.
 
 ### Regression gates (3 layers)
 
