@@ -120,11 +120,19 @@ d = json.load(sys.stdin)
 runs = d.get("check_runs", [])
 latest = {}
 for c in runs:
-    if c["name"] not in latest or c["id"] > latest[c["name"]]["id"]:
-        latest[c["name"]] = c
-if not latest or not all(c.get("conclusion") for c in latest.values()):
+    name = c["name"]
+    if name not in latest or c["id"] > latest[name]["id"]:
+        latest[name] = c
+if not latest:
     sys.exit(1)
-print(" ".join(f"{n}={c[\"conclusion\"]}:{c[\"id\"]}" for n, c in latest.items()))
+for c in latest.values():
+    if not c.get("conclusion"):
+        sys.exit(1)
+parts = []
+for n, c in latest.items():
+    parts.append(n + "=" + str(c["conclusion"]) + ":" + str(c["id"]))
+# Join with ||| because job names contain spaces ("Test + Coverage").
+print("|||".join(parts))
 ' 2>/dev/null || true)
     if [ -n "$out" ]; then
       echo "$out"
@@ -135,19 +143,24 @@ print(" ".join(f"{n}={c[\"conclusion\"]}:{c[\"id\"]}" for n, c in latest.items()
   return 1
 }
 
-# Extract one job's id + conclusion from a wait_ci_conclude line
+# Extract one job's id + conclusion from a wait_ci_conclude line.
+# Line is "<name1>=<concl>:<id>|||<name2>=<concl>:<id>" — pipes separate
+# entries so that names with spaces ("Test + Coverage") don't get split.
 ci_job_conclusion() {
   local line="$1" name="$2"
   python3 -c "
-line = '''$line'''
-name = '''$name'''
-for tok in line.split():
+import sys
+line = sys.argv[1]
+name = sys.argv[2]
+for tok in line.split('|||'):
+    if '=' not in tok:
+        continue
     n, rest = tok.split('=', 1)
     if n == name:
         concl, jid = rest.split(':', 1)
         print(concl, jid)
         break
-"
+" "$line" "$name"
 }
 
 # Retrigger the latest workflow run for a branch; block until conclusion.
@@ -166,14 +179,18 @@ retrigger_ci() {
 }
 
 # Run simulate on prod. Echoes: verdict cost_usd tokens fix_sha
+# Side effect: the full simulate output (per-turn agent trace) is
+# appended to $LOG_DIR/<cell>.simulate.log so regressions can be
+# diagnosed without re-running.
 run_simulate() {
-  local repo="$1" branch="$2" sha="$3" job_id="$4" cmd="$5" job_name="$6"
+  local repo="$1" branch="$2" sha="$3" job_id="$4" cmd="$5" job_name="$6" cell="$7"
+  local full_log="${LOG_DIR}/${cell}.simulate.log"
   ssh_prod "docker exec $CONTAINER python -m phalanx.ci_fixer_v2.simulate \
     --repo $repo --pr 0 \
     --branch $branch --sha $sha \
     --job-id $job_id \
     --failing-command $(printf %q "$cmd") \
-    --failing-job-name $(printf %q "$job_name")" 2>&1 | python3 -c '
+    --failing-job-name $(printf %q "$job_name")" 2>&1 | tee "$full_log" | python3 -c '
 import re, sys
 text = sys.stdin.read()
 verdict = "unknown"
@@ -227,14 +244,37 @@ MAIN_SHA=$(cd "$TESTBED_LOCAL" && git rev-parse main)
 say "$(c_dim "[preflight]") testbed main @ $MAIN_SHA"
 
 # ── Per-cell runner ──────────────────────────────────────────────────────
+# bash 3.2 compatible — results are stashed in per-cell files under LOG_DIR
+# and re-read at summary time. (No associative arrays.)
 CREATED_BRANCHES=()
-declare -A RESULTS_VERDICT RESULTS_COST RESULTS_TOKENS RESULTS_FIX_SHA RESULTS_WALL RESULTS_CI_AFTER RESULTS_STATUS
+
+save_result() {
+  # save_result <cell> <key> <value>
+  local cell="$1" key="$2" value="$3"
+  printf '%s=%s\n' "$key" "$value" >> "$LOG_DIR/${cell}.result"
+}
+
+read_result() {
+  # read_result <cell> <key>  — echoes value or '-' if missing
+  local cell="$1" key="$2"
+  local file="$LOG_DIR/${cell}.result"
+  [ -f "$file" ] || { echo "-"; return; }
+  local line
+  line=$(grep "^${key}=" "$file" | tail -1)
+  [ -n "$line" ] && echo "${line#*=}" || echo "-"
+}
 
 run_cell() {
   local name="$1" patch="$2" cmd="$3" job_name="$4" can_flake="$5"
   local branch="regression/${name}-${RUN_ID}"
   local cell_log="${LOG_DIR}/${name}.log"
   local started=$(date +%s)
+
+  # Default every cell to FAIL; overwritten to PASS at the end if it
+  # actually succeeds. Avoids misleading "SKIP" in the summary on early
+  # error returns.
+  save_result "$name" status "FAIL"
+  save_result "$name" wall "0"
 
   say ""
   say "━━━ cell: $(c_green "$name") ━━━ branch: $branch"
@@ -257,7 +297,25 @@ run_cell() {
     git -c user.name="regression-bot" -c user.email="bot@phalanx.local" \
         commit -m "regression/$name: intro failure ($patch)" --quiet
     git push -u origin "$branch" --quiet 2>&1 | tee -a "$cell_log" >/dev/null
-  ) || return 11
+  ) || { save_result "$name" wall "$(( $(date +%s) - started ))"; return 11; }
+
+  # Open a PR so GitHub Actions runs (testbed workflow triggers on
+  # pull_request, not on branch push). Idempotent — if a PR already
+  # exists for the branch, GitHub returns 422 and we carry on.
+  local pr_resp
+  pr_resp=$(curl -s -X POST \
+    -H "Authorization: Bearer $GH_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$TESTBED_REPO/pulls" \
+    -d "{\"title\":\"regression/${name} [$RUN_ID]\",\"head\":\"$branch\",\"base\":\"main\",\"body\":\"Auto-opened by v2_python_regression.sh for cell=$name.\"}")
+  local pr_num
+  pr_num=$(echo "$pr_resp" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("number") or "")' 2>/dev/null || true)
+  if [ -n "$pr_num" ]; then
+    save_result "$name" pr_number "$pr_num"
+    say "$(c_dim "  [setup]") opened PR #$pr_num"
+  else
+    say "$(c_dim "  [setup]") PR open skipped (maybe already exists): $(echo "$pr_resp" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("message","?"))' 2>/dev/null || echo unknown)"
+  fi
 
   local intro_sha
   intro_sha=$(cd "$TESTBED_LOCAL" && git rev-parse "$branch")
@@ -266,8 +324,9 @@ run_cell() {
   # Wait for CI to conclude, retrigger for flake
   local ci_conclusion job_id=""
   for attempt in $(seq 1 "$FLAKE_MAX_RETRIGGERS"); do
-    if ! ci_conclusion=$(wait_ci_conclude "$intro_sha" 240); then
+    if ! ci_conclusion=$(wait_ci_conclude "$intro_sha" 360); then
       say "$(c_red "  [ci-intro]") timeout waiting for CI"
+      save_result "$name" wall "$(( $(date +%s) - started ))"
       return 12
     fi
     say "$(c_dim "  [ci-intro]") $ci_conclusion"
@@ -280,6 +339,7 @@ run_cell() {
       ci_conclusion=$(retrigger_ci "$branch") || true
     else
       say "$(c_red "  [ci-intro]") $job_name did not fail on intro commit"
+      save_result "$name" wall "$(( $(date +%s) - started ))"
       return 13
     fi
   done
@@ -288,19 +348,19 @@ run_cell() {
   # Run simulate on prod
   say "$(c_dim "  [simulate]") starting…"
   local sim_out
-  sim_out=$(run_simulate "$TESTBED_REPO" "$branch" "$intro_sha" "$job_id" "$cmd" "$job_name" | tee -a "$cell_log")
+  sim_out=$(run_simulate "$TESTBED_REPO" "$branch" "$intro_sha" "$job_id" "$cmd" "$job_name" "$name" | tee -a "$cell_log")
   read -r verdict cost tokens fix_sha <<< "$sim_out"
   say "$(c_dim "  [simulate]") verdict=$verdict cost=\$$cost tokens=$tokens fix=$fix_sha"
-  RESULTS_VERDICT[$name]=$verdict
-  RESULTS_COST[$name]=$cost
-  RESULTS_TOKENS[$name]=$tokens
-  RESULTS_FIX_SHA[$name]=$fix_sha
+  save_result "$name" verdict "$verdict"
+  save_result "$name" cost "$cost"
+  save_result "$name" tokens "$tokens"
+  save_result "$name" fix_sha "$fix_sha"
 
   if [ "$verdict" != "committed" ]; then
     say "$(c_red "  [REGRESSION]") expected committed, got $verdict"
-    RESULTS_CI_AFTER[$name]="-"
-    RESULTS_WALL[$name]=$(( $(date +%s) - started ))
-    RESULTS_STATUS[$name]="FAIL"
+    save_result "$name" ci_after "-"
+    save_result "$name" wall "$(( $(date +%s) - started ))"
+    save_result "$name" status "FAIL"
     return 14
   fi
 
@@ -308,31 +368,38 @@ run_cell() {
   local fix_ci
   if ! fix_ci=$(wait_ci_conclude "$fix_sha" 240); then
     say "$(c_red "  [ci-fix]") timeout waiting for agent's fix CI"
-    RESULTS_CI_AFTER[$name]="timeout"
-    RESULTS_STATUS[$name]="FAIL"
+    save_result "$name" ci_after "timeout"
+    save_result "$name" wall "$(( $(date +%s) - started ))"
+    save_result "$name" status "FAIL"
     return 15
   fi
   say "$(c_dim "  [ci-fix]") $fix_ci"
-  RESULTS_CI_AFTER[$name]="$fix_ci"
+  save_result "$name" ci_after "$fix_ci"
 
-  # Assert every CI job is success
-  local any_red=0
-  for kv in $fix_ci; do
-    local concl="${kv#*=}"
-    concl="${concl%%:*}"
-    if [ "$concl" != "success" ]; then
-      any_red=1
-    fi
-  done
-  RESULTS_WALL[$name]=$(( $(date +%s) - started ))
+  # Assert every CI job is success. fix_ci is "<name>=<concl>:<id>|||..."
+  # so parse with Python (safe against spaces in job names).
+  local any_red
+  any_red=$(python3 -c "
+import sys
+line = sys.argv[1]
+for tok in line.split('|||'):
+    if '=' not in tok: continue
+    _, rest = tok.split('=', 1)
+    concl = rest.split(':', 1)[0]
+    if concl != 'success':
+        print('1'); sys.exit(0)
+print('0')
+" "$fix_ci")
+  local wall_s=$(( $(date +%s) - started ))
+  save_result "$name" wall "$wall_s"
   if [ "$any_red" = "1" ]; then
     say "$(c_red "  [REGRESSION]") agent's fix pushed but CI did not go fully green"
-    RESULTS_STATUS[$name]="FAIL"
+    save_result "$name" status "FAIL"
     return 16
   fi
 
-  say "$(c_green "  [PASS]") ${name} (${RESULTS_WALL[$name]}s, \$$cost)"
-  RESULTS_STATUS[$name]="PASS"
+  say "$(c_green "  [PASS]") ${name} (${wall_s}s, \$$cost)"
+  save_result "$name" status "PASS"
   return 0
 }
 
@@ -363,13 +430,14 @@ for row in "${CELLS[@]}"; do
   if [ -n "$REQUEST_CELL" ] && [ "$REQUEST_CELL" != "$name" ]; then
     continue
   fi
-  local_status="${RESULTS_STATUS[$name]:-SKIP}"
-  local_verdict="${RESULTS_VERDICT[$name]:--}"
-  local_cost="${RESULTS_COST[$name]:--}"
-  local_wall="${RESULTS_WALL[$name]:--}"
-  local_ci="${RESULTS_CI_AFTER[$name]:--}"
+  status_v=$(read_result "$name" status)
+  [ "$status_v" = "-" ] && status_v="SKIP"
+  verdict_v=$(read_result "$name" verdict)
+  cost_v=$(read_result "$name" cost)
+  wall_v=$(read_result "$name" wall)
+  ci_v=$(read_result "$name" ci_after | tr '|' ';' | sed 's/;;;/;/g')
   printf "  %-10s  %-6s  %-8s  %-8s  %-6s  %s\n" \
-    "$name" "$local_status" "$local_verdict" "$local_cost" "$local_wall" "$local_ci"
+    "$name" "$status_v" "$verdict_v" "$cost_v" "$wall_v" "$ci_v"
 done
 
 # Budget enforcement (off in --baseline)
@@ -377,14 +445,14 @@ if [ "$BASELINE" = "0" ]; then
   for row in "${CELLS[@]}"; do
     IFS='|' read -r name _ _ _ _ <<< "$row"
     [ -n "$REQUEST_CELL" ] && [ "$REQUEST_CELL" != "$name" ] && continue
-    [ "${RESULTS_STATUS[$name]:-}" != "PASS" ] && continue
-    cost="${RESULTS_COST[$name]}"
-    wall="${RESULTS_WALL[$name]}"
+    [ "$(read_result "$name" status)" != "PASS" ] && continue
+    cost=$(read_result "$name" cost)
+    wall=$(read_result "$name" wall)
     if python3 -c "import sys; sys.exit(0 if float('$cost') > float('$PER_CELL_MAX_COST_USD') else 1)" 2>/dev/null; then
       say "$(c_red "BUDGET"): $name cost \$$cost > \$$PER_CELL_MAX_COST_USD"
       OVERALL_RC=1
     fi
-    if [ "$wall" -gt "$PER_CELL_MAX_WALL_SECS" ]; then
+    if [ "$wall" -gt "$PER_CELL_MAX_WALL_SECS" ] 2>/dev/null; then
       say "$(c_red "BUDGET"): $name wall ${wall}s > ${PER_CELL_MAX_WALL_SECS}s"
       OVERALL_RC=1
     fi
@@ -394,6 +462,18 @@ fi
 # ── Cleanup ──────────────────────────────────────────────────────────────
 if [ "$CLEANUP" = "1" ]; then
   for b in "${CREATED_BRANCHES[@]}"; do
+    # Extract cell name back out of the branch (strip "regression/" prefix
+    # and the "-RUN_ID" suffix).
+    stripped="${b#regression/}"
+    cell="${stripped%-$RUN_ID}"
+    pr_num=$(read_result "$cell" pr_number)
+    if [ -n "$pr_num" ] && [ "$pr_num" != "-" ]; then
+      say "$(c_dim "[cleanup]") close PR #$pr_num (branch $b)"
+      curl -s -X PATCH -H "Authorization: Bearer $GH_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/$TESTBED_REPO/pulls/$pr_num" \
+        -d '{"state":"closed"}' > /dev/null || true
+    fi
     say "$(c_dim "[cleanup]") delete $b"
     curl -s -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
       "https://api.github.com/repos/$TESTBED_REPO/git/refs/heads/$b" > /dev/null || true
