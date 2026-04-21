@@ -90,17 +90,15 @@ async def test_scorecard_replay(fixture_path: Path, monkeypatch):
     # (they share the registry).
     replay_handler, _cursor = tool_replay_patcher(fx.tool_calls)
 
-    for tool_name in list(tools_base._registry):  # type: ignore[attr-defined]
+    for tool_name in list(tools_base._REGISTRY):  # type: ignore[attr-defined]
         real_tool = tools_base.get(tool_name)
-        # Bind the expected name so tool_replay_patcher can detect drift.
-        async def make_handler(expected_name):
+        # Bind the expected name per-handler so tool_replay_patcher
+        # can detect order drift.
+        def _bind(expected_name):
             async def _h(ctx, tool_input):
                 return await replay_handler(expected_name, ctx, tool_input)
             return _h
-        # In-place swap of the handler attribute.
-        real_tool.handler = (  # type: ignore[assignment]
-            await make_handler(tool_name)
-        )
+        real_tool.handler = _bind(tool_name)  # type: ignore[assignment]
 
     # Seed a minimal AgentContext from the fixture.
     init = fx.initial_context

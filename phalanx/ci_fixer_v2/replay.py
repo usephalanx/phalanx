@@ -227,13 +227,71 @@ def tool_replay_patcher(tool_calls: list[ToolCallRecord]):
 
     The cursor enforces that tools are called in the same order as
     recorded. Out-of-order calls raise ReplayDriftError.
+
+    Ctx side-effect fidelity
+    ────────────────────────
+    Some real tool handlers mutate AgentContext as part of their
+    contract — crucially `run_in_sandbox` flips
+    `ctx.last_sandbox_verified` on a matching exit-0 run, which is
+    the ONLY thing that lets `commit_and_push` clear the
+    verification gate. A naive canned replay skips those mutations,
+    so the loop re-triggers VERIFICATION_GATE_VIOLATION on every
+    commit attempt even though the original run was green.
+
+    We explicitly re-play those mutations here by inspecting the
+    recorded `tool_result.data` and calling the same ctx hooks the
+    real handler would have called. Add new tools to `_replay_side_effects`
+    as the agent gains more ctx-mutating behavior.
     """
     from phalanx.ci_fixer_v2.tools.base import ToolResult
 
     cursor = {"i": 0}
 
+    def _replay_side_effects(
+        tool_name: str, ctx: Any, tool_input: dict[str, Any], data: dict[str, Any]
+    ) -> None:
+        """Re-apply ctx mutations that the real tool handler would have
+        caused. Best-effort — tools without listed side-effects are
+        no-ops here."""
+        if tool_name == "run_in_sandbox" and data.get("sandbox_verified"):
+            cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+            try:
+                ctx.mark_sandbox_verified(cmd)
+            except Exception:
+                # Some AgentContexts in tests may not have the helper;
+                # fall back to direct flag set.
+                try:
+                    ctx.last_sandbox_verified = True
+                except Exception:
+                    pass
+        elif tool_name == "apply_patch" and data.get("applied_to"):
+            # Real handler invalidates sandbox verification after a
+            # successful patch so a subsequent commit can't use stale
+            # verification. Mirror that.
+            try:
+                ctx.invalidate_sandbox_verification()
+            except Exception:
+                try:
+                    ctx.last_sandbox_verified = False
+                except Exception:
+                    pass
+        elif tool_name == "delegate_to_coder" and data.get("failing_command_matched"):
+            # delegate_to_coder runs an internal loop that may flip
+            # ctx.last_sandbox_verified when the coder runs the ORIGINAL
+            # failing command successfully in sandbox. The returned data
+            # surfaces that outcome as failing_command_matched=True.
+            # Mirror it so commit_and_push's verification gate clears.
+            cmd = getattr(ctx, "original_failing_command", "") or ""
+            try:
+                ctx.mark_sandbox_verified(cmd)
+            except Exception:
+                try:
+                    ctx.last_sandbox_verified = True
+                except Exception:
+                    pass
+
     async def replay_handler(
-        expected_name: str, _ctx: Any, tool_input: dict[str, Any]
+        expected_name: str, ctx: Any, tool_input: dict[str, Any]
     ) -> ToolResult:
         i = cursor["i"]
         if i >= len(tool_calls):
@@ -256,6 +314,8 @@ def tool_replay_patcher(tool_calls: list[ToolCallRecord]):
         # construction. Tool sequence + result is enough.
         if rec.error:
             return ToolResult(ok=False, error=rec.error)
-        return ToolResult(ok=True, data=rec.tool_result or {})
+        data = rec.tool_result or {}
+        _replay_side_effects(expected_name, ctx, tool_input, data)
+        return ToolResult(ok=True, data=data)
 
     return replay_handler, cursor
