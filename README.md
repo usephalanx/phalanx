@@ -339,6 +339,20 @@ PR #1 (lint → `acdcbc5`), PR #2 (test_fail → `07ad29d2`), PR #3 (flake → `
 
 Per-cell cost: lint ~\$0.37, test_fail ~\$0.17, flake ~\$0.19, coverage ~\$1.31 (across 3 iterations). Coverage required 2 follow-up iterations — first shipped a truncated patch (surfaced a Sonnet max_tokens bug, fixed by raising the ceiling 8k→16k + explicit coder rule against shell-based file writes); second fixed the coverage gap itself; third cleaned up a residual `ruff format` regression in a sibling CI job.
 
+### Regression gates (3 layers)
+
+Prompt / loop / tool changes go through three cascading checks before deploy:
+
+| Layer | What it catches | Cost | Latency |
+|---|---|---|---|
+| **1. Unit tests** (`uv run pytest tests/unit/ci_fixer_v2/`) — 342 tests, mocked SDKs | code bugs, tool shape regressions, provider adapter errors | $0 | ~3 s |
+| **2. Live regression smoke** (`scripts/v2_python_regression.sh`) — runs all 4 cells against real LLMs + real sandbox + real GitHub | behavior drift, SDK contract changes, sandbox/CI version drift | ~$1 | ~20 min |
+| **3. Replay fixtures** (`uv run pytest tests/integration/scorecard/`) — recorded runs replayed with canned LLM/tool responses | same as Layer 2, deterministically | $0 | ~70 ms |
+
+Two loop-level hard invariants:
+- **Verification gate** — `commit_and_push` blocked unless `last_sandbox_verified=True`
+- **Evidence gate** — escalation with `infra_failure_out_of_scope` / `preexisting_main_failure` without trace evidence is coerced to `LOW_CONFIDENCE` (logged as `v2.loop.escalation_reason_forced`)
+
 ### Architecture decision: no fix-type router
 
 After running Python × {lint, test_fail, flake} end-to-end, all three traced through the **same loop, same tool sequence, same prompt** and committed on the first or second delegate round. Variance across classes (validate_cmd, target files) was already extracted from the CI log + manifest files — not hardcoded per class. A full Strategy / Router abstraction would add code without adding capability. What goes in instead:
