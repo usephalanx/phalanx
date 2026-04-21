@@ -48,8 +48,10 @@ PG_CONTAINER="${PG_CONTAINER:-phalanx-prod-postgres-1}"
 TESTBED_REPO="${TESTBED_REPO:-usephalanx/phalanx-ci-fixer-testbed}"
 TESTBED_LOCAL="${TESTBED_LOCAL:-$HOME/phalanx-ci-fixer-testbed}"
 PER_CELL_MAX_COST_USD="${PER_CELL_MAX_COST_USD:-1.50}"
-PER_CELL_MAX_WALL_SECS="${PER_CELL_MAX_WALL_SECS:-600}"
+PER_CELL_MAX_WALL_SECS="${PER_CELL_MAX_WALL_SECS:-1500}"
 FLAKE_MAX_RETRIGGERS="${FLAKE_MAX_RETRIGGERS:-6}"
+FIX_CI_WAIT_SECS="${FIX_CI_WAIT_SECS:-540}"
+INTRO_CI_WAIT_SECS="${INTRO_CI_WAIT_SECS:-360}"
 
 RUN_ID="$(date -u +%Y%m%d-%H%M%S)"
 LOG_DIR="/tmp/v2-py-regression-${RUN_ID}"
@@ -324,7 +326,7 @@ run_cell() {
   # Wait for CI to conclude, retrigger for flake
   local ci_conclusion job_id=""
   for attempt in $(seq 1 "$FLAKE_MAX_RETRIGGERS"); do
-    if ! ci_conclusion=$(wait_ci_conclude "$intro_sha" 360); then
+    if ! ci_conclusion=$(wait_ci_conclude "$intro_sha" "$INTRO_CI_WAIT_SECS"); then
       say "$(c_red "  [ci-intro]") timeout waiting for CI"
       save_result "$name" wall "$(( $(date +%s) - started ))"
       return 12
@@ -366,8 +368,8 @@ run_cell() {
 
   # Wait for CI on the fix
   local fix_ci
-  if ! fix_ci=$(wait_ci_conclude "$fix_sha" 240); then
-    say "$(c_red "  [ci-fix]") timeout waiting for agent's fix CI"
+  if ! fix_ci=$(wait_ci_conclude "$fix_sha" "$FIX_CI_WAIT_SECS"); then
+    say "$(c_red "  [ci-fix]") timeout waiting for agent's fix CI (${FIX_CI_WAIT_SECS}s)"
     save_result "$name" ci_after "timeout"
     save_result "$name" wall "$(( $(date +%s) - started ))"
     save_result "$name" status "FAIL"
