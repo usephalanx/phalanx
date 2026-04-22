@@ -57,6 +57,7 @@ _POOL_IMAGES: dict[str, str] = {
     "node": "phalanx-sandbox-node:latest",
     "go": "phalanx-sandbox-go:latest",
     "rust": "phalanx-sandbox-rust:latest",
+    "java": "phalanx-sandbox-java:latest",
     "unknown": "ubuntu:22.04",
 }
 
@@ -65,6 +66,7 @@ _FALLBACK_IMAGES: dict[str, str] = {
     "node": "node:20-slim",
     "go": "golang:1.22-alpine",
     "rust": "rust:1.77-slim",
+    "java": "maven:3.9-eclipse-temurin-21",
     "unknown": "ubuntu:22.04",
 }
 

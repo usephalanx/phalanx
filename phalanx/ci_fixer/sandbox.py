@@ -40,6 +40,7 @@ _STACK_FILES: dict[str, list[str]] = {
     "node": ["package.json"],
     "go": ["go.mod"],
     "rust": ["Cargo.toml"],
+    "java": ["pom.xml", "build.gradle", "build.gradle.kts"],
 }
 
 # ── Docker images per stack ───────────────────────────────────────────────────
@@ -49,6 +50,7 @@ _STACK_IMAGES: dict[str, str] = {
     "node": "node:20-slim",
     "go": "golang:1.22-alpine",
     "rust": "rust:1.77-slim",
+    "java": "maven:3.9-eclipse-temurin-21",
     "unknown": "ubuntu:22.04",
 }
 

@@ -43,8 +43,12 @@ case "$LANG_ROW" in
     TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-js"
     TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-js"
     ;;
+  java)
+    TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-java"
+    TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-java"
+    ;;
   *)
-    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts|js)" >&2; exit 2 ;;
+    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts|js|java)" >&2; exit 2 ;;
 esac
 TESTBED_REPO="${TESTBED_REPO:-$TESTBED_REPO_DEFAULT}"
 TESTBED_LOCAL="${TESTBED_LOCAL:-$TESTBED_LOCAL_DEFAULT}"
@@ -72,6 +76,16 @@ CELL_CONFIG() {
       test_fail) echo "02-test-assertion.patch|npm test|Test + Coverage|0" ;;
       flake)     echo "03-flake-sleep.patch|npm test|Test + Coverage|1" ;;
       coverage)  echo "04-coverage-drop.patch|npm test|Test + Coverage|0" ;;
+      *) echo ""; return 1 ;;
+    esac
+  elif [ "$LANG_ROW" = "java" ]; then
+    # Java testbed: Maven + Checkstyle + JaCoCo. Lint = checkstyle:check,
+    # Test + Coverage = verify (runs surefire + JaCoCo 80% gate).
+    case "$1" in
+      lint)      echo "01-lint.patch|mvn -B checkstyle:check|Lint|0" ;;
+      test_fail) echo "02-test-assertion.patch|mvn -B verify|Test + Coverage|0" ;;
+      flake)     echo "03-flake-sleep.patch|mvn -B verify|Test + Coverage|1" ;;
+      coverage)  echo "04-coverage-drop.patch|mvn -B verify|Test + Coverage|0" ;;
       *) echo ""; return 1 ;;
     esac
   else
@@ -263,7 +277,7 @@ p.write_text(txt)
     --failing-command $(printf %q "$cmd") \
     --failing-job-name $(printf %q "$job_name") \
     --record $container_fixture \
-    --cell-name python_${cell}" 2>&1 | tail -20
+    --cell-name ${LANG_ROW}_${cell}" 2>&1 | tail -20
 
   # 5. docker cp fixture out, scp to Mac
   say "$(c_dim "  [copy]") pulling fixture from container → local"
