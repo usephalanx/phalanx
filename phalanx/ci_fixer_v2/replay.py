@@ -264,10 +264,10 @@ def tool_replay_patcher(tool_calls: list[ToolCallRecord]):
                     ctx.last_sandbox_verified = True
                 except Exception:
                     pass
-        elif tool_name == "apply_patch" and data.get("applied_to"):
+        elif tool_name in ("apply_patch", "replace_in_file") and data.get("applied_to"):
             # Real handler invalidates sandbox verification after a
-            # successful patch so a subsequent commit can't use stale
-            # verification. Mirror that.
+            # successful edit so a subsequent commit can't use stale
+            # verification. Mirror that. Both tools share this contract.
             try:
                 ctx.invalidate_sandbox_verification()
             except Exception:

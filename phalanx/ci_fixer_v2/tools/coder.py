@@ -300,6 +300,265 @@ register(_apply_patch_tool)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# replace_in_file  (coder-subagent only)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Default edit primitive for the coder. Matches the industry-standard
+# LLM-file-edit interface (Claude Code / Cursor / Aider) — find a
+# literal old_string, replace with new_string, no line numbers, no
+# hunk headers, no context-match rules.
+#
+# Why not unified-diff? LLMs generate unified diffs with ~10–30% silent
+# failure rate on multi-line edits because the format requires
+# byte-perfect recall of context lines + correct line numbers.
+# replace_in_file uses plain-string addressing so the common case —
+# "add a test block at the end", "swap + for *", "remove this
+# describe(...) block" — never runs into diff-format brittleness.
+#
+# apply_patch stays for complex multi-site edits where a unique anchor
+# is hard to find; the coder prompt pushes replace_in_file first.
+
+REPLACE_IN_FILE_SCHEMA = ToolSchema(
+    name="replace_in_file",
+    description=(
+        "Replace a literal substring in a workspace file. Preferred "
+        "over apply_patch for most edits — find-and-replace avoids the "
+        "brittleness of unified-diff context matching.\n\n"
+        "Contract: `old_string` must appear in the file verbatim. If "
+        "it appears 0 times, returns error='not_found'. If it appears "
+        "more than once and occurrence='unique' (default), returns "
+        "error='ambiguous' with line numbers — widen old_string so it "
+        "matches exactly one location. Use occurrence='all' only when "
+        "you intend to replace every occurrence.\n\n"
+        "Common patterns:\n"
+        "  - append block at EOF: old_string = last N bytes of file, "
+        "    new_string = those bytes + your additions\n"
+        "  - delete block: old_string = whole block, new_string = ''\n"
+        "  - tweak line: old_string = exact line, new_string = new line\n\n"
+        "path MUST be in target_files. After a successful replace, "
+        "sandbox verification is invalidated: you must run_in_sandbox "
+        "the original failing command before the main agent can commit."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Workspace-relative path to the file to modify. "
+                    "MUST be listed in target_files."
+                ),
+            },
+            "old_string": {
+                "type": "string",
+                "description": (
+                    "Literal substring to find. Empty string is rejected "
+                    "— to create a new file, use apply_patch instead."
+                ),
+            },
+            "new_string": {
+                "type": "string",
+                "description": (
+                    "Replacement string. Can be empty (to delete the "
+                    "matched region)."
+                ),
+            },
+            "target_files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": "Scope — path MUST be one of these.",
+            },
+            "occurrence": {
+                "type": "string",
+                "enum": ["unique", "all"],
+                "default": "unique",
+                "description": (
+                    "`unique` requires old_string appear exactly once. "
+                    "`all` replaces every occurrence. Default `unique` "
+                    "because ambiguous replaces are usually bugs."
+                ),
+            },
+        },
+        "required": ["path", "old_string", "new_string", "target_files"],
+    },
+)
+
+
+def _line_of_offset(text: str, offset: int) -> int:
+    """1-based line number containing the byte offset. For error
+    messages so the coder can see where its ambiguous matches landed."""
+    return text[:offset].count("\n") + 1
+
+
+async def _handle_replace_in_file(
+    ctx: AgentContext, tool_input: dict[str, Any]
+) -> ToolResult:
+    from pathlib import Path
+
+    path = tool_input.get("path")
+    old_string = tool_input.get("old_string")
+    new_string = tool_input.get("new_string")
+    target_files = tool_input.get("target_files") or []
+    occurrence = tool_input.get("occurrence") or "unique"
+
+    # ── input validation ────────────────────────────────────────────
+    if not path or not isinstance(path, str):
+        return ToolResult(ok=False, error="path is required (non-empty string)")
+    if old_string is None or not isinstance(old_string, str):
+        return ToolResult(ok=False, error="old_string is required (string)")
+    if old_string == "":
+        return ToolResult(
+            ok=False,
+            error=(
+                "empty_old_string: use apply_patch to create new files; "
+                "replace_in_file only mutates existing files"
+            ),
+        )
+    if new_string is None or not isinstance(new_string, str):
+        return ToolResult(ok=False, error="new_string is required (string, may be empty)")
+    if not isinstance(target_files, list) or not target_files:
+        return ToolResult(ok=False, error="target_files must be a non-empty list")
+    if not all(isinstance(f, str) and f for f in target_files):
+        return ToolResult(
+            ok=False, error="every target_files entry must be a non-empty string"
+        )
+    if occurrence not in ("unique", "all"):
+        return ToolResult(
+            ok=False,
+            error=f"occurrence must be 'unique' or 'all', got {occurrence!r}",
+        )
+
+    # ── scope + path safety ─────────────────────────────────────────
+    if path not in set(target_files):
+        return ToolResult(
+            ok=False,
+            error=f"path_not_in_target_files: {path!r} not in {sorted(target_files)}",
+        )
+    if ".." in Path(path).parts or Path(path).is_absolute():
+        return ToolResult(
+            ok=False,
+            error=f"unsafe_path: {path!r} must be workspace-relative, no '..'",
+        )
+
+    file_path = Path(ctx.repo_workspace_path) / path
+    if not file_path.exists():
+        return ToolResult(
+            ok=False,
+            error=(
+                f"file_not_found: {path!r} does not exist in workspace. "
+                "Use apply_patch to create new files."
+            ),
+        )
+
+    # ── read, find, write ───────────────────────────────────────────
+    try:
+        content = file_path.read_text()
+    except UnicodeDecodeError as exc:
+        return ToolResult(
+            ok=False,
+            error=f"non_text_file: {path!r} is not valid UTF-8 ({exc})",
+        )
+
+    count = content.count(old_string)
+    if count == 0:
+        return ToolResult(
+            ok=False,
+            error=(
+                "not_found: old_string does not appear in the file. "
+                "Re-read the file to get the exact current bytes "
+                "(whitespace, trailing newlines matter) and retry."
+            ),
+        )
+    if count > 1 and occurrence == "unique":
+        # Locate every occurrence for the coder's diagnosis.
+        positions: list[int] = []
+        start = 0
+        while True:
+            idx = content.find(old_string, start)
+            if idx == -1:
+                break
+            positions.append(_line_of_offset(content, idx))
+            start = idx + 1
+        return ToolResult(
+            ok=False,
+            error=(
+                f"ambiguous: old_string matches {count} locations "
+                f"(lines {positions}). Widen old_string with enough "
+                "surrounding context to match exactly one site, or "
+                "pass occurrence='all' if you intend to replace every "
+                "occurrence."
+            ),
+        )
+
+    # Perform the replacement — unique (count==1) or all.
+    if occurrence == "all":
+        new_content = content.replace(old_string, new_string)
+        replacements = count
+    else:
+        new_content = content.replace(old_string, new_string, 1)
+        replacements = 1
+
+    try:
+        file_path.write_text(new_content)
+    except OSError as exc:
+        return ToolResult(ok=False, error=f"write_failed: {exc}")
+
+    # ── ctx mutations (mirror apply_patch contract) ─────────────────
+    ctx.invalidate_sandbox_verification()
+
+    # ── sandbox sync ────────────────────────────────────────────────
+    sync_failures: list[tuple[str, str]] = []
+    if ctx.sandbox_container_id:
+        sync_failures = await _sync_patched_files_to_sandbox(
+            ctx.sandbox_container_id, ctx.repo_workspace_path, [path]
+        )
+    if sync_failures:
+        log.error(
+            "v2.tools.replace_in_file.sandbox_sync_failed",
+            ci_fix_run_id=ctx.ci_fix_run_id,
+            failures=sync_failures,
+        )
+        return ToolResult(
+            ok=False,
+            error=(
+                "sandbox_sync_failed: edited on host but could not copy "
+                "to sandbox — "
+                + "; ".join(f"{f}: {e}" for f, e in sync_failures)
+            ),
+        )
+
+    log.info(
+        "v2.tools.replace_in_file.applied",
+        ci_fix_run_id=ctx.ci_fix_run_id,
+        path=path,
+        replacements=replacements,
+        old_bytes=len(old_string),
+        new_bytes=len(new_string),
+        synced_to_sandbox=bool(ctx.sandbox_container_id),
+    )
+    return ToolResult(
+        ok=True,
+        data={
+            "applied_to": [path],
+            "replacements": replacements,
+            "old_bytes": len(old_string),
+            "new_bytes": len(new_string),
+            "bytes_delta": len(new_string) - len(old_string),
+        },
+    )
+
+
+class _ReplaceInFileTool:
+    schema = REPLACE_IN_FILE_SCHEMA
+    handler = staticmethod(_handle_replace_in_file)
+
+
+_replace_in_file_tool = _ReplaceInFileTool()
+register(_replace_in_file_tool)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # delegate_to_coder  (main-agent-only)
 # ─────────────────────────────────────────────────────────────────────────────
 

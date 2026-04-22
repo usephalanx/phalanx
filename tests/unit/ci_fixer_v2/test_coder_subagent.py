@@ -55,9 +55,12 @@ def _scripted(responses: list[LLMResponse]):
 
 def test_coder_allowed_tools_exact_set():
     # The subagent's tool allow-list is the contract — lock it down.
+    # replace_in_file is the preferred edit primitive; apply_patch
+    # remains as the fallback for complex multi-site edits.
     assert ALLOWED_CODER_TOOLS == {
         "read_file",
         "grep",
+        "replace_in_file",
         "apply_patch",
         "run_in_sandbox",
     }

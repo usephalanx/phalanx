@@ -34,7 +34,7 @@ log = structlog.get_logger(__name__)
 
 
 ALLOWED_CODER_TOOLS: frozenset[str] = frozenset(
-    {"read_file", "grep", "apply_patch", "run_in_sandbox"}
+    {"read_file", "grep", "replace_in_file", "apply_patch", "run_in_sandbox"}
 )
 
 _CODER_TOOL_DISPATCH_TIMEOUT_S: float = 300.0

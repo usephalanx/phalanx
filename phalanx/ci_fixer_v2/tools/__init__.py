@@ -35,6 +35,7 @@ def _register_builtin_tools() -> None:
     base.register(action._escalate_tool)
     base.register(action._commit_and_push_tool)
     base.register(coder._apply_patch_tool)
+    base.register(coder._replace_in_file_tool)
     base.register(coder._delegate_to_coder_tool)
 
 

@@ -44,16 +44,26 @@ def test_main_agent_tool_names_locked_to_spec():
 
 
 def test_apply_patch_is_coder_only_not_in_main_scope():
-    # The whole point of the coder subagent is to keep patch application
-    # off the main agent's tool list.
+    # The whole point of the coder subagent is to keep workspace
+    # mutation off the main agent's tool list.
     assert "apply_patch" not in MAIN_AGENT_TOOL_NAMES
     assert "apply_patch" in ALLOWED_CODER_TOOLS
 
 
-def test_coder_scope_is_exactly_four_tools():
+def test_replace_in_file_is_coder_only_not_in_main_scope():
+    # replace_in_file is the preferred edit primitive; must also be
+    # kept off the main agent's tool list — same contract as apply_patch.
+    assert "replace_in_file" not in MAIN_AGENT_TOOL_NAMES
+    assert "replace_in_file" in ALLOWED_CODER_TOOLS
+
+
+def test_coder_scope_is_exactly_five_tools():
+    # replace_in_file added as the preferred edit primitive alongside
+    # apply_patch (kept as fallback for complex multi-site edits).
     assert ALLOWED_CODER_TOOLS == {
         "read_file",
         "grep",
+        "replace_in_file",
         "apply_patch",
         "run_in_sandbox",
     }
