@@ -47,8 +47,13 @@ case "$LANG_ROW" in
     TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-java"
     TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-java"
     ;;
+  csharp|cs)
+    LANG_ROW="csharp"
+    TESTBED_REPO_DEFAULT="usephalanx/phalanx-ci-fixer-testbed-csharp"
+    TESTBED_LOCAL_DEFAULT="$HOME/phalanx-ci-fixer-testbed-csharp"
+    ;;
   *)
-    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts|js|java)" >&2; exit 2 ;;
+    echo "unknown LANG_ROW: $LANG_ROW (expected python|ts|js|java|csharp)" >&2; exit 2 ;;
 esac
 TESTBED_REPO="${TESTBED_REPO:-$TESTBED_REPO_DEFAULT}"
 TESTBED_LOCAL="${TESTBED_LOCAL:-$TESTBED_LOCAL_DEFAULT}"
@@ -86,6 +91,16 @@ CELL_CONFIG() {
       test_fail) echo "02-test-assertion.patch|mvn -B verify|Test + Coverage|0" ;;
       flake)     echo "03-flake-sleep.patch|mvn -B verify|Test + Coverage|1" ;;
       coverage)  echo "04-coverage-drop.patch|mvn -B verify|Test + Coverage|0" ;;
+      *) echo ""; return 1 ;;
+    esac
+  elif [ "$LANG_ROW" = "csharp" ]; then
+    # C# testbed: .NET 8 SDK + xUnit + coverlet. Lint = `dotnet format --verify`,
+    # Test + Coverage = `dotnet test` with coverlet 80% line threshold.
+    case "$1" in
+      lint)      echo "01-lint.patch|dotnet format --verify-no-changes|Lint|0" ;;
+      test_fail) echo "02-test-assertion.patch|dotnet test --no-restore|Test + Coverage|0" ;;
+      flake)     echo "03-flake-sleep.patch|dotnet test --no-restore|Test + Coverage|1" ;;
+      coverage)  echo "04-coverage-drop.patch|dotnet test --no-restore|Test + Coverage|0" ;;
       *) echo ""; return 1 ;;
     esac
   else

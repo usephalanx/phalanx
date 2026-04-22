@@ -41,6 +41,7 @@ _STACK_FILES: dict[str, list[str]] = {
     "go": ["go.mod"],
     "rust": ["Cargo.toml"],
     "java": ["pom.xml", "build.gradle", "build.gradle.kts"],
+    "csharp": ["*.csproj", "*.sln", "global.json"],
 }
 
 # ── Docker images per stack ───────────────────────────────────────────────────
@@ -51,6 +52,7 @@ _STACK_IMAGES: dict[str, str] = {
     "go": "golang:1.22-alpine",
     "rust": "rust:1.77-slim",
     "java": "maven:3.9-eclipse-temurin-21",
+    "csharp": "mcr.microsoft.com/dotnet/sdk:8.0",
     "unknown": "ubuntu:22.04",
 }
 
@@ -140,8 +142,12 @@ class SandboxProvisioner:
         a monorepo with both pyproject.toml and package.json resolves to python.
         """
         for stack, markers in _STACK_FILES.items():
-            if any((workspace_path / marker).exists() for marker in markers):
-                return stack
+            for marker in markers:
+                if "*" in marker or "?" in marker:
+                    if any(workspace_path.glob(marker)):
+                        return stack
+                elif (workspace_path / marker).exists():
+                    return stack
         return "unknown"
 
     async def provision(
