@@ -38,6 +38,11 @@ _ROLE_TO_QUEUE: dict[str, str] = {
     # Scheduled/ingestion tasks
     "ingestion": "ingestion",
     "skill_drills": "skill_drills",
+    # CI Fixer v3 (multi-agent DAG — coexists with v2 under ci_integrations.cifixer_version)
+    "cifix_commander": "cifix_commander",
+    "cifix_techlead": "cifix_techlead",
+    "cifix_engineer": "cifix_engineer",
+    "cifix_sre": "cifix_sre",
 }
 
 _DEFAULT_QUEUE = "default"
@@ -54,6 +59,11 @@ _ROLE_TO_TASK: dict[str, str] = {
     "integration_wiring": "phalanx.agents.integration_wiring.execute_task",
     "security": "phalanx.agents.security.execute_task",
     "release": "phalanx.agents.release.execute_task",
+    # CI Fixer v3 — commander orchestrates, techlead/engineer/sre are per-task agents
+    "cifix_commander": "phalanx.agents.cifix_commander.execute_run",
+    "cifix_techlead": "phalanx.agents.cifix_techlead.execute_task",
+    "cifix_engineer": "phalanx.agents.cifix_engineer.execute_task",
+    "cifix_sre": "phalanx.agents.cifix_sre.execute_task",
 }
 
 

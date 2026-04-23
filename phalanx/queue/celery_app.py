@@ -61,6 +61,11 @@ celery_app.config_from_object(
             "skill_drills": {"exchange": "skill_drills", "routing_key": "skill_drills"},
             "ci_fixer": {"exchange": "ci_fixer", "routing_key": "ci_fixer"},
             "sre": {"exchange": "sre", "routing_key": "sre"},
+            # CI Fixer v3 — multi-agent DAG (Commander → TechLead → Engineer → SRE)
+            "cifix_commander": {"exchange": "cifix_commander", "routing_key": "cifix_commander"},
+            "cifix_techlead": {"exchange": "cifix_techlead", "routing_key": "cifix_techlead"},
+            "cifix_engineer": {"exchange": "cifix_engineer", "routing_key": "cifix_engineer"},
+            "cifix_sre": {"exchange": "cifix_sre", "routing_key": "cifix_sre"},
         },
         "task_default_queue": "default",
         # Task routing (agent role → queue)
@@ -74,6 +79,11 @@ celery_app.config_from_object(
             "phalanx.agents.release.*": {"queue": "release"},
             "phalanx.agents.sre.*": {"queue": "sre"},
             "phalanx.agents.ci_fixer.*": {"queue": "ci_fixer"},
+            # v3 multi-agent routing (name-prefixed so they don't collide with v2)
+            "phalanx.agents.cifix_commander.*": {"queue": "cifix_commander"},
+            "phalanx.agents.cifix_techlead.*": {"queue": "cifix_techlead"},
+            "phalanx.agents.cifix_engineer.*": {"queue": "cifix_engineer"},
+            "phalanx.agents.cifix_sre.*": {"queue": "cifix_sre"},
             "phalanx.skills.ingestion.*": {"queue": "ingestion"},
             "phalanx.skills.drills.*": {"queue": "skill_drills"},
         },
