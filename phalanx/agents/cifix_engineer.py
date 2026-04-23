@@ -89,10 +89,18 @@ class CIFixEngineerAgent(BaseAgent):
                 output={},
                 error="upstream cifix_techlead fix_spec not found or invalid",
             )
-        if not ci_context.get("failing_command"):
+        # Prefer the exact failing_command Tech Lead observed in the CI log.
+        # Fall back to ci_context (simulate path can seed it up-front).
+        failing_command = (
+            fix_spec.get("failing_command") or ci_context.get("failing_command") or ""
+        )
+        if not failing_command:
             return AgentResult(
-                success=False, output={}, error="ci_context missing failing_command"
+                success=False,
+                output={},
+                error="no failing_command available from fix_spec or ci_context",
             )
+        ci_context["failing_command"] = failing_command
 
         # Guard against low-confidence specs — escalate without attempting.
         # Tech Lead is supposed to flag confidence < 0.5 as open_questions; we

@@ -88,10 +88,16 @@ When you have enough evidence, end your turn with a single markdown fenced
   "root_cause": "one-sentence diagnosis of why CI failed",
   "affected_files": ["repo-relative/path.py"],
   "fix_spec": "natural-language description of the minimum edit required",
+  "failing_command": "exact shell command the engineer must re-run in sandbox",
   "confidence": 0.0,
   "open_questions": ["any unknowns the engineer should be aware of"]
 }
 ```
+
+`failing_command` is REQUIRED. It must be the exact command from fetch_ci_log
+(e.g. "ruff check ." or "mvn -B test"), not a job name. The engineer uses
+this as its sandbox verification gate — anything less precise will cause
+the verification to fail or commit an unverified patch.
 
 Confidence 0.0-1.0. Be honest — if the fix is unclear, confidence < 0.5 and
 list open_questions. The engineer will escalate rather than guess.
@@ -315,6 +321,7 @@ _FIX_SPEC_REQUIRED_KEYS = {
     "root_cause",
     "affected_files",
     "fix_spec",
+    "failing_command",
     "confidence",
     "open_questions",
 }
@@ -441,7 +448,11 @@ def _parse_ci_context(raw: str) -> dict:
 
 
 def _missing_required(ci_context: dict) -> list[str]:
-    required = ("repo", "branch", "failing_command", "failing_job_id", "pr_number")
+    # `failing_command` is intentionally NOT required — GitHub webhooks do not
+    # include the specific step-level command that failed. Tech Lead derives
+    # it from fetch_ci_log and writes it into fix_spec.failing_command for
+    # downstream consumers (Engineer uses it for sandbox verification).
+    required = ("repo", "branch", "failing_job_id", "pr_number")
     return [k for k in required if not ci_context.get(k)]
 
 

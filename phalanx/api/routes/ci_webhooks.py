@@ -162,11 +162,27 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         await session.commit()
         await session.refresh(ci_run)
 
-    # Dispatch async — return immediately to webhook caller.
-    # Feature flag selects the v2 agent (spec §14 cutover). Legacy v1
-    # path stays available until v2 clears the MVP exit gates; both
-    # share the `ci_fixer` queue (N1-scoped worker with Docker socket).
-    if settings.phalanx_ci_fixer_v2_enabled:
+    # ── Pipeline dispatch ────────────────────────────────────────────────────
+    # Three generations coexist; integration.cifixer_version picks per-repo:
+    #   'v3' → multi-agent DAG (cifix_commander, new, opt-in per repo)
+    #   'v2' → single-agent loop + verification gate (default, current prod)
+    #   otherwise → legacy v1 (still around for old integrations)
+    if integration.cifixer_version == "v3":
+        try:
+            await _dispatch_ci_fix_v3(event=event, integration=integration, ci_run=ci_run)
+            pipeline_version = "v3"
+        except Exception as exc:
+            # v3 dispatch failure falls back to v2 so the PR still gets fixed.
+            # Log loudly — the v3 path needs investigation.
+            log.exception(
+                "ci_webhook.v3_dispatch_failed_falling_back",
+                ci_fix_run_id=ci_run.id,
+                repo=event.repo_full_name,
+                error=str(exc),
+            )
+            execute_v2_task.apply_async(args=[ci_run.id], queue="ci_fixer")
+            pipeline_version = "v2_fallback"
+    elif settings.phalanx_ci_fixer_v2_enabled:
         execute_v2_task.apply_async(args=[ci_run.id], queue="ci_fixer")
         pipeline_version = "v2"
     else:
@@ -182,6 +198,101 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         pipeline_version=pipeline_version,
     )
     return ci_run
+
+
+async def _dispatch_ci_fix_v3(
+    event: CIFailureEvent, integration: CIIntegration, ci_run: CIFixRun
+) -> None:
+    """v3 dispatch path: creates a WorkOrder + Run and fires cifix_commander.
+
+    The CIFixRun row still exists (created by the caller) — it's kept as the
+    de-dup marker so webhook retries don't spawn parallel v3 runs. v3 drives
+    its own state through `runs` + `tasks` tables.
+    """
+    import uuid as _uuid
+
+    from phalanx.db.models import Project, Run, WorkOrder
+    from phalanx.runtime.task_router import TaskRouter
+    from phalanx.queue.celery_app import celery_app as _celery
+
+    # Resolve or lazily create a system Project for CI-fix work orders.
+    # Each repo gets its own project so per-repo policies (approvals, teams)
+    # can layer on later. Project.slug is unique; we namespace with cifix_.
+    async with get_db() as session:
+        slug = f"cifix_{event.repo_full_name.replace('/', '__')}"
+        result = await session.execute(select(Project).where(Project.slug == slug))
+        project = result.scalar_one_or_none()
+        if project is None:
+            project = Project(
+                name=f"CI Fixer · {event.repo_full_name}",
+                slug=slug,
+                repo_url=f"https://github.com/{event.repo_full_name}",
+                repo_provider="github",
+                default_branch="main",
+                domain="ci_fix",
+                onboarding_status="active",
+            )
+            session.add(project)
+            await session.commit()
+            await session.refresh(project)
+
+        # Normalized ci_context — cifix_commander stores this in WorkOrder.raw_command
+        # as JSON, Tech Lead / Engineer read it from their Task.description.
+        ci_context = {
+            "repo": event.repo_full_name,
+            "branch": event.branch,
+            "sha": event.commit_sha,
+            "pr_number": event.pr_number,
+            "failing_job_id": event.build_id,
+            "failing_job_name": (event.failed_jobs or [""])[0],
+            # failing_command is intentionally omitted — Tech Lead derives it
+            # from fetch_ci_log and writes it into fix_spec.failing_command.
+            "ci_provider": event.provider,
+            "build_url": event.build_url,
+            "ci_fix_run_id": ci_run.id,  # back-reference for debugging
+        }
+
+        job_name = ci_context["failing_job_name"] or "CI failure"
+        wo = WorkOrder(
+            project_id=project.id,
+            channel_id=None,  # webhook has no Slack channel binding
+            title=f"Fix CI: {event.repo_full_name}#{event.pr_number} — {job_name}",
+            description=(
+                f"CI failure on {event.repo_full_name} PR #{event.pr_number}, "
+                f"branch {event.branch}, job {job_name!r}. Dispatched by webhook."
+            ),
+            raw_command=json.dumps(ci_context),
+            requested_by="ci_webhook",
+            priority=60,
+            status="OPEN",
+            work_order_type="ci_fix",
+        )
+        session.add(wo)
+        await session.commit()
+        await session.refresh(wo)
+
+        run_id = str(_uuid.uuid4())
+        wo_id = wo.id
+        project_id = project.id
+
+    # Dispatch cifix_commander OUTSIDE the session (mirrors build-flow pattern —
+    # keeps the DB connection free while Celery does its thing).
+    router = TaskRouter(_celery)
+    router.dispatch(
+        agent_role="cifix_commander",
+        task_id=wo_id,
+        run_id=run_id,
+        payload={"work_order_id": wo_id, "project_id": project_id},
+    )
+
+    log.info(
+        "ci_webhook.v3_dispatched",
+        ci_fix_run_id=ci_run.id,
+        work_order_id=wo_id,
+        run_id=run_id,
+        project_id=project_id,
+        repo=event.repo_full_name,
+    )
 
 
 async def _update_fix_branch_ci_status(
