@@ -497,17 +497,41 @@ def _missing_required(ci_context: dict) -> list[str]:
 
 def _build_initial_message(ci_context: dict) -> str:
     # Compact, structured — no markdown noise. GPT-5.4 reads this once.
-    return (
+    iteration = ci_context.get("iteration")
+    prior = ci_context.get("prior_sre_failures") or []
+    header = (
         "CI failure to investigate:\n"
         f"- repo: {ci_context.get('repo')}\n"
         f"- pr: #{ci_context.get('pr_number')} on branch {ci_context.get('branch')!r}\n"
         f"- failing_job: {ci_context.get('failing_job_name')} "
         f"(job_id={ci_context.get('failing_job_id')})\n"
         f"- failing_command: {ci_context.get('failing_command')}\n"
-        f"- head_sha: {ci_context.get('sha')}\n\n"
-        "Start with fetch_ci_log to see the raw failure. "
+        f"- head_sha: {ci_context.get('sha')}\n"
+    )
+
+    # Iteration 2+ — a prior engineer pass fixed *something* but SRE's CI
+    # mimicry found cascading failures. Anchor the Tech Lead on the new
+    # problems, not the original one which is already green.
+    if iteration and iteration > 1 and prior:
+        failures_summary = "\n".join(
+            f"  - job={f.get('name')!r}  exit={f.get('exit_code')}  "
+            f"cmd={f.get('cmd')!r}\n    stderr_tail: {f.get('stderr_tail','').strip()[:240]!r}"
+            for f in prior[:6]
+        )
+        header += (
+            f"\nThis is iteration #{iteration}. A prior patch resolved the original "
+            "failure, but the SRE agent ran the repo's full CI in sandbox and "
+            "found NEW failures the engineer must now address:\n"
+            f"{failures_summary}\n\n"
+            "Focus on these new failures. Do NOT re-diagnose the original "
+            "failing command — it is already green."
+        )
+
+    header += (
+        "\nStart with fetch_ci_log to see the raw failure context. "
         "End your turn with the JSON fix_spec block as described."
     )
+    return header
 
 
 def _tokens_used_from_ctx(ctx) -> int:

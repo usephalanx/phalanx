@@ -212,9 +212,17 @@ class CIFixCommanderAgent(BaseAgent):
 
             # Append the next iteration's tasks BEFORE transitioning, so
             # advance_run sees PENDING tasks and doesn't immediately bounce
-            # back to VERIFYING.
+            # back to VERIFYING. We also forward sre_verify's new_failures
+            # into the iteration's ci_context so Tech Lead iteration N+1
+            # investigates the right job (not the original failing command,
+            # which iteration 1 already fixed).
+            iter_ci_context = dict(ci_context)
+            if verify_output and verify_output.get("new_failures"):
+                iter_ci_context["prior_sre_failures"] = verify_output["new_failures"]
             async with get_db() as session:
-                await self._append_iteration_dag(session, ci_context, iterations_done + 1)
+                await self._append_iteration_dag(
+                    session, iter_ci_context, iterations_done + 1
+                )
             await self._transition_run("VERIFYING", "EXECUTING")
             advance_run_task.apply_async(
                 kwargs={"run_id": self.run_id}, queue="commander"
