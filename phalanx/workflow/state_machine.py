@@ -57,6 +57,13 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[RunStatus, RunStatus]] = frozenset(
         (RunStatus.AWAITING_PLAN_APPROVAL, RunStatus.EXECUTING),  # plan approved
         (RunStatus.EXECUTING, RunStatus.VERIFYING),
         (RunStatus.VERIFYING, RunStatus.AWAITING_SHIP_APPROVAL),
+        # CI Fixer v3 iteration: when cifix_sre (verify mode) reports
+        # new_failures, cifix_commander inserts another round of tasks and
+        # rewinds to EXECUTING. The guard is policy-level (commander only
+        # rewinds for run_type='ci_fix' with iteration_count below the cap)
+        # — the state machine just allows the edge. Build flow never takes
+        # this path because its commander drives VERIFYING → SHIP_APPROVAL.
+        (RunStatus.VERIFYING, RunStatus.EXECUTING),
         (RunStatus.AWAITING_SHIP_APPROVAL, RunStatus.READY_TO_MERGE),  # ship approved
         (RunStatus.READY_TO_MERGE, RunStatus.MERGED),
         (RunStatus.MERGED, RunStatus.RELEASE_PREP),
