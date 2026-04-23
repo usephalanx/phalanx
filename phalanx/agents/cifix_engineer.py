@@ -82,6 +82,10 @@ class CIFixEngineerAgent(BaseAgent):
             integration = await self._load_integration(
                 session, ci_context.get("repo")
             )
+            # Engineer inherits both workspace AND container_id from upstream
+            # sre_setup in v3 runs. If absent (simulate path / out-of-band
+            # invocation), it falls back to cloning + provisioning itself.
+            sre_setup = await self._load_sre_setup_output(session)
 
         if not fix_spec:
             return AgentResult(
@@ -126,26 +130,43 @@ class CIFixEngineerAgent(BaseAgent):
                 error="Tech Lead fix_spec has empty affected_files list",
             )
 
-        # Clone + sandbox
-        try:
-            workspace_path = await _clone_workspace(
-                run_id=self.run_id,
-                repo_full_name=ci_context["repo"],
-                branch=ci_context["branch"],
-                github_token=_resolve_github_token(integration),
+        # Workspace + sandbox: inherit from sre_setup when available, fall back
+        # to self-clone + pool-provision for non-v3 paths (simulate etc.).
+        if sre_setup and sre_setup.get("workspace_path") and sre_setup.get("container_id"):
+            workspace_path = sre_setup["workspace_path"]
+            sandbox_container_id = sre_setup["container_id"]
+            self._log.info(
+                "cifix_engineer.inherited_sandbox",
+                workspace=workspace_path,
+                container_id=sandbox_container_id,
             )
-        except Exception as exc:
-            self._log.exception("cifix_engineer.clone_failed", error=str(exc))
-            return AgentResult(
-                success=False, output={}, error=f"workspace clone failed: {exc}"
-            )
+        else:
+            # Fallback path — preserves simulate + legacy invocation shapes.
+            try:
+                workspace_path = await _clone_workspace(
+                    run_id=self.run_id,
+                    repo_full_name=ci_context["repo"],
+                    branch=ci_context["branch"],
+                    github_token=_resolve_github_token(integration),
+                )
+            except Exception as exc:
+                self._log.exception("cifix_engineer.clone_failed", error=str(exc))
+                return AgentResult(
+                    success=False, output={}, error=f"workspace clone failed: {exc}"
+                )
 
-        sandbox_container_id = await _provision_sandbox(workspace_path)
-        if not sandbox_container_id:
-            return AgentResult(
-                success=False,
-                output={},
-                error="sandbox provisioning failed — run_in_sandbox unavailable",
+            sandbox_container_id = await _provision_sandbox(workspace_path)
+            if not sandbox_container_id:
+                return AgentResult(
+                    success=False,
+                    output={},
+                    error="sandbox provisioning failed — run_in_sandbox unavailable",
+                )
+            self._log.info(
+                "cifix_engineer.self_provisioned_sandbox_fallback",
+                workspace=workspace_path,
+                container_id=sandbox_container_id,
+                reason="no sre_setup upstream output found",
             )
 
         # Build AgentContext with sandbox available
@@ -296,6 +317,26 @@ class CIFixEngineerAgent(BaseAgent):
             select(CIIntegration).where(CIIntegration.repo_full_name == repo)
         )
         return result.scalar_one_or_none()
+
+    async def _load_sre_setup_output(self, session) -> dict | None:
+        """Find the earliest COMPLETED cifix_sre task with mode='setup' in this run.
+
+        Iteration 2+ reads the SAME setup task as iteration 1 (we reuse the
+        container_id across iterations — see commander._append_iteration_dag).
+        """
+        result = await session.execute(
+            select(Task.output)
+            .where(
+                Task.run_id == self.run_id,
+                Task.agent_role == "cifix_sre",
+                Task.status == "COMPLETED",
+            )
+            .order_by(Task.sequence_num.asc())
+        )
+        for (output,) in result.all():
+            if isinstance(output, dict) and output.get("mode") == "setup":
+                return output
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

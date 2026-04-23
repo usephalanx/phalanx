@@ -134,6 +134,11 @@ class CIFixTechLeadAgent(BaseAgent):
             # cifix_commander when persisting the DAG).
             ci_context = _parse_ci_context(task.description)
             integration = await self._load_integration(session, ci_context.get("repo"))
+            # Try to inherit the workspace from the upstream sre_setup task.
+            # In v3 flow this is always present; if we can't find it, we fall
+            # back to cloning (preserves simulate-path + any edge case where
+            # TechLead is invoked outside the standard DAG).
+            sre_setup = await self._load_sre_setup_output(session)
 
         # Missing must-have fields → fast fail
         missing = _missing_required(ci_context)
@@ -142,19 +147,32 @@ class CIFixTechLeadAgent(BaseAgent):
             self._log.error("cifix_techlead.bad_context", missing=missing)
             return AgentResult(success=False, output={}, error=err)
 
-        # Clone workspace (reuses v2 logic via _clone_workspace helper)
-        try:
-            workspace_path = await _clone_workspace(
-                run_id=self.run_id,
-                repo_full_name=ci_context["repo"],
-                branch=ci_context["branch"],
-                github_token=_resolve_github_token(integration),
+        # Workspace: inherit from sre_setup when available; otherwise clone ourselves.
+        if sre_setup and sre_setup.get("workspace_path"):
+            workspace_path = sre_setup["workspace_path"]
+            self._log.info(
+                "cifix_techlead.inherited_workspace",
+                workspace=workspace_path,
+                from_sre_task=True,
             )
-        except Exception as exc:
-            self._log.exception("cifix_techlead.clone_failed", error=str(exc))
-            return AgentResult(
-                success=False, output={}, error=f"workspace clone failed: {exc}"
-            )
+        else:
+            try:
+                workspace_path = await _clone_workspace(
+                    run_id=self.run_id,
+                    repo_full_name=ci_context["repo"],
+                    branch=ci_context["branch"],
+                    github_token=_resolve_github_token(integration),
+                )
+                self._log.info(
+                    "cifix_techlead.cloned_workspace_fallback",
+                    workspace=workspace_path,
+                    reason="no sre_setup upstream output found",
+                )
+            except Exception as exc:
+                self._log.exception("cifix_techlead.clone_failed", error=str(exc))
+                return AgentResult(
+                    success=False, output={}, error=f"workspace clone failed: {exc}"
+                )
 
         # Build an AgentContext reused from v2 — Tech Lead's tools don't need sandbox.
         ctx = _build_techlead_context(
@@ -219,6 +237,27 @@ class CIFixTechLeadAgent(BaseAgent):
             select(CIIntegration).where(CIIntegration.repo_full_name == repo)
         )
         return result.scalar_one_or_none()
+
+    async def _load_sre_setup_output(self, session) -> dict | None:
+        """Find the earliest COMPLETED cifix_sre task with mode='setup' in this run.
+
+        sre_setup is seq=1 in the v3 DAG; we pick the FIRST one (by seq) so
+        iteration 2+ still reads iteration 1's setup (we reuse the container
+        across iterations, intentionally — see commander._append_iteration_dag).
+        """
+        result = await session.execute(
+            select(Task.output)
+            .where(
+                Task.run_id == self.run_id,
+                Task.agent_role == "cifix_sre",
+                Task.status == "COMPLETED",
+            )
+            .order_by(Task.sequence_num.asc())
+        )
+        for (output,) in result.all():
+            if isinstance(output, dict) and output.get("mode") == "setup":
+                return output
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
