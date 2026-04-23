@@ -46,6 +46,12 @@ log = structlog.get_logger(__name__)
 _POLL_INTERVAL_SECONDS = 15
 _MAX_WAIT_SECONDS = 2700  # 45 min — CI fixes should never take longer
 
+# How many iterations of (techlead → engineer → sre_verify) we'll attempt
+# before escalating. Each iteration consumes ~$0.50-1.00 at current pricing
+# and ~60-120s latency. 3 is the sweet spot: enough to handle cascading
+# failures, not so many that cost balloons on pathological repos.
+_MAX_ITERATIONS = 3
+
 # Chain of ceremonial transitions from VERIFYING to SHIPPED. We don't invoke
 # approval gates for CI fixes (they're auto-commit), but we respect the state
 # machine edges — same pattern build-flow Commander uses.
@@ -130,7 +136,7 @@ class CIFixCommanderAgent(BaseAgent):
             )
 
             await self._transition_run("RESEARCHING", "PLANNING")
-            await self._persist_task_dag(session, ci_context)
+            await self._persist_initial_dag(session, ci_context)
 
             # Skip the ApprovalGate invocation — CI fixes are auto-commit.
             # The state-machine edges are still valid (AWAITING_PLAN_APPROVAL is
@@ -145,49 +151,112 @@ class CIFixCommanderAgent(BaseAgent):
                 ci_pr=ci_context.get("pr_number"),
             )
 
-        # ── Phase 2: fire advance_run and poll for terminal state ───────────
+        # ── Phase 2: fire advance_run + iterate until all_green / cap / FAIL ─
         from phalanx.workflow.advance_run import advance_run as advance_run_task
 
         advance_run_task.apply_async(
             kwargs={"run_id": self.run_id}, queue="commander"
         )
 
-        final_status, run_error = await self._poll_for_terminal()
+        for _ in range(_MAX_ITERATIONS + 1):  # +1 = the initial pass
+            final_status, run_error = await self._poll_for_terminal()
 
-        if final_status == "VERIFYING":
-            # advance_run got us to VERIFYING — walk the remaining chain.
-            self._log.info("cifix_commander.verify_chain_start", run_id=self.run_id)
-            try:
-                for from_s, to_s in _POST_VERIFY_CHAIN:
-                    await self._transition_run(from_s, to_s)
-                self._log.info("cifix_commander.shipped", run_id=self.run_id)
-                summary = await self._build_success_summary()
+            if final_status in ("FAILED", "CANCELLED"):
                 return AgentResult(
-                    success=True,
-                    output={"verdict": "committed", **summary},
-                    tokens_used=0,
+                    success=False, output={}, error=run_error or f"Run {final_status}"
                 )
-            except Exception as exc:
-                self._log.error(
-                    "cifix_commander.post_verify_transition_failed", error=str(exc)
-                )
-                await mark_run_failed(self.run_id, f"post-verify transition: {exc}")
+            if final_status == "TIMEOUT":
+                await mark_run_failed(self.run_id, "cifix_commander timeout")
                 return AgentResult(
                     success=False,
                     output={},
-                    error=f"post-verify transition failed: {exc}",
+                    error="cifix_commander timed out waiting for VERIFYING",
                 )
 
-        if final_status in ("FAILED", "CANCELLED"):
-            return AgentResult(
-                success=False, output={}, error=run_error or f"Run {final_status}"
+            # final_status == "VERIFYING": advance_run finished an iteration.
+            # Read the latest sre_verify verdict to decide: ship, iterate, or fail.
+            verdict, verify_output = await self._read_last_sre_verify_verdict()
+            iterations_done = await self._count_completed_sre_verifies()
+
+            self._log.info(
+                "cifix_commander.iteration_complete",
+                iteration=iterations_done,
+                verdict=verdict,
+                has_verify_output=verify_output is not None,
             )
 
-        # Timeout path
-        await mark_run_failed(self.run_id, "cifix_commander timeout")
+            if verdict == "all_green":
+                return await self._finalize_shipped(ci_context, verify_output)
+
+            # Non-green (or missing verdict — treat as inconclusive). If we
+            # still have iterations left, spawn another (techlead, engineer,
+            # sre_verify) triple and rewind VERIFYING → EXECUTING.
+            if iterations_done >= _MAX_ITERATIONS:
+                await self._transition_run(
+                    "VERIFYING",
+                    "FAILED",
+                    error_message=(
+                        f"exhausted {_MAX_ITERATIONS} iterations without an "
+                        f"all-green CI verify"
+                    ),
+                )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "verdict": "iterations_exhausted",
+                        "iterations_used": iterations_done,
+                        "last_verify_output": verify_output,
+                    },
+                    error=f"exhausted {_MAX_ITERATIONS} iterations",
+                )
+
+            # Append the next iteration's tasks BEFORE transitioning, so
+            # advance_run sees PENDING tasks and doesn't immediately bounce
+            # back to VERIFYING.
+            async with get_db() as session:
+                await self._append_iteration_dag(session, ci_context, iterations_done + 1)
+            await self._transition_run("VERIFYING", "EXECUTING")
+            advance_run_task.apply_async(
+                kwargs={"run_id": self.run_id}, queue="commander"
+            )
+            # Loop back to poll the next VERIFYING.
+
+        # Shouldn't fall out here — the loop has an explicit return on each
+        # terminal branch — but mark FAILED defensively if we do.
+        await mark_run_failed(self.run_id, "cifix_commander loop fell through")
         return AgentResult(
-            success=False, output={}, error="cifix_commander timed out waiting for VERIFYING"
+            success=False, output={}, error="cifix_commander loop fell through"
         )
+
+    async def _finalize_shipped(
+        self, ci_context: dict, verify_output: dict | None
+    ) -> AgentResult:
+        """All-green path: walk the SHIP chain to SHIPPED and return success."""
+        self._log.info("cifix_commander.verify_chain_start", run_id=self.run_id)
+        try:
+            for from_s, to_s in _POST_VERIFY_CHAIN:
+                await self._transition_run(from_s, to_s)
+            self._log.info("cifix_commander.shipped", run_id=self.run_id)
+            summary = await self._build_success_summary()
+            return AgentResult(
+                success=True,
+                output={
+                    "verdict": "committed",
+                    "verify_output": verify_output,
+                    **summary,
+                },
+                tokens_used=0,
+            )
+        except Exception as exc:
+            self._log.error(
+                "cifix_commander.post_verify_transition_failed", error=str(exc)
+            )
+            await mark_run_failed(self.run_id, f"post-verify transition: {exc}")
+            return AgentResult(
+                success=False,
+                output={},
+                error=f"post-verify transition failed: {exc}",
+            )
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
@@ -217,21 +286,40 @@ class CIFixCommanderAgent(BaseAgent):
         await session.commit()
         return run
 
-    async def _persist_task_dag(
+    async def _persist_initial_dag(
         self, session: AsyncSession, ci_context: dict
     ) -> None:
-        """Insert the Phase 1 DAG: [cifix_techlead(seq=1), cifix_engineer(seq=2)].
+        """Insert the v3 iteration-1 DAG: 4 tasks in sequence.
 
-        Both tasks carry the normalized CI context in their description so
-        downstream agents can read it without re-loading the WorkOrder.
+          seq=1  cifix_sre      (sre_mode='setup')  — clone + provision
+          seq=2  cifix_techlead                     — investigate
+          seq=3  cifix_engineer                     — fix + commit
+          seq=4  cifix_sre      (sre_mode='verify') — full CI mimicry
+
+        Each task carries the ci_context in its description so downstream
+        agents can read it without re-loading the WorkOrder. The SRE setup
+        and verify tasks get different `sre_mode` values inside their
+        serialized context.
         """
         repo = ci_context.get("repo") or "?"
         pr = ci_context.get("pr_number")
         job = ci_context.get("failing_job_name") or "?"
 
-        techlead = Task(
+        setup_ctx = {**ci_context, "sre_mode": "setup"}
+        verify_ctx = {**ci_context, "sre_mode": "verify"}
+
+        setup_task = Task(
             run_id=self.run_id,
             sequence_num=1,
+            title=f"Provision sandbox: {repo}#{pr}",
+            description=json.dumps(setup_ctx),
+            agent_role="cifix_sre",
+            status="PENDING",
+            estimated_complexity=2,
+        )
+        techlead = Task(
+            run_id=self.run_id,
+            sequence_num=2,
             title=f"Investigate CI failure: {repo}#{pr} — {job}",
             description=json.dumps(ci_context),
             agent_role="cifix_techlead",
@@ -240,17 +328,130 @@ class CIFixCommanderAgent(BaseAgent):
         )
         engineer = Task(
             run_id=self.run_id,
-            sequence_num=2,
+            sequence_num=3,
             title=f"Apply fix + sandbox verify: {repo}#{pr}",
             description=json.dumps(ci_context),
             agent_role="cifix_engineer",
             status="PENDING",
             estimated_complexity=3,
-            depends_on=[],  # depends_on is tracked via sequence_num today
+        )
+        verify_task = Task(
+            run_id=self.run_id,
+            sequence_num=4,
+            title=f"Re-run full CI in sandbox: {repo}#{pr}",
+            description=json.dumps(verify_ctx),
+            agent_role="cifix_sre",
+            status="PENDING",
+            estimated_complexity=2,
+        )
+        session.add(setup_task)
+        session.add(techlead)
+        session.add(engineer)
+        session.add(verify_task)
+        await session.commit()
+
+    async def _append_iteration_dag(
+        self,
+        session: AsyncSession,
+        ci_context: dict,
+        iteration: int,
+    ) -> None:
+        """Insert the next iteration's tasks: [techlead, engineer, sre_verify].
+
+        We deliberately DO NOT re-run sre_setup — the sandbox container from
+        iteration 1 is still alive, still has the repo's deps installed, and
+        is exactly the environment we want subsequent edits to target. The
+        Engineer's edits are applied inside that same container.
+
+        sequence_num continues from the current max in the Tasks table so
+        advance_run walks the new tasks in order without any gap.
+        """
+        from sqlalchemy import func  # noqa: PLC0415
+
+        repo = ci_context.get("repo") or "?"
+        pr = ci_context.get("pr_number")
+        job = ci_context.get("failing_job_name") or "?"
+        verify_ctx = {**ci_context, "sre_mode": "verify", "iteration": iteration}
+        tl_ctx = {**ci_context, "iteration": iteration}
+
+        result = await session.execute(
+            select(func.max(Task.sequence_num)).where(Task.run_id == self.run_id)
+        )
+        current_max = int(result.scalar_one() or 0)
+
+        techlead = Task(
+            run_id=self.run_id,
+            sequence_num=current_max + 1,
+            title=f"[iter {iteration}] Re-investigate after SRE found new failures: {repo}#{pr}",
+            description=json.dumps(tl_ctx),
+            agent_role="cifix_techlead",
+            status="PENDING",
+            estimated_complexity=3,
+        )
+        engineer = Task(
+            run_id=self.run_id,
+            sequence_num=current_max + 2,
+            title=f"[iter {iteration}] Patch follow-up + sandbox verify: {repo}#{pr}",
+            description=json.dumps(tl_ctx),
+            agent_role="cifix_engineer",
+            status="PENDING",
+            estimated_complexity=3,
+        )
+        verify_task = Task(
+            run_id=self.run_id,
+            sequence_num=current_max + 3,
+            title=f"[iter {iteration}] Re-run full CI: {repo}#{pr}",
+            description=json.dumps(verify_ctx),
+            agent_role="cifix_sre",
+            status="PENDING",
+            estimated_complexity=2,
         )
         session.add(techlead)
         session.add(engineer)
+        session.add(verify_task)
         await session.commit()
+
+    async def _read_last_sre_verify_verdict(
+        self,
+    ) -> tuple[str | None, dict | None]:
+        """Pull the most recent cifix_sre (verify mode) task's verdict + output.
+
+        Returns (verdict, output). verdict is one of 'all_green',
+        'new_failures', or None if no verify task has completed yet (which
+        is unusual — we only call this on VERIFYING).
+        """
+        async with get_db() as session:
+            result = await session.execute(
+                select(Task.output)
+                .where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role == "cifix_sre",
+                    Task.status == "COMPLETED",
+                )
+                .order_by(Task.sequence_num.desc())
+            )
+            for (output,) in result.all():
+                if isinstance(output, dict) and output.get("mode") == "verify":
+                    return (output.get("verdict"), output)
+        return (None, None)
+
+    async def _count_completed_sre_verifies(self) -> int:
+        """How many sre_verify tasks have finished in this run. One per iteration."""
+        from sqlalchemy import func  # noqa: PLC0415
+
+        async with get_db() as session:
+            result = await session.execute(
+                select(Task.output).where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role == "cifix_sre",
+                    Task.status == "COMPLETED",
+                )
+            )
+            return sum(
+                1
+                for (output,) in result.all()
+                if isinstance(output, dict) and output.get("mode") == "verify"
+            )
 
     async def _poll_for_terminal(self) -> tuple[str, str | None]:
         """Poll the Run until VERIFYING / FAILED / CANCELLED or timeout.
