@@ -94,10 +94,37 @@ When you have enough evidence, end your turn with a single markdown fenced
 }
 ```
 
-`failing_command` is REQUIRED. It must be the exact command from fetch_ci_log
-(e.g. "ruff check ." or "mvn -B test"), not a job name. The engineer uses
-this as its sandbox verification gate — anything less precise will cause
-the verification to fail or commit an unverified patch.
+`failing_command` is REQUIRED and is the sandbox verification gate — the
+engineer will run this exact command and refuse to commit unless it exits 0.
+Choose it carefully, following these rules:
+
+  DO pick the NARROWEST command that re-runs JUST the check that failed.
+  If Ruff reported E501 and CI ran `prek run --all-files` which invokes
+  Ruff internally, emit `ruff check .` (or `ruff check <path>`), NOT the
+  prek wrapper. The narrow command isolates YOUR fix from unrelated
+  environment issues (e.g., a sibling Node hook failing because the
+  sandbox doesn't ship libatomic — happens constantly with prek/husky).
+
+  DO NOT emit the literal CI command when it is a wrapper. Common wrappers
+  to avoid as `failing_command`:
+    - prek run ..., pre-commit run ..., lefthook run ..., husky
+    - make lint, make test, make check, make ci
+    - tox, nox, hatch run test, uv run tox
+    - npm test, yarn test, pnpm test, turbo run test, nx affected
+    - gradlew check, sbt test + sbt <many>
+  Each of these bundles many checks; a failure in any one of them
+  (including checks unrelated to your fix) will make the gate fail
+  even when your patch correctly resolves the reported error.
+
+  DO use the command VERBATIM when it already IS narrow:
+    `mvn -B test -Dtest=FooBarTest#specificTest`
+    `pytest tests/test_auth.py::test_login -xvs`
+    `ruff check src/humanize/number.py`
+
+  Rule of thumb: if CI's error output contains a line like
+  "Running X ... FAIL" where X is the narrow check, emit X. If the
+  log shows pytest collected 300 tests and only test_login failed,
+  emit `pytest <path>::test_login`, not the full pytest command.
 
 CRITICAL: Your final turn must contain the fenced ```json``` block. You
 MAY include a short prose summary before it. You MUST NOT omit any of the
