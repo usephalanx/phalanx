@@ -65,8 +65,11 @@ _VERIFY_MAX_JOBS = 6
     time_limit=1320,
 )
 def execute_task(self, task_id: str, run_id: str, **kwargs) -> dict:  # pragma: no cover
+    from phalanx.ci_fixer_v3.task_lifecycle import persist_task_completion  # noqa: PLC0415
+
     agent = CIFixSREAgent(run_id=run_id, agent_id="cifix_sre", task_id=task_id)
     result = asyncio.run(agent.execute())
+    asyncio.run(persist_task_completion(task_id, result))
     return {"success": result.success, "output": result.output, "error": result.error}
 
 

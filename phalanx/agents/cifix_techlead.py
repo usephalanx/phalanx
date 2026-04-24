@@ -113,8 +113,11 @@ list open_questions. The engineer will escalate rather than guess.
     time_limit=720,
 )
 def execute_task(self, task_id: str, run_id: str, **kwargs) -> dict:  # pragma: no cover
+    from phalanx.ci_fixer_v3.task_lifecycle import persist_task_completion  # noqa: PLC0415
+
     agent = CIFixTechLeadAgent(run_id=run_id, agent_id="cifix_techlead", task_id=task_id)
     result = asyncio.run(agent.execute())
+    asyncio.run(persist_task_completion(task_id, result))
     return {"success": result.success, "output": result.output, "error": result.error}
 
 
