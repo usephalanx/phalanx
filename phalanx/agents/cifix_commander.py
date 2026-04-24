@@ -129,27 +129,38 @@ class CIFixCommanderAgent(BaseAgent):
 
             ci_context = self._parse_ci_context(wo.raw_command)
 
-            await self._create_run(session, wo)
-            await self._transition_run("INTAKE", "RESEARCHING")
-            await self._audit(
-                "state_transition", from_state="INTAKE", to_state="RESEARCHING"
-            )
+            run = await self._create_or_load_run(session, wo)
 
-            await self._transition_run("RESEARCHING", "PLANNING")
-            await self._persist_initial_dag(session, ci_context)
-
-            # Skip the ApprovalGate invocation — CI fixes are auto-commit.
-            # The state-machine edges are still valid (AWAITING_PLAN_APPROVAL is
-            # just a state; the gate itself is a separate mechanism).
-            await self._transition_run("PLANNING", "AWAITING_PLAN_APPROVAL")
-            await self._transition_run("AWAITING_PLAN_APPROVAL", "EXECUTING")
-
-            self._log.info(
-                "cifix_commander.dag_persisted_dispatching_advance_run",
-                run_id=self.run_id,
-                ci_repo=ci_context.get("repo"),
-                ci_pr=ci_context.get("pr_number"),
-            )
+            # Idempotent setup — if celery retried after the DAG was already
+            # persisted + transitions happened, skip the ceremony. Transitions
+            # are NOT safe to repeat (validate_transition would reject e.g.
+            # VERIFYING → RESEARCHING), so this guard is for correctness.
+            if run.status == "INTAKE":
+                await self._transition_run("INTAKE", "RESEARCHING")
+                await self._audit(
+                    "state_transition", from_state="INTAKE", to_state="RESEARCHING"
+                )
+                await self._transition_run("RESEARCHING", "PLANNING")
+                await self._persist_initial_dag(session, ci_context)
+                # Skip the ApprovalGate invocation — CI fixes are auto-commit.
+                # State-machine edges are still valid (AWAITING_PLAN_APPROVAL
+                # is just a state; the gate itself is a separate mechanism).
+                await self._transition_run("PLANNING", "AWAITING_PLAN_APPROVAL")
+                await self._transition_run("AWAITING_PLAN_APPROVAL", "EXECUTING")
+                self._log.info(
+                    "cifix_commander.dag_persisted_dispatching_advance_run",
+                    run_id=self.run_id,
+                    ci_repo=ci_context.get("repo"),
+                    ci_pr=ci_context.get("pr_number"),
+                )
+            else:
+                # Retry path: DAG + transitions already happened on the
+                # previous attempt. Just resume polling.
+                self._log.info(
+                    "cifix_commander.retry_resuming",
+                    run_id=self.run_id,
+                    current_status=run.status,
+                )
 
         # ── Phase 2: fire advance_run + iterate until all_green / cap / FAIL ─
         from phalanx.workflow.advance_run import advance_run as advance_run_task
@@ -158,7 +169,12 @@ class CIFixCommanderAgent(BaseAgent):
             kwargs={"run_id": self.run_id}, queue="commander"
         )
 
-        for _ in range(_MAX_ITERATIONS + 1):  # +1 = the initial pass
+        # Each loop pass consumes ONE completed sre_verify (iteration N's):
+        # pass 1 reads iter-1's verdict (always present from the initial DAG),
+        # pass N reads iter-N's verdict after appending. Hitting
+        # iterations_done >= _MAX_ITERATIONS terminates via the FAILED branch
+        # below — the range cap is a defense-in-depth belt-and-braces.
+        for _ in range(_MAX_ITERATIONS):
             final_status, run_error = await self._poll_for_terminal()
 
             if final_status in ("FAILED", "CANCELLED"):
@@ -210,20 +226,22 @@ class CIFixCommanderAgent(BaseAgent):
                     error=f"exhausted {_MAX_ITERATIONS} iterations",
                 )
 
-            # Append the next iteration's tasks BEFORE transitioning, so
-            # advance_run sees PENDING tasks and doesn't immediately bounce
-            # back to VERIFYING. We also forward sre_verify's new_failures
-            # into the iteration's ci_context so Tech Lead iteration N+1
-            # investigates the right job (not the original failing command,
-            # which iteration 1 already fixed).
+            # Atomic append + transition. A stray advance_run tick between
+            # these two ops (fired via _schedule_recheck after iteration N's
+            # sre_verify completed) could otherwise observe
+            #   status=VERIFYING + all-old-tasks-COMPLETED + new-tasks-PENDING
+            # and dispatch a new techlead task against status=VERIFYING. We
+            # commit both writes in a single transaction so advance_run's DB
+            # read is never inconsistent.
             iter_ci_context = dict(ci_context)
             if verify_output and verify_output.get("new_failures"):
                 iter_ci_context["prior_sre_failures"] = verify_output["new_failures"]
             async with get_db() as session:
-                await self._append_iteration_dag(
-                    session, iter_ci_context, iterations_done + 1
+                await self._append_iteration_and_transition(
+                    session=session,
+                    ci_context=iter_ci_context,
+                    iteration=iterations_done + 1,
                 )
-            await self._transition_run("VERIFYING", "EXECUTING")
             advance_run_task.apply_async(
                 kwargs={"run_id": self.run_id}, queue="commander"
             )
@@ -274,9 +292,17 @@ class CIFixCommanderAgent(BaseAgent):
         )
         return result.scalar_one_or_none()
 
-    async def _create_run(self, session: AsyncSession, wo: WorkOrder) -> Run:
-        """Create the Run row. Parallels build-flow commander._create_or_load_run."""
+    async def _create_or_load_run(self, session: AsyncSession, wo: WorkOrder) -> Run:
+        """Idempotent Run creation. If celery retries this task, the second
+        attempt finds an existing Run row and returns it without raising.
+        Parallels build-flow commander._create_or_load_run."""
         from sqlalchemy import func  # noqa: PLC0415
+
+        existing = await session.execute(select(Run).where(Run.id == self.run_id))
+        existing_run = existing.scalar_one_or_none()
+        if existing_run is not None:
+            self._log.info("cifix_commander.run_already_exists", status=existing_run.status)
+            return existing_run
 
         count_result = await session.execute(
             select(func.count()).select_from(Run).where(Run.work_order_id == wo.id)
@@ -358,23 +384,29 @@ class CIFixCommanderAgent(BaseAgent):
         session.add(verify_task)
         await session.commit()
 
-    async def _append_iteration_dag(
+    async def _append_iteration_and_transition(
         self,
         session: AsyncSession,
         ci_context: dict,
         iteration: int,
     ) -> None:
-        """Insert the next iteration's tasks: [techlead, engineer, sre_verify].
-
-        We deliberately DO NOT re-run sre_setup — the sandbox container from
-        iteration 1 is still alive, still has the repo's deps installed, and
-        is exactly the environment we want subsequent edits to target. The
-        Engineer's edits are applied inside that same container.
-
-        sequence_num continues from the current max in the Tasks table so
-        advance_run walks the new tasks in order without any gap.
+        """Insert iteration tasks AND transition VERIFYING → EXECUTING in a
+        single DB transaction. Guards the race where advance_run could
+        observe a half-applied state (new PENDING tasks + status=VERIFYING)
+        and dispatch an agent task against the wrong state.
         """
-        from sqlalchemy import func  # noqa: PLC0415
+        from sqlalchemy import func, update  # noqa: PLC0415
+
+        from phalanx.db.models import Run  # noqa: PLC0415
+        from phalanx.workflow.state_machine import (  # noqa: PLC0415
+            RunStatus,
+            validate_transition,
+        )
+
+        # Validate the transition using the same state machine the rest of
+        # the codebase uses. This raises InvalidTransitionError before we
+        # write any tasks, which is what we want.
+        validate_transition(RunStatus.VERIFYING, RunStatus.EXECUTING)
 
         repo = ci_context.get("repo") or "?"
         pr = ci_context.get("pr_number")
@@ -387,37 +419,51 @@ class CIFixCommanderAgent(BaseAgent):
         )
         current_max = int(result.scalar_one() or 0)
 
-        techlead = Task(
-            run_id=self.run_id,
-            sequence_num=current_max + 1,
-            title=f"[iter {iteration}] Re-investigate after SRE found new failures: {repo}#{pr}",
-            description=json.dumps(tl_ctx),
-            agent_role="cifix_techlead",
-            status="PENDING",
-            estimated_complexity=3,
+        session.add(
+            Task(
+                run_id=self.run_id,
+                sequence_num=current_max + 1,
+                title=f"[iter {iteration}] Re-investigate after SRE found new failures: {repo}#{pr}",
+                description=json.dumps(tl_ctx),
+                agent_role="cifix_techlead",
+                status="PENDING",
+                estimated_complexity=3,
+            )
         )
-        engineer = Task(
-            run_id=self.run_id,
-            sequence_num=current_max + 2,
-            title=f"[iter {iteration}] Patch follow-up + sandbox verify: {repo}#{pr}",
-            description=json.dumps(tl_ctx),
-            agent_role="cifix_engineer",
-            status="PENDING",
-            estimated_complexity=3,
+        session.add(
+            Task(
+                run_id=self.run_id,
+                sequence_num=current_max + 2,
+                title=f"[iter {iteration}] Patch follow-up + sandbox verify: {repo}#{pr}",
+                description=json.dumps(tl_ctx),
+                agent_role="cifix_engineer",
+                status="PENDING",
+                estimated_complexity=3,
+            )
         )
-        verify_task = Task(
-            run_id=self.run_id,
-            sequence_num=current_max + 3,
-            title=f"[iter {iteration}] Re-run full CI: {repo}#{pr}",
-            description=json.dumps(verify_ctx),
-            agent_role="cifix_sre",
-            status="PENDING",
-            estimated_complexity=2,
+        session.add(
+            Task(
+                run_id=self.run_id,
+                sequence_num=current_max + 3,
+                title=f"[iter {iteration}] Re-run full CI: {repo}#{pr}",
+                description=json.dumps(verify_ctx),
+                agent_role="cifix_sre",
+                status="PENDING",
+                estimated_complexity=2,
+            )
         )
-        session.add(techlead)
-        session.add(engineer)
-        session.add(verify_task)
+
+        # Flip the run status in the SAME transaction. A raw UPDATE so the
+        # commit picks up both the task inserts and the status flip.
+        await session.execute(
+            update(Run).where(Run.id == self.run_id).values(status="EXECUTING")
+        )
         await session.commit()
+        self._log.info(
+            "cifix_commander.iteration_appended_atomically",
+            iteration=iteration,
+            added_seq_range=(current_max + 1, current_max + 3),
+        )
 
     async def _read_last_sre_verify_verdict(
         self,
