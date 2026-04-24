@@ -206,7 +206,30 @@ class CIFixEngineerAgent(BaseAgent):
         )
 
         # Invoke v2 coder subagent — this is the Sonnet edit+verify loop.
-        from phalanx.ci_fixer_v2.coder_subagent import run_coder_subagent  # noqa: PLC0415
+        # Must pass llm_call explicitly; the default _call_sonnet_llm is a
+        # test-only stub that raises NotImplementedError. v2's main-agent
+        # bootstrap builds the callable the same way — see
+        # ci_fixer_v2.run_bootstrap._build_sonnet_llm.
+        from phalanx.ci_fixer_v2.coder_subagent import (  # noqa: PLC0415
+            run_coder_subagent,
+        )
+        from phalanx.ci_fixer_v2.prompts import (  # noqa: PLC0415
+            CODER_SUBAGENT_SYSTEM_PROMPT,
+        )
+        from phalanx.ci_fixer_v2.providers import (  # noqa: PLC0415
+            build_sonnet_coder_callable,
+        )
+        from phalanx.ci_fixer_v2.tool_scopes import (  # noqa: PLC0415
+            coder_subagent_tool_schemas,
+        )
+
+        settings = get_settings()
+        sonnet_llm = build_sonnet_coder_callable(
+            model=settings.anthropic_model_ci_fixer_coder,
+            api_key=settings.anthropic_api_key,
+            system_prompt=CODER_SUBAGENT_SYSTEM_PROMPT,
+            tool_schemas=coder_subagent_tool_schemas(),
+        )
 
         coder_result = await run_coder_subagent(
             ctx=ctx,
@@ -214,6 +237,7 @@ class CIFixEngineerAgent(BaseAgent):
             target_files=affected_files,
             diagnosis_summary=fix_spec.get("root_cause", ""),
             failing_command=ci_context["failing_command"],
+            llm_call=sonnet_llm,
         )
 
         tokens_used = (
