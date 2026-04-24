@@ -99,6 +99,13 @@ When you have enough evidence, end your turn with a single markdown fenced
 this as its sandbox verification gate — anything less precise will cause
 the verification to fail or commit an unverified patch.
 
+CRITICAL: Your final turn must contain the fenced ```json``` block. You
+MAY include a short prose summary before it. You MUST NOT omit any of the
+six required keys (root_cause, affected_files, fix_spec, failing_command,
+confidence, open_questions) — every key must be present even when the
+value is an empty list or an empty string. A missing key causes an
+investigation failure and the run is escalated.
+
 Confidence 0.0-1.0. Be honest — if the fix is unclear, confidence < 0.5 and
 list open_questions. The engineer will escalate rather than guess.
 """
@@ -309,9 +316,20 @@ async def _run_investigation_loop(
             # Model thinks it's done. Parse the text for a JSON fix_spec.
             fix_spec = _parse_fix_spec_from_text(response.text or "")
             if fix_spec is None:
+                # Surface the raw text in the failure reason so we can
+                # diagnose prompt-vs-model mismatches without needing a
+                # separate trace table. Truncated to 800 chars.
+                text_tail = (response.text or "")[:800]
+                logger.warning(
+                    "cifix_techlead.fix_spec_parse_failed",
+                    turn=turn,
+                    text_len=len(response.text or ""),
+                    text_preview=text_tail,
+                )
                 raise _InvestigationFailure(
                     "no_fix_spec_emitted",
-                    "LLM stopped without a valid JSON fix_spec block",
+                    f"LLM stopped without a valid JSON fix_spec block. "
+                    f"Raw text (up to 800 chars): {text_tail!r}",
                 )
             return (fix_spec, turn + 1, total_tool_calls)
 
@@ -372,41 +390,49 @@ _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _parse_fix_spec_from_text(text: str) -> dict | None:
-    """Extract a fenced ```json``` block and validate required keys.
+    """Find a JSON fix_spec object anywhere in the model's text output.
 
-    If the model emits MULTIPLE json blocks (e.g. a summary block followed
-    by the real fix_spec), we prefer the LAST one that validates. This
-    mirrors how a human would interpret overlapping structured outputs:
-    the last one wins.
+    Tolerant parser — tries four strategies in order, accepts the LAST
+    valid candidate:
+      1. ```json ...``` fenced blocks (explicit)
+      2. ``` ...``` unlabeled fences containing a dict
+      3. bare top-level JSON (whole text is exactly a dict)
+      4. embedded JSON objects found by brace-balance scanning
 
-    Returns the parsed dict on success, None on any failure.
+    If a model emits BOTH a draft and a refined block (multi-block output),
+    the last-valid wins — mirrors how a human reads overlapping drafts.
     """
     if not text:
         return None
 
     candidates: list[dict] = []
 
-    # All fenced blocks in order of appearance
+    # 1. ```json``` fenced blocks (the explicit contract)
     for match in _JSON_FENCE_RE.finditer(text):
         try:
-            obj = json.loads(match.group(1))
+            candidates.append(json.loads(match.group(1)))
         except json.JSONDecodeError:
             continue
-        candidates.append(obj)
 
-    if not candidates:
-        # Fallback: maybe the model emitted bare JSON. Try a best-effort parse.
-        stripped = text.strip()
-        if stripped.startswith("{") and stripped.endswith("}"):
-            try:
-                candidates.append(json.loads(stripped))
-            except json.JSONDecodeError:
-                return None
-        else:
-            return None
+    # 2. Unlabeled ```...``` fences (model sometimes drops the `json` tag)
+    for match in _UNLABELED_FENCE_RE.finditer(text):
+        try:
+            candidates.append(json.loads(match.group(1)))
+        except json.JSONDecodeError:
+            continue
 
-    # Prefer the LAST block that validates — if the model outputs a "draft"
-    # spec and refines it in a later block, the refined one wins.
+    # 3. Bare top-level JSON
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            candidates.append(json.loads(stripped))
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Brace-balance scan — catches JSON embedded in mixed prose.
+    candidates.extend(_scan_balanced_json_objects(text))
+
+    # Prefer the LAST valid candidate (latest refinement wins).
     for obj in reversed(candidates):
         if not isinstance(obj, dict):
             continue
@@ -423,6 +449,37 @@ def _parse_fix_spec_from_text(text: str) -> dict | None:
         return obj
 
     return None
+
+
+_UNLABELED_FENCE_RE = re.compile(r"```\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _scan_balanced_json_objects(text: str) -> list[dict]:
+    """Find all substrings that parse as balanced JSON objects.
+
+    Linear scan for `{`, track depth, emit substring when depth returns
+    to zero. Rejects non-dict parses silently. Handles nested objects
+    correctly but not strings containing braces — rare enough to ignore.
+    """
+    out: list[dict] = []
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                snippet = text[start : i + 1]
+                try:
+                    obj = json.loads(snippet)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    out.append(obj)
+    return out
 
 
 def _build_techlead_context(
