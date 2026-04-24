@@ -95,30 +95,32 @@ async def provision_on_the_fly(
     setup_log: list[dict] = []
 
     # ── Step 2: make /workspace and copy the repo in ─────────────────────────
-    ok, err = await _exec_in_container(
+    r = await _exec_in_container(
         container_id,
         "mkdir -p /workspace && chmod 777 /workspace",
         as_root=True,
     )
-    setup_log.append({"step": "mkdir_workspace", "ok": ok, "error": err})
-    if not ok:
+    setup_log.append(
+        {"step": "mkdir_workspace", "ok": r.ok, "exit_code": r.exit_code, "error": r.stderr_tail}
+    )
+    if not r.ok:
         await stop_sandbox(container_id)
         return ProvisionedSandbox(
             available=False,
             env_spec=env_spec.to_json(),
             setup_log=setup_log,
-            error=f"mkdir_workspace: {err}",
+            error=f"mkdir_workspace: {r.stderr_tail}",
         )
 
-    ok, err = await _docker_cp_workspace(workspace_path, container_id)
-    setup_log.append({"step": "docker_cp_workspace", "ok": ok, "error": err})
-    if not ok:
+    ok_cp, err_cp = await _docker_cp_workspace(workspace_path, container_id)
+    setup_log.append({"step": "docker_cp_workspace", "ok": ok_cp, "error": err_cp})
+    if not ok_cp:
         await stop_sandbox(container_id)
         return ProvisionedSandbox(
             available=False,
             env_spec=env_spec.to_json(),
             setup_log=setup_log,
-            error=f"docker_cp: {err}",
+            error=f"docker_cp: {err_cp}",
         )
 
     # Fix /workspace ownership so non-root installs work. `|| true` guards
@@ -138,40 +140,87 @@ async def provision_on_the_fly(
     )
 
     # ── Step 3: apt-get install system deps (baseline + env_spec) ────────────
-    apt_deps = list(_BASELINE_APT_DEPS) + [
-        d for d in env_spec.system_deps if d not in _BASELINE_APT_DEPS
-    ]
-    if apt_deps:
-        apt_cmd = (
-            "apt-get update -qq && "
-            f"DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
-            f"{' '.join(apt_deps)}"
+    # Split: baseline deps are fatal (git is required for the Engineer's
+    # commit_and_push, missing it silently breaks the whole run). Repo-
+    # specific system_deps are best-effort (alpine-based minimal images
+    # don't have apt; fine to soldier on).
+    baseline_apt_cmd = (
+        "apt-get update -qq && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+        f"{' '.join(_BASELINE_APT_DEPS)}"
+    )
+    r = await _exec_in_container(container_id, baseline_apt_cmd, as_root=True)
+    setup_log.append(
+        {
+            "step": "apt_install_baseline",
+            "packages": list(_BASELINE_APT_DEPS),
+            "ok": r.ok,
+            "exit_code": r.exit_code,
+            "error": r.stderr_tail,
+        }
+    )
+    if not r.ok:
+        # Probe: is git actually missing, or did apt just fail noisily on an
+        # image that already ships git (common for python:3.12-slim which
+        # has git baked in)? If git is present we keep going.
+        probe = await _exec_in_container(container_id, "command -v git", as_root=True)
+        if not probe.ok:
+            await stop_sandbox(container_id)
+            return ProvisionedSandbox(
+                available=False,
+                container_id=container_id,
+                workspace_path=str(workspace_path),
+                env_spec=env_spec.to_json(),
+                setup_log=setup_log,
+                error=f"baseline_apt_install_failed_and_git_unavailable: {r.stderr_tail}",
+            )
+        log.warning(
+            "v3.provisioner.baseline_apt_failed_but_git_present",
+            container_id=container_id,
+            error=r.stderr_tail,
         )
-        ok, err = await _exec_in_container(container_id, apt_cmd, as_root=True)
+
+    repo_apt_deps = [d for d in env_spec.system_deps if d not in _BASELINE_APT_DEPS]
+    if repo_apt_deps:
+        repo_apt_cmd = (
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "
+            f"{' '.join(repo_apt_deps)}"
+        )
+        r = await _exec_in_container(container_id, repo_apt_cmd, as_root=True)
         setup_log.append(
             {
-                "step": "apt_install",
-                "packages": apt_deps,
-                "ok": ok,
-                "error": err,
+                "step": "apt_install_repo",
+                "packages": repo_apt_deps,
+                "ok": r.ok,
+                "exit_code": r.exit_code,
+                "error": r.stderr_tail,
             }
         )
-        if not ok:
-            # Non-fatal: some base images (e.g. alpine) don't have apt. We log
-            # and keep going; language installs may still succeed.
+        if not r.ok:
+            # Non-fatal — some base images (alpine etc.) don't have apt.
+            # Language installs may still succeed.
             log.warning(
-                "v3.provisioner.apt_install_skipped_or_failed",
+                "v3.provisioner.repo_apt_install_failed",
                 container_id=container_id,
-                error=err,
+                packages=repo_apt_deps,
+                error=r.stderr_tail,
             )
 
     # ── Step 4: run env_spec.install_commands in order ───────────────────────
     for cmd in env_spec.install_commands:
-        ok, err = await _exec_in_container(
+        r = await _exec_in_container(
             container_id, cmd, as_root=True, workdir="/workspace"
         )
-        setup_log.append({"step": "install_command", "cmd": cmd, "ok": ok, "error": err})
-        if not ok:
+        setup_log.append(
+            {
+                "step": "install_command",
+                "cmd": cmd,
+                "ok": r.ok,
+                "exit_code": r.exit_code,
+                "error": r.stderr_tail,
+            }
+        )
+        if not r.ok:
             # Hard fail: install command failure means the sandbox can't
             # reliably reproduce CI. Better to surface than to commit an
             # unverified patch.
@@ -227,6 +276,9 @@ async def stop_sandbox(container_id: str) -> None:
 async def _docker_run_detached(base_image: str) -> tuple[str | None, str | None]:
     """Boot a long-running container from `base_image` using `sleep infinity`.
 
+    Timeout accounts for cold `docker pull` of heavier base images like
+    maven:3.9-eclipse-temurin-21 — observed up to ~4 min on fresh hosts.
+
     Returns (container_id, error_message). One of the two is always None.
     """
     docker_cmd = _settings.sandbox_docker_cmd
@@ -247,7 +299,9 @@ async def _docker_run_detached(base_image: str) -> tuple[str | None, str | None]
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        # 300s covers cold-pull of heavy images (Java Maven, .NET SDK, etc).
+        # Per-image pre-pull at worker startup is a Phase-2 optimization.
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
         if proc.returncode != 0:
             return (None, stderr.decode(errors="replace").strip()[:500])
         return (stdout.decode().strip()[:12], None)
@@ -281,6 +335,21 @@ async def _docker_cp_workspace(
         return (False, f"{type(exc).__name__}: {exc}")
 
 
+@dataclass
+class ExecResult:
+    """Result of one `docker exec` invocation.
+
+    exit_code is the real process return code (not collapsed to 1). Distinguishes
+    137 (OOM kill), 139 (segfault), 1 (generic failure), 2 (misuse / parse error),
+    5 (pytest no-tests-collected), etc. The SRE verify verdict and any
+    future fingerprinting code rely on this fidelity.
+    """
+
+    ok: bool  # True iff exit_code == 0 and no timeout
+    exit_code: int  # -1 for timeout / spawn failure
+    stderr_tail: str | None = None
+
+
 async def _exec_in_container(
     container_id: str,
     cmd: str,
@@ -288,11 +357,12 @@ async def _exec_in_container(
     as_root: bool = False,
     workdir: str | None = None,
     timeout_s: int = _CMD_TIMEOUT_S,
-) -> tuple[bool, str | None]:
+) -> ExecResult:
     """Run `sh -c cmd` inside an existing container.
 
-    Returns (ok, error_tail). error_tail is the last 500 chars of stderr on
-    non-zero exit. On timeout we return (False, 'timeout').
+    Returns an ExecResult with the real exit code preserved. Timeout and
+    spawn failures surface as exit_code=-1 so callers can distinguish
+    "command failed" (exit_code in 1..255) from "we couldn't run it".
     """
     docker_cmd = _settings.sandbox_docker_cmd
     args = [docker_cmd, "exec"]
@@ -317,19 +387,20 @@ async def _exec_in_container(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        if proc.returncode != 0:
+        rc = proc.returncode if proc.returncode is not None else -1
+        if rc != 0:
             tail = stderr.decode(errors="replace").strip()[-500:]
             log.log(
                 logging.WARNING,
                 "v3.provisioner.exec_failed",
                 container_id=container_id,
                 cmd=cmd[:120],
-                exit_code=proc.returncode,
+                exit_code=rc,
                 stderr_tail=tail,
             )
-            return (False, tail)
-        return (True, None)
+            return ExecResult(ok=False, exit_code=rc, stderr_tail=tail)
+        return ExecResult(ok=True, exit_code=0)
     except asyncio.TimeoutError:
-        return (False, "timeout")
+        return ExecResult(ok=False, exit_code=-1, stderr_tail="timeout")
     except Exception as exc:  # noqa: BLE001
-        return (False, f"{type(exc).__name__}: {exc}")
+        return ExecResult(ok=False, exit_code=-1, stderr_tail=f"{type(exc).__name__}: {exc}")

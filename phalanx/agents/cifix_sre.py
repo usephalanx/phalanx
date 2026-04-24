@@ -211,27 +211,34 @@ class CIFixSREAgent(BaseAgent):
 
         jobs: list[dict] = []
         for label, cmd in commands:
-            ok, stderr_tail = await _exec_in_container(
+            exec_result = await _exec_in_container(
                 container_id=container_id,
                 cmd=cmd,
                 as_root=True,
                 workdir="/workspace",
                 timeout_s=_VERIFY_JOB_TIMEOUT_S,
             )
-            exit_code = 0 if ok else 1  # _exec_in_container flattens to ok/error
+            # Preserve the REAL exit code so downstream signal isn't lost:
+            #   0    = success
+            #   1    = generic failure (assertion, lint violation, etc.)
+            #   2    = command parse error (invalid argument)
+            #   5    = pytest: no tests collected
+            #   137  = OOM killed
+            #   139  = segfault
+            #   -1   = we couldn't spawn/timeout (infrastructure)
             jobs.append(
                 {
                     "name": label,
                     "cmd": cmd,
-                    "exit_code": exit_code,
-                    "stderr_tail": (stderr_tail or "")[-500:],
+                    "exit_code": exec_result.exit_code,
+                    "stderr_tail": (exec_result.stderr_tail or "")[-500:],
                 }
             )
             self._log.info(
                 "cifix_sre.verify.job_done",
                 name=label,
                 cmd=cmd[:120],
-                exit_code=exit_code,
+                exit_code=exec_result.exit_code,
             )
 
         new_failures = [j for j in jobs if j["exit_code"] != 0]
