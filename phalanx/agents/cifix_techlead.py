@@ -369,11 +369,22 @@ async def _run_investigation_loop(
 
 
 def _tool_result_message(tool_use_id: str, result) -> dict:
-    """Shape the v2 providers expect for tool_result slots."""
+    """Tool-result message shape expected by v2's provider translators.
+
+    OpenAI's Responses API rejects role='tool' — the supported values
+    are 'assistant'/'system'/'developer'/'user'. Tool results are
+    nested under a user message as a content block with type='tool_result'.
+    This mirrors v2/agent.py:_tool_result_message exactly.
+    """
     return {
-        "role": "tool",
-        "tool_use_id": tool_use_id,
-        "content": json.dumps(result.to_tool_message_content()),
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": result.to_tool_message_content(),
+            }
+        ],
     }
 
 
