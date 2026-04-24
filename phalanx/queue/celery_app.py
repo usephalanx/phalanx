@@ -25,6 +25,13 @@ celery_app = Celery(
         "phalanx.agents.sre",
         "phalanx.agents.ci_fixer",
         "phalanx.agents.ci_fixer_v2_task",
+        # CI Fixer v3 — 4 new modules. Celery registers the @celery_app.task
+        # decorators only for modules in this list; queue subscription alone
+        # is not sufficient (learned the hard way during the v3 canary).
+        "phalanx.agents.cifix_commander",
+        "phalanx.agents.cifix_techlead",
+        "phalanx.agents.cifix_engineer",
+        "phalanx.agents.cifix_sre",
         "phalanx.workflow.advance_run",
         "phalanx.maintenance.tasks",
         "phalanx.memory.tasks",
