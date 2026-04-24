@@ -575,10 +575,3 @@ class CIFixCommanderAgent(BaseAgent):
             self._log.warning("cifix_commander.ci_context_parse_failed", error=str(exc))
             return {}
 
-    async def _audit(self, event: str, **fields) -> None:
-        """Lightweight wrapper — BaseAgent may already provide this; no-op fallback."""
-        base_audit = getattr(super(), "_audit", None)
-        if callable(base_audit):
-            await base_audit(event, **fields)
-            return
-        self._log.info(f"cifix_commander.audit.{event}", **fields)
