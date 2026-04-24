@@ -369,44 +369,57 @@ _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _parse_fix_spec_from_text(text: str) -> dict | None:
-    """Extract the first fenced ```json``` block and validate required keys.
+    """Extract a fenced ```json``` block and validate required keys.
 
-    Returns the parsed dict on success, None on any failure — the caller
-    converts None to an investigation failure.
+    If the model emits MULTIPLE json blocks (e.g. a summary block followed
+    by the real fix_spec), we prefer the LAST one that validates. This
+    mirrors how a human would interpret overlapping structured outputs:
+    the last one wins.
+
+    Returns the parsed dict on success, None on any failure.
     """
     if not text:
         return None
-    match = _JSON_FENCE_RE.search(text)
-    if match is None:
+
+    candidates: list[dict] = []
+
+    # All fenced blocks in order of appearance
+    for match in _JSON_FENCE_RE.finditer(text):
+        try:
+            obj = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        candidates.append(obj)
+
+    if not candidates:
         # Fallback: maybe the model emitted bare JSON. Try a best-effort parse.
         stripped = text.strip()
         if stripped.startswith("{") and stripped.endswith("}"):
             try:
-                obj = json.loads(stripped)
+                candidates.append(json.loads(stripped))
             except json.JSONDecodeError:
                 return None
         else:
             return None
-    else:
-        try:
-            obj = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return None
 
-    if not isinstance(obj, dict):
-        return None
-    if not _FIX_SPEC_REQUIRED_KEYS.issubset(obj.keys()):
-        return None
-    # Shallow type sanity
-    if not isinstance(obj.get("affected_files"), list):
-        return None
-    if not isinstance(obj.get("open_questions"), list):
-        return None
-    try:
-        obj["confidence"] = float(obj["confidence"])
-    except (TypeError, ValueError):
-        return None
-    return obj
+    # Prefer the LAST block that validates — if the model outputs a "draft"
+    # spec and refines it in a later block, the refined one wins.
+    for obj in reversed(candidates):
+        if not isinstance(obj, dict):
+            continue
+        if not _FIX_SPEC_REQUIRED_KEYS.issubset(obj.keys()):
+            continue
+        if not isinstance(obj.get("affected_files"), list):
+            continue
+        if not isinstance(obj.get("open_questions"), list):
+            continue
+        try:
+            obj["confidence"] = float(obj["confidence"])
+        except (TypeError, ValueError):
+            continue
+        return obj
+
+    return None
 
 
 def _build_techlead_context(

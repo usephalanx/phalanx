@@ -286,24 +286,23 @@ def _read_pyproject_into_spec(pyproject: Path, spec: EnvSpec) -> None:
 
 
 def _extract_python_minor_version(req_py: str) -> str | None:
-    """Turn '>=3.10' / '==3.11.*' / '>=3.10,<3.13' into '3.12'-ish version string.
+    """Parse a PEP 440 requires-python string to a concrete major.minor.
 
-    Strategy: prefer the lower bound. If it's `>=3.10`, return `3.12` (latest
-    stable that satisfies). If it's pinned to `3.11`, return `3.11`.
+    Strategy: respect the LOWER bound. If the repo pins `>=3.8`, we
+    provision 3.8 — not 3.12. Forward-upgrading silently would break
+    repos that use the walrus operator differently, rely on old dict
+    ordering, or use 3.8-removed stdlib modules.
 
-    This is deliberately simple — a real repo's CI matrix may run multiple
-    versions; we pick one. Phase 2 could honor the matrix by provisioning
-    multiple sandboxes.
+    Returns e.g. '3.8', '3.10', '3.11'. None if we can't parse.
     """
     match = re.search(r"(\d+)\.(\d+)", req_py)
     if not match:
         return None
     major, minor = int(match.group(1)), int(match.group(2))
-    # If the lower bound is lower than 3.12 but the spec uses `>=`, we can
-    # run on 3.12 (forward compatible). If it's `==` / `~=`, respect the pin.
-    is_upper = any(op in req_py for op in (">=", ">"))
-    if is_upper and minor < 12:
-        return "3.12"
+    # Clamp below 3.8 — we don't carry base images for those. CI for a
+    # 3.7 repo is increasingly rare and likely unmaintained.
+    if major == 3 and minor < 8:
+        minor = 8
     return f"{major}.{minor}"
 
 
@@ -312,8 +311,12 @@ def _extract_python_minor_version(req_py: str) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# Match `apt install <pkgs>` but STOP at a shell terminator so we don't
+# gobble `&&`, `;`, `|`, or line continuations into the package list.
+# The captured group is further filtered by an isalnum check per token.
 _APT_INSTALL_RE = re.compile(
-    r"(?:sudo\s+)?apt(?:-get)?\s+install\s+(?:-y\s+|--yes\s+)?([\w\-\s]+)",
+    r"(?:sudo\s+)?apt(?:-get)?\s+install\s+(?:-y\s+|--yes\s+)?"
+    r"([^\n&|;\\]+)",
     re.IGNORECASE,
 )
 

@@ -82,10 +82,14 @@ class CIFixEngineerAgent(BaseAgent):
             integration = await self._load_integration(
                 session, ci_context.get("repo")
             )
-            # Engineer inherits both workspace AND container_id from upstream
-            # sre_setup in v3 runs. If absent (simulate path / out-of-band
-            # invocation), it falls back to cloning + provisioning itself.
+            # Engineer inherits workspace + container_id from the upstream
+            # sre_setup task in v3 runs. If absent and we're part of a v3
+            # DAG (work_order_type='ci_fix'), we REFUSE the pool fallback
+            # — the whole point of v3 is that v2's stale pre-warmed image
+            # is the bug we're avoiding. Only the simulate / out-of-band
+            # path gets the pool fallback.
             sre_setup = await self._load_sre_setup_output(session)
+            is_v3_dag = await self._is_v3_dag_run(session)
 
         if not fix_spec:
             return AgentResult(
@@ -107,10 +111,12 @@ class CIFixEngineerAgent(BaseAgent):
         ci_context["failing_command"] = failing_command
 
         # Guard against low-confidence specs — escalate without attempting.
-        # Tech Lead is supposed to flag confidence < 0.5 as open_questions; we
-        # harden that here. Phase 2 commander can re-dispatch Tech Lead.
+        # Threshold matches the contract in Tech Lead's system prompt:
+        #   "confidence < 0.5 and list open_questions" (honesty clause)
+        # If TL itself flagged the spec as below 0.5, don't run against it —
+        # the commander can decide to re-dispatch or escalate.
         confidence = fix_spec.get("confidence") or 0.0
-        if confidence < 0.35:
+        if confidence < 0.5:
             return AgentResult(
                 success=False,
                 output={
@@ -119,7 +125,7 @@ class CIFixEngineerAgent(BaseAgent):
                     "tech_lead_confidence": confidence,
                     "tech_lead_open_questions": fix_spec.get("open_questions", []),
                 },
-                error=f"Tech Lead confidence {confidence:.2f} below 0.35 threshold",
+                error=f"Tech Lead confidence {confidence:.2f} below 0.5 threshold",
             )
 
         affected_files = fix_spec.get("affected_files") or []
@@ -141,7 +147,25 @@ class CIFixEngineerAgent(BaseAgent):
                 container_id=sandbox_container_id,
             )
         else:
-            # Fallback path — preserves simulate + legacy invocation shapes.
+            # Fallback path exists only for simulate + legacy invocation.
+            # A v3 DAG run that lost its sre_setup output is a real bug —
+            # the whole architectural point of v3 is to avoid the stale
+            # pre-warmed pool image. Refusing the fallback here surfaces
+            # the bug loudly rather than silently using the wrong sandbox.
+            if is_v3_dag:
+                return AgentResult(
+                    success=False,
+                    output={
+                        "committed": False,
+                        "skipped_reason": "v3_dag_missing_sre_setup",
+                    },
+                    error=(
+                        "v3 DAG is missing upstream cifix_sre setup output; "
+                        "refusing to fall back to the pre-warmed pool "
+                        "(doing so would defeat the on-the-fly provisioning "
+                        "that v3 was built for)"
+                    ),
+                )
             try:
                 workspace_path = await _clone_workspace(
                     run_id=self.run_id,
@@ -166,7 +190,7 @@ class CIFixEngineerAgent(BaseAgent):
                 "cifix_engineer.self_provisioned_sandbox_fallback",
                 workspace=workspace_path,
                 container_id=sandbox_container_id,
-                reason="no sre_setup upstream output found",
+                reason="no sre_setup upstream output found (non-v3 path)",
             )
 
         # Build AgentContext with sandbox available
@@ -317,6 +341,23 @@ class CIFixEngineerAgent(BaseAgent):
             select(CIIntegration).where(CIIntegration.repo_full_name == repo)
         )
         return result.scalar_one_or_none()
+
+    async def _is_v3_dag_run(self, session) -> bool:
+        """True iff this task belongs to a WorkOrder with work_order_type='ci_fix'.
+
+        Used to decide whether the pool fallback is acceptable (simulate /
+        out-of-band path → yes) or a sign of a real bug (v3 DAG → no).
+        """
+        from phalanx.db.models import Run, WorkOrder  # noqa: PLC0415
+
+        result = await session.execute(
+            select(WorkOrder.work_order_type)
+            .select_from(WorkOrder)
+            .join(Run, Run.work_order_id == WorkOrder.id)
+            .where(Run.id == self.run_id)
+        )
+        row = result.one_or_none()
+        return bool(row and row[0] == "ci_fix")
 
     async def _load_sre_setup_output(self, session) -> dict | None:
         """Find the earliest COMPLETED cifix_sre task with mode='setup' in this run.
