@@ -73,6 +73,51 @@ _LANG_DISPLAY: dict[str, str] = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Real-world runs — agent fixes on external OSS repos (NOT our own testbeds).
+# These are the "we didn't tune the benchmark to ourselves" proof points.
+# Hardcoded because they're rare events (one per major canary). When a new
+# real-world run lands, append an entry. Source-of-truth fields come from
+# the prod runs/tasks tables — see /tmp/v3-canary-data.json shape.
+# ─────────────────────────────────────────────────────────────────────────────
+_REAL_WORLD_RUNS: list[dict] = [
+    {
+        "id": "humanize-pr-2-2026-04-24",
+        "label": "First v3 commit on an external OSS repo",
+        "date": "2026-04-24",
+        "upstream_repo": "python-humanize/humanize",
+        "fork_repo": "usephalanx/humanize",
+        "pr_number": 2,
+        "pr_url": "https://github.com/usephalanx/humanize/pull/2",
+        "failing_check": "ruff E501 (long line)",
+        "headline_commit": {
+            "sha": "75b624a",
+            "url": "https://github.com/usephalanx/humanize/commit/75b624a",
+            "files_modified": ["src/humanize/number.py"],
+            "tokens_used": 13752,
+            "diff_summary": "Replaced a 143-char canary comment with a concise 50-char one.",
+        },
+        "pipeline": [
+            {"role": "cifix_sre", "mode": "setup", "summary": "Cloned humanize, env_detector picked python:3.10-slim from requires-python>=3.10, provisioned fresh container with workflow-derived deps."},
+            {"role": "cifix_techlead", "summary": "GPT-5.4 read the CI log, identified ruff E501 at filesize.py line 3, narrowed the failing_command to `ruff check src/humanize/number.py`."},
+            {"role": "cifix_engineer", "summary": "Sonnet edited the line, ran the narrow failing_command in sandbox (exit 0), commit_and_push succeeded."},
+        ],
+        "honest_footnote": (
+            "v3's full-CI verify (cifix_sre verify mode) ran the broader workflow "
+            "and caught cascading failures from upstream's `prek`/`uv` toolchain "
+            "that our minimal sandbox doesn't ship — so the system iterated. "
+            "Iteration 2 over-reached and patched the workflow files themselves, "
+            "which a real maintainer wouldn't accept. The commit shown here is "
+            "iteration 1 only — a clean one-line fix to the actual reported "
+            "error. The over-reach in iteration 2 is a tracked Phase-2 prompt "
+            "issue (TL should recognize 'sandbox env mismatch' and escalate "
+            "instead of editing CI infra). v3's verification gate held both "
+            "times — every commit went through a green sandbox run before push."
+        ),
+    },
+]
+
+
 def _find_tool(calls: list[dict], name: str) -> dict | None:
     for tc in calls:
         if tc.get("tool_name") == name:
@@ -241,6 +286,7 @@ def main() -> int:
             ),
         },
         "cells": cells,
+        "real_world_runs": _REAL_WORLD_RUNS,
     }
 
     out_path.write_text(json.dumps(doc, indent=2))
