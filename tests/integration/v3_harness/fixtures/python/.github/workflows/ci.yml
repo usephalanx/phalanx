@@ -1,0 +1,16 @@
+name: CI
+on: [pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt install -y gettext libxml2
+      - run: pip install -e .[tests]
+      - run: ruff check .
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -e .[tests]
+      - run: pytest -xvs tests/

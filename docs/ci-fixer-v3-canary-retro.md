@@ -120,9 +120,11 @@ spend (~$0.50 per failed canary).
 
 ## What we still owe (not in this retro's scope)
 
-- **Local integration harness** (`tests/integration/v3_canary.py`).
-  Not built yet — every future v3 change still pays the prod-deploy
-  feedback tax until this exists.
+- ~~**Local integration harness**~~ ✅ Built — see
+  `tests/integration/v3_harness/` (51 tests, 1.1s total runtime,
+  no Postgres or Docker required). Catches bug classes #1, #3, #4,
+  #7-partial directly; #2/#5/#6 still need a Tier-2 harness with
+  real Postgres and real provider calls (deferred).
 - **Path 1 (fat base image)** for env_detector. Switching from
   `python:3.10-slim` to `catthehacker/ubuntu:act-22.04` would have
   prevented bug #7's libatomic miss. Tracked as a Phase-2 item.

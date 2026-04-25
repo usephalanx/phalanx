@@ -1,0 +1,12 @@
+lockfileVersion: '9.0'
+# pnpm marker — env_detector should detect this and pick pnpm over npm.
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+  .:
+    devDependencies:
+      typescript:
+        specifier: ^5.4.0
+        version: 5.4.5
