@@ -29,16 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from phalanx.agents.base import AgentResult, BaseAgent, mark_run_failed
 from phalanx.db.models import Run, Task, WorkOrder
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = structlog.get_logger(__name__)
 
@@ -136,10 +138,10 @@ class CIFixCommanderAgent(BaseAgent):
             # are NOT safe to repeat (validate_transition would reject e.g.
             # VERIFYING → RESEARCHING), so this guard is for correctness.
             if run.status == "INTAKE":
+                # _transition_run already writes an AuditLog row internally;
+                # an explicit _audit() here would be a duplicate. (Caught in
+                # the post-canary cleanup pass.)
                 await self._transition_run("INTAKE", "RESEARCHING")
-                await self._audit(
-                    "state_transition", from_state="INTAKE", to_state="RESEARCHING"
-                )
                 await self._transition_run("RESEARCHING", "PLANNING")
                 await self._persist_initial_dag(session, ci_context)
                 # Skip the ApprovalGate invocation — CI fixes are auto-commit.
@@ -410,7 +412,6 @@ class CIFixCommanderAgent(BaseAgent):
 
         repo = ci_context.get("repo") or "?"
         pr = ci_context.get("pr_number")
-        job = ci_context.get("failing_job_name") or "?"
         verify_ctx = {**ci_context, "sre_mode": "verify", "iteration": iteration}
         tl_ctx = {**ci_context, "iteration": iteration}
 
@@ -491,7 +492,6 @@ class CIFixCommanderAgent(BaseAgent):
 
     async def _count_completed_sre_verifies(self) -> int:
         """How many sre_verify tasks have finished in this run. One per iteration."""
-        from sqlalchemy import func  # noqa: PLC0415
 
         async with get_db() as session:
             result = await session.execute(

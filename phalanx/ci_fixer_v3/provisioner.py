@@ -24,12 +24,16 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
-from phalanx.ci_fixer_v3.env_detector import EnvSpec
 from phalanx.config.settings import get_settings
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from phalanx.ci_fixer_v3.env_detector import EnvSpec
 
 log = structlog.get_logger(__name__)
 _settings = get_settings()
@@ -305,7 +309,7 @@ async def _docker_run_detached(base_image: str) -> tuple[str | None, str | None]
         if proc.returncode != 0:
             return (None, stderr.decode(errors="replace").strip()[:500])
         return (stdout.decode().strip()[:12], None)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return (None, "docker_run_timeout")
     except Exception as exc:  # noqa: BLE001
         return (None, f"{type(exc).__name__}: {exc}")
@@ -329,7 +333,7 @@ async def _docker_cp_workspace(
         if proc.returncode != 0:
             return (False, stderr.decode(errors="replace").strip()[:500])
         return (True, None)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return (False, "docker_cp_timeout")
     except Exception as exc:  # noqa: BLE001
         return (False, f"{type(exc).__name__}: {exc}")
@@ -400,7 +404,7 @@ async def _exec_in_container(
             )
             return ExecResult(ok=False, exit_code=rc, stderr_tail=tail)
         return ExecResult(ok=True, exit_code=0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return ExecResult(ok=False, exit_code=-1, stderr_tail="timeout")
     except Exception as exc:  # noqa: BLE001
         return ExecResult(ok=False, exit_code=-1, stderr_tail=f"{type(exc).__name__}: {exc}")

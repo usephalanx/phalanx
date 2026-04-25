@@ -32,6 +32,7 @@ Invariants:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -135,6 +136,27 @@ investigation failure and the run is escalated.
 
 Confidence 0.0-1.0. Be honest — if the fix is unclear, confidence < 0.5 and
 list open_questions. The engineer will escalate rather than guess.
+
+NEVER patch CI infrastructure to make CI green:
+  Files under `.github/workflows/`, `tox.ini`, `noxfile.py`,
+  `pre-commit-config.yaml`, `Makefile`, `package.json` scripts, etc. are
+  the repo maintainers' choices. If the agent's sandbox cannot run the
+  CI exactly as the maintainers configured it (e.g., upstream uses `uv`
+  but our sandbox doesn't ship `uv`; upstream uses Node hooks but
+  `libatomic.so.1` is missing), this is a SANDBOX ENV MISMATCH — the
+  fix lives in our infrastructure, NOT the customer's repo.
+
+  When you see this:
+    - Set `confidence` to 0.0
+    - Put the env mismatch in `open_questions` (e.g.
+      "sandbox lacks uv; upstream CI requires it for tox")
+    - Set `affected_files` to [] and `fix_spec` to a short note explaining
+      that the code itself appears fine; the failure is environmental
+    - Do NOT add CI files to `affected_files`. Editing them ships a
+      regression from the maintainers' point of view and will be rejected.
+
+  This is the difference between fixing a bug and rewriting CI to dodge it.
+  We always do the former; the latter is escalated to humans.
 """
 
 
@@ -235,7 +257,7 @@ class CIFixTechLeadAgent(BaseAgent):
                 max_tool_calls=_MAX_TOOL_CALLS,
                 logger=self._log,
             )
-        except _InvestigationFailure as exc:
+        except _InvestigationError as exc:
             return AgentResult(
                 success=False,
                 output={"error_class": exc.kind, "detail": exc.detail},
@@ -303,7 +325,7 @@ class CIFixTechLeadAgent(BaseAgent):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _InvestigationFailure(Exception):
+class _InvestigationError(Exception):
     def __init__(self, kind: str, detail: str) -> None:
         super().__init__(f"{kind}: {detail}")
         self.kind = kind
@@ -353,7 +375,7 @@ async def _run_investigation_loop(
                     text_len=len(response.text or ""),
                     text_preview=text_tail,
                 )
-                raise _InvestigationFailure(
+                raise _InvestigationError(
                     "no_fix_spec_emitted",
                     f"LLM stopped without a valid JSON fix_spec block. "
                     f"Raw text (up to 800 chars): {text_tail!r}",
@@ -364,17 +386,17 @@ async def _run_investigation_loop(
         for use in response.tool_uses or []:
             total_tool_calls += 1
             if total_tool_calls > max_tool_calls:
-                raise _InvestigationFailure(
+                raise _InvestigationError(
                     "tool_call_cap",
                     f"Tech Lead exceeded {max_tool_calls} tool calls without a fix_spec",
                 )
             if use.name not in _TECHLEAD_TOOLS:
                 # Shouldn't happen — LLM only sees TL tools — but belt and braces.
-                raise _InvestigationFailure(
+                raise _InvestigationError(
                     "forbidden_tool", f"Tech Lead tried to call {use.name!r}"
                 )
             if not tools_base.is_registered(use.name):
-                raise _InvestigationFailure(
+                raise _InvestigationError(
                     "unregistered_tool", f"Tool {use.name!r} not in registry"
                 )
             tool = tools_base.get(use.name)
@@ -389,7 +411,7 @@ async def _run_investigation_loop(
                 )
             ctx.messages.append(_tool_result_message(use.id, result))
 
-    raise _InvestigationFailure(
+    raise _InvestigationError(
         "turn_cap_reached",
         f"Tech Lead exhausted {max_turns} turns without a fix_spec",
     )
@@ -462,10 +484,8 @@ def _parse_fix_spec_from_text(text: str) -> dict | None:
     # 3. Bare top-level JSON
     stripped = text.strip()
     if stripped.startswith("{") and stripped.endswith("}"):
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             candidates.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            pass
 
     # 4. Brace-balance scan — catches JSON embedded in mixed prose.
     candidates.extend(_scan_balanced_json_objects(text))
@@ -543,12 +563,11 @@ def _build_techlead_context(
 
 
 def _build_techlead_llm(tool_names: tuple[str, ...]):
-    from phalanx.ci_fixer_v2.providers import build_gpt_reasoning_callable  # noqa: PLC0415
-    from phalanx.ci_fixer_v2.tools import base as tools_base  # noqa: PLC0415
-
     # Ensure v2 tools are imported so the registry is populated.
     import phalanx.ci_fixer_v2.tools.diagnosis  # noqa: F401, PLC0415
     import phalanx.ci_fixer_v2.tools.reading  # noqa: F401, PLC0415
+    from phalanx.ci_fixer_v2.providers import build_gpt_reasoning_callable  # noqa: PLC0415
+    from phalanx.ci_fixer_v2.tools import base as tools_base  # noqa: PLC0415
 
     schemas = [tools_base.get(name).schema for name in tool_names]
 

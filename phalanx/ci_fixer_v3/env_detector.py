@@ -266,15 +266,16 @@ def _read_pyproject_into_spec(pyproject: Path, spec: EnvSpec) -> None:
     # Hatch-style build system often implies hatch-vcs for versioning; not a pin.
     # Look at ruff/mypy/pytest/black in a few common config locations.
     ruff_block = tool.get("ruff") or {}
-    if isinstance(ruff_block, dict):
-        # ruff doesn't pin its own version in pyproject — it's installed separately.
-        # But if the config uses newer fields (lint.select), the running ruff must
-        # be >= 0.5. Record as "min_version".
-        if "lint" in ruff_block or ruff_block.get("extend-select"):
-            spec.tool_versions["ruff"] = ">=0.5"
-            spec.notes.append(
-                "pyproject.toml uses ruff lint.* config; requires ruff >= 0.5"
-            )
+    # ruff doesn't pin its own version in pyproject — it's installed separately.
+    # But if the config uses newer fields (lint.select), the running ruff must
+    # be >= 0.5. Record as "min_version".
+    if isinstance(ruff_block, dict) and (
+        "lint" in ruff_block or ruff_block.get("extend-select")
+    ):
+        spec.tool_versions["ruff"] = ">=0.5"
+        spec.notes.append(
+            "pyproject.toml uses ruff lint.* config; requires ruff >= 0.5"
+        )
 
     pytest_block = (tool.get("pytest") or {}).get("ini_options") or {}
     if pytest_block:

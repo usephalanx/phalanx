@@ -13,13 +13,16 @@ cleaner but risks the "don't break" constraint.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import update
 
-from phalanx.agents.base import AgentResult
 from phalanx.db.models import Task
 from phalanx.db.session import get_db
+
+if TYPE_CHECKING:
+    from phalanx.agents.base import AgentResult
 
 log = structlog.get_logger(__name__)
 
