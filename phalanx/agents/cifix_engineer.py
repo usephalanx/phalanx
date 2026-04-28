@@ -77,14 +77,10 @@ class CIFixEngineerAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             ci_context = _parse_ci_context(task.description)
             fix_spec = await self._load_upstream_fix_spec(session)
-            integration = await self._load_integration(
-                session, ci_context.get("repo")
-            )
+            integration = await self._load_integration(session, ci_context.get("repo"))
             # Engineer inherits workspace + container_id from the upstream
             # sre_setup task in v3 runs. If absent and we're part of a v3
             # DAG (work_order_type='ci_fix'), we REFUSE the pool fallback
@@ -102,9 +98,7 @@ class CIFixEngineerAgent(BaseAgent):
             )
         # Prefer the exact failing_command Tech Lead observed in the CI log.
         # Fall back to ci_context (simulate path can seed it up-front).
-        failing_command = (
-            fix_spec.get("failing_command") or ci_context.get("failing_command") or ""
-        )
+        failing_command = fix_spec.get("failing_command") or ci_context.get("failing_command") or ""
         if not failing_command:
             return AgentResult(
                 success=False,
@@ -178,9 +172,7 @@ class CIFixEngineerAgent(BaseAgent):
                 )
             except Exception as exc:
                 self._log.exception("cifix_engineer.clone_failed", error=str(exc))
-                return AgentResult(
-                    success=False, output={}, error=f"workspace clone failed: {exc}"
-                )
+                return AgentResult(success=False, output={}, error=f"workspace clone failed: {exc}")
 
             sandbox_container_id = await _provision_sandbox(workspace_path)
             if not sandbox_container_id:
@@ -240,9 +232,7 @@ class CIFixEngineerAgent(BaseAgent):
             llm_call=sonnet_llm,
         )
 
-        tokens_used = (
-            coder_result.sonnet_input_tokens + coder_result.sonnet_output_tokens
-        )
+        tokens_used = coder_result.sonnet_input_tokens + coder_result.sonnet_output_tokens
 
         if not coder_result.success or not ctx.last_sandbox_verified:
             # Coder tried but couldn't produce a verified diff — do NOT commit.
@@ -288,9 +278,7 @@ class CIFixEngineerAgent(BaseAgent):
             },
         )
         if not commit_result.ok:
-            self._log.error(
-                "cifix_engineer.commit_failed", error=commit_result.error
-            )
+            self._log.error("cifix_engineer.commit_failed", error=commit_result.error)
             return AgentResult(
                 success=False,
                 output={
@@ -313,6 +301,37 @@ class CIFixEngineerAgent(BaseAgent):
             files=affected_files,
             attempts=coder_result.attempts_used,
         )
+
+        # Bug #11 mitigation A1 (bot-loop guard): record the fix commit on the
+        # CIFixRun so the webhook handler can recognize CI runs triggered by
+        # our own push and skip dispatching a parallel v3 run for them. The
+        # existing sender.login filter is dead code on token-based pushes —
+        # webhook sender is the PAT owner, not the git author. Matching
+        # head_sha → CIFixRun.fix_commit_sha is the reliable signal.
+        ci_fix_run_id = ci_context.get("ci_fix_run_id")
+        if ci_fix_run_id and commit_sha:
+            try:
+                from sqlalchemy import update  # noqa: PLC0415
+
+                from phalanx.db.models import CIFixRun  # noqa: PLC0415
+
+                async with get_db() as session:
+                    await session.execute(
+                        update(CIFixRun)
+                        .where(CIFixRun.id == ci_fix_run_id)
+                        .values(fix_commit_sha=commit_sha)
+                    )
+                    await session.commit()
+            except Exception as exc:
+                # Best-effort. Don't fail the engineer task on this — the
+                # fix already shipped to the customer's PR. The webhook
+                # bot-loop guard fails open: a missing fix_commit_sha just
+                # means we MIGHT dispatch a wasteful second run.
+                self._log.warning(
+                    "cifix_engineer.fix_commit_sha_update_failed",
+                    ci_fix_run_id=ci_fix_run_id,
+                    error=str(exc),
+                )
 
         return AgentResult(
             success=True,
@@ -354,10 +373,7 @@ class CIFixEngineerAgent(BaseAgent):
         # Minimum-viable validation — Tech Lead wrote this, but be paranoid.
         if not isinstance(output, dict):
             return None
-        if not all(
-            k in output
-            for k in ("root_cause", "affected_files", "fix_spec", "confidence")
-        ):
+        if not all(k in output for k in ("root_cause", "affected_files", "fix_spec", "confidence")):
             return None
         return output
 
@@ -500,8 +516,4 @@ def _build_commit_message(fix_spec: dict, ci_context: dict) -> str:
     if len(body_excerpt) > 400:
         body_excerpt = body_excerpt[:400].rstrip() + "…"
     failing_job = ci_context.get("failing_job_name") or "?"
-    return (
-        f"fix(ci): {subject}\n\n"
-        f"{body_excerpt}\n\n"
-        f"CI Fixer v3 • failing job: {failing_job}"
-    )
+    return f"fix(ci): {subject}\n\n{body_excerpt}\n\nCI Fixer v3 • failing job: {failing_job}"

@@ -103,9 +103,7 @@ class WorkOrder(Base):
     raw_command: Mapped[str] = mapped_column(Text, nullable=False)
     # 'build' (default — Slack /phalanx build) vs 'ci_fix' (CI Fixer v3 webhook).
     # Set by the creator; drives which pipeline picks up the work order.
-    work_order_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, server_default="build"
-    )
+    work_order_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="build")
     status: Mapped[str] = mapped_column(String(50), default="OPEN")
     priority: Mapped[int] = mapped_column(Integer, default=50)
     requested_by: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -804,9 +802,7 @@ class CIIntegration(Base):
     """Phase 4: when True, CIFixerAgent opens a real PR and enables auto-merge for trusted fingerprints."""
     min_success_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
     """Phase 4: auto-merge only triggered after a fingerprint has >= this many successful fixes."""
-    cifixer_version: Mapped[str] = mapped_column(
-        String(8), nullable=False, server_default="v2"
-    )
+    cifixer_version: Mapped[str] = mapped_column(String(8), nullable=False, server_default="v2")
     """CI Fixer pipeline selector: 'v2' (single-agent loop) or 'v3' (multi-agent DAG).
     Webhook ingest reads this to decide which dispatcher to call."""
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
@@ -826,6 +822,10 @@ class CIFixRun(Base):
     commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     ci_provider: Mapped[str] = mapped_column(String(50), nullable=False)
     ci_build_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    ci_check_suite_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    """GitHub check_suite.id — bug #11 A3 idempotency key. Multiple check_runs of
+    the same suite share this; webhook handler uses it to dedup deterministically
+    (vs the time-window heuristic that has bypass edges). Migration 20260428_0001."""
     build_url: Mapped[str | None] = mapped_column(Text)
     failed_jobs: Mapped[list] = mapped_column(ARRAY(String), default=list)
     failure_summary: Mapped[str | None] = mapped_column(Text)

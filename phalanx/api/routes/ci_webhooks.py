@@ -58,6 +58,28 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
     )
 
     async with get_db() as session:
+        # Bug #11 B2 — per-(repo, pr_number) advisory lock. Catches concurrent
+        # webhook racing for the same PR (different check_suites of the same PR
+        # arriving in parallel — A3's idempotency key only catches same suite).
+        # Non-blocking try-lock; fall through if already held by another tx.
+        # Lock auto-releases on commit/rollback (xact_lock variant).
+        if event.pr_number is not None:
+            from sqlalchemy import text  # noqa: PLC0415
+
+            # PG advisory locks take a single bigint key. Hash (repo, pr) into
+            # a stable int64. abs() so we stay in the signed-bigint range.
+            lock_key = abs(hash((event.repo_full_name, event.pr_number))) % (2**63)
+            result = await session.execute(
+                text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": lock_key}
+            )
+            if not result.scalar():
+                log.info(
+                    "ci_webhook.dispatch_lock_held",
+                    repo=event.repo_full_name,
+                    pr_number=event.pr_number,
+                )
+                return None
+
         # Find matching integration
         result = await session.execute(
             select(CIIntegration).where(
@@ -142,6 +164,28 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
         # Classify from webhook payload if possible
         category = classify_failure(event.raw_payload.get("_log_preview", ""))
 
+        # Bug #11 A3: idempotency-key dedup. Before time-window logic, check
+        # if a CIFixRun already exists for this exact check_suite. Multiple
+        # check_runs of the same suite arrive separately but share suite.id.
+        # The unique partial index `ci_fix_runs_repo_check_suite_idem` enforces
+        # the constraint at the DB layer too — this query is the fast-path.
+        if event.ci_check_suite_id is not None:
+            result = await session.execute(
+                select(CIFixRun).where(
+                    CIFixRun.repo_full_name == event.repo_full_name,
+                    CIFixRun.ci_check_suite_id == event.ci_check_suite_id,
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing is not None:
+                log.info(
+                    "ci_webhook.check_suite_idem_dedup",
+                    ci_fix_run_id=existing.id,
+                    repo=event.repo_full_name,
+                    check_suite_id=event.ci_check_suite_id,
+                )
+                return None
+
         # Create CIFixRun
         ci_run = CIFixRun(
             integration_id=integration.id,
@@ -151,6 +195,7 @@ async def _dispatch_ci_fix(event: CIFailureEvent) -> CIFixRun | None:
             commit_sha=event.commit_sha,
             ci_provider=event.provider,
             ci_build_id=event.build_id,
+            ci_check_suite_id=event.ci_check_suite_id,
             build_url=event.build_url,
             failed_jobs=event.failed_jobs or [],
             failure_summary=event.raw_payload.get("_log_preview", "")[:2000],
@@ -295,6 +340,31 @@ async def _dispatch_ci_fix_v3(
     )
 
 
+async def _is_phalanx_fix_commit(repo_full_name: str, head_sha: str) -> bool:
+    """Return True if head_sha matches a recent CIFixRun.fix_commit_sha for
+    this repo — i.e., the CI was triggered by a commit Phalanx itself pushed.
+
+    Bug #11 A1 mitigation. Looks at CIFixRuns from the last hour to keep
+    the query bounded. Supports both v3's full 40-char fix_commit_sha and
+    v1/v2's 8-char prefix via head_sha.startswith(stored).
+    """
+    async with get_db() as session:
+        result = await session.execute(
+            select(CIFixRun)
+            .where(
+                CIFixRun.repo_full_name == repo_full_name,
+                CIFixRun.fix_commit_sha.isnot(None),
+                CIFixRun.created_at >= datetime.now(UTC) - timedelta(hours=1),
+            )
+            .order_by(CIFixRun.created_at.desc())
+            .limit(50)
+        )
+        for ci_run in result.scalars():
+            if ci_run.fix_commit_sha and head_sha.startswith(ci_run.fix_commit_sha):
+                return True
+    return False
+
+
 async def _update_fix_branch_ci_status(
     repo_full_name: str,
     branch: str,
@@ -327,9 +397,7 @@ async def _update_fix_branch_ci_status(
             return
 
         await session.execute(
-            update(CIFixRun)
-            .where(CIFixRun.id == ci_run.id)
-            .values(fix_branch_ci_status=new_status)
+            update(CIFixRun).where(CIFixRun.id == ci_run.id).values(fix_branch_ci_status=new_status)
         )
         await session.commit()
 
@@ -358,10 +426,7 @@ async def _post_closed_loop_comment(ci_run: CIFixRun, status: str) -> None:
         return
 
     if status == "passed":
-        body = (
-            "✅ **Phalanx CI Fixer** — CI passed after the lint fix commit. "
-            "Your PR is green."
-        )
+        body = "✅ **Phalanx CI Fixer** — CI passed after the lint fix commit. Your PR is green."
     else:
         body = (
             f"⚠️ **Phalanx CI Fixer** — CI re-ran after the lint fix but is still **{status}**. "
@@ -460,6 +525,28 @@ async def github_webhook(
         check_run = payload["check_run"]
         repo = payload["repository"]
 
+        # Bug #11 A1 — bot-loop guard via fix_commit_sha lookup.
+        # When v3 commits a partial fix and pushes, the new SHA triggers a
+        # fresh CI build whose failures fire fresh webhooks. Without this
+        # check we'd dispatch a parallel v3 run for the same PR (the bug
+        # surfaced 2026-04-28 on testbed PR #18). The existing sender.login
+        # filter doesn't catch this because token-based pushes show up as
+        # the PAT owner, not the git author. Matching head_sha against
+        # CIFixRun.fix_commit_sha is the reliable signal.
+        head_sha = check_run.get("head_sha", "")
+        head_branch = check_run.get("check_suite", {}).get("head_branch") or ""
+        if head_sha and await _is_phalanx_fix_commit(repo["full_name"], head_sha):
+            log.info(
+                "ci_webhook.skipping_own_fix_commit",
+                repo=repo["full_name"],
+                head_sha=head_sha[:12],
+                conclusion=conclusion,
+            )
+            # Still record outcome on the closed-loop tracking — the original
+            # CIFixRun wants to know its fix's CI verdict.
+            await _update_fix_branch_ci_status(repo["full_name"], head_branch, head_sha, conclusion)
+            return {"status": "ignored", "reason": "own_fix_commit"}
+
         # Skip infrastructure/runner check runs (Node.js deprecation warnings, etc.)
         # Only process named CI gates that represent actual code failures
         check_name = check_run.get("name", "")
@@ -482,6 +569,12 @@ async def github_webhook(
         if not pr_author:
             pr_author = payload.get("sender", {}).get("login")
 
+        # Bug #11 A3: extract GitHub's check_suite.id as the idempotency key.
+        # Multiple check_runs of the same workflow run share this id; the
+        # dispatcher uses it to dedup deterministically (vs the time-window
+        # heuristic which has bypass edges — see bug #11 deep analysis).
+        check_suite_id = check_run.get("check_suite", {}).get("id")
+
         event = CIFailureEvent(
             provider="github_actions",
             repo_full_name=repo["full_name"],
@@ -492,6 +585,7 @@ async def github_webhook(
             failed_jobs=[check_run["name"]],
             pr_number=pr_number,
             pr_author=pr_author,
+            ci_check_suite_id=check_suite_id,
             raw_payload=payload,
         )
 

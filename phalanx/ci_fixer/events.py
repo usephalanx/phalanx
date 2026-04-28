@@ -50,6 +50,11 @@ class CIFailureEvent:
     pr_author: str | None = None
     """GitHub login of the PR/commit author — used for allowed_authors filtering"""
 
+    ci_check_suite_id: int | None = None
+    """GitHub check_suite.id (bug #11 A3 idempotency key). Multiple check_runs
+    of the same suite share this; the webhook handler uses it to dedup
+    deterministically. None for non-GitHub providers."""
+
     raw_payload: dict = field(default_factory=dict)
     """Original webhook payload for debugging"""
 
