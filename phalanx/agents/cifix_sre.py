@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 
 import structlog
@@ -80,9 +81,7 @@ class CIFixSREAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             ci_context = _parse_ci_context(task.description)
             integration = await self._load_integration(session, ci_context.get("repo"))
 
@@ -122,9 +121,7 @@ class CIFixSREAgent(BaseAgent):
             )
         except Exception as exc:
             self._log.exception("cifix_sre.setup.clone_failed", error=str(exc))
-            return AgentResult(
-                success=False, output={}, error=f"clone_failed: {exc}"
-            )
+            return AgentResult(success=False, output={}, error=f"clone_failed: {exc}")
 
         # Step B: detect env
         env_spec = detect_env(workspace_path)
@@ -137,9 +134,7 @@ class CIFixSREAgent(BaseAgent):
         )
 
         # Step C: provision
-        provisioned: ProvisionedSandbox = await provision_on_the_fly(
-            Path(workspace_path), env_spec
-        )
+        provisioned: ProvisionedSandbox = await provision_on_the_fly(Path(workspace_path), env_spec)
 
         if not provisioned.available:
             return AgentResult(
@@ -196,9 +191,7 @@ class CIFixSREAgent(BaseAgent):
         if not commands:
             # No commands — nothing to verify. This is suspicious (we expect at
             # least the failing command) but not a hard failure.
-            self._log.warning(
-                "cifix_sre.verify.no_commands_found", workspace=workspace_path
-            )
+            self._log.warning("cifix_sre.verify.no_commands_found", workspace=workspace_path)
             return AgentResult(
                 success=True,
                 output={
@@ -271,9 +264,7 @@ class CIFixSREAgent(BaseAgent):
         result = await session.execute(select(Task).where(Task.id == self.task_id))
         return result.scalar_one_or_none()
 
-    async def _load_integration(
-        self, session, repo: str | None
-    ) -> CIIntegration | None:
+    async def _load_integration(self, session, repo: str | None) -> CIIntegration | None:
         if not repo:
             return None
         result = await session.execute(
@@ -418,11 +409,15 @@ def _collect_verify_commands(
                 run_cmd = step.get("run")
                 if not isinstance(run_cmd, str):
                     continue
-                # Take the FIRST non-empty line of the script (shell scripts
-                # spanning multiple lines are common but only the first line
-                # is usually the test invocation).
+                # Join shell line-continuations FIRST so a multi-line
+                # `pytest \\\n  --cov=...` block becomes one logical command,
+                # not "pytest \\" run literally (bug #9, 2026-04-25 lint canary).
+                joined = re.sub(r"\\\n[ \t]*", " ", run_cmd)
+                # Take the FIRST non-empty line of the joined script (shell
+                # scripts spanning multiple LOGICAL lines are common but only
+                # the first is usually the test invocation).
                 first_line = next(
-                    (line.strip() for line in run_cmd.splitlines() if line.strip()),
+                    (line.strip() for line in joined.splitlines() if line.strip()),
                     "",
                 )
                 if not first_line or first_line in seen:

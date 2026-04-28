@@ -37,6 +37,7 @@ def _patch_db_and_integration(monkeypatch, has_integration: bool = True):
         allowed_authors = None
         max_attempts = 3
         auto_commit = False
+        cifixer_version = "v2"  # v3 routing branch added in ci_webhooks.py
 
     class _FakeResult:
         def __init__(self, value):
