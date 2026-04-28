@@ -120,9 +120,7 @@ async def test_build_sonnet_coder_callable_passes_thinking_budget(monkeypatch):
             ToolSchema(name="read_file", description="", input_schema={"type": "object"})
         ],
     )
-    resp = await callable_(
-        [{"role": "user", "content": "apply the patch"}]
-    )
+    resp = await callable_([{"role": "user", "content": "apply the patch"}])
     assert resp.text == "done"
     assert captured["model"] == "claude-sonnet-4-6"
     assert captured["api_key"] == "sk-ant-test"
@@ -146,3 +144,48 @@ async def test_build_sonnet_coder_callable_surfaces_provider_error(monkeypatch):
     resp = await callable_([{"role": "user", "content": "x"}])
     assert "provider_error" in resp.text
     assert resp.tool_uses == []
+
+
+def test_llm_call_timeout_at_or_above_300s_post_bug_10():
+    """Bug #10 (2026-04-28): the v3 coverage cell's engineer hit the prior
+    180s wall-clock during the first multi-file test-writing turn —
+    `coder_attempts=0`, no commit, `notes='provider_error: anthropic call
+    exceeded 180.0s wall-clock'`. Raised to 300s in v1.3.41. This guard
+    prevents an accidental rebump back below 300 — if a future change
+    actually needs to lower it, drop this test consciously rather than
+    silently regress."""
+    assert sonnet._LLM_CALL_TIMEOUT_SECONDS >= 300.0, (
+        f"Sonnet wall-clock = {sonnet._LLM_CALL_TIMEOUT_SECONDS}s; "
+        "must be >= 300s to fit a multi-file extended-thinking turn "
+        "(see bug #10 retro)."
+    )
+
+
+async def test_timeout_surfaces_as_provider_error_with_wall_clock_message(monkeypatch):
+    """When _call_anthropic_api raises the wrapped TimeoutError (the actual
+    bug #10 failure mode), the coder callable must return a clean
+    LLMResponse whose text carries `anthropic call exceeded` — this is
+    the string the engineer logs as `provider_error:`. If a future
+    refactor swallows the message, downstream debugging gets harder."""
+
+    async def slow(*_a, **_k):
+        # Mimic the exact error _call_anthropic_api raises after asyncio
+        # cancellation. Use a small fake limit so the message is unambiguous.
+        raise TimeoutError("anthropic call exceeded 1.0s wall-clock")
+
+    monkeypatch.setattr(sonnet, "_call_anthropic_api", slow)
+
+    callable_ = sonnet.build_sonnet_coder_callable(
+        model="claude-sonnet-4-6",
+        api_key="sk",
+        system_prompt="sys",
+        tool_schemas=[],
+    )
+    resp = await callable_([{"role": "user", "content": "x"}])
+
+    assert "provider_error" in resp.text, resp.text
+    assert "anthropic call exceeded" in resp.text, (
+        f"timeout message dropped on its way to LLMResponse.text: {resp.text!r}"
+    )
+    assert resp.tool_uses == []
+    assert resp.stop_reason == "end_turn"

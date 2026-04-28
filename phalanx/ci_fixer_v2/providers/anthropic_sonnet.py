@@ -30,13 +30,24 @@ git apply still accepted, which shipped a broken file to CI. 16k is
 generous for any single-file patch; larger changes should be split
 into multiple delegate_to_coder rounds, not crammed into one turn."""
 
-_LLM_CALL_TIMEOUT_SECONDS: float = 180.0
+_LLM_CALL_TIMEOUT_SECONDS: float = 300.0
 """Hard wall-clock timeout on a single Sonnet request, enforced via
 asyncio.wait_for. We do NOT rely on the Anthropic SDK's own `timeout=`
 parameter: that becomes an httpx read timeout, which resets on every
 byte (including server-sent keep-alives during extended thinking), so
 it can silently run for 20+ minutes even when set to 180s. asyncio
-cancellation is the only ironclad cap."""
+cancellation is the only ironclad cap.
+
+Raised from 180s → 300s on 2026-04-28 after bug #10: the v3 coverage
+cell on testbed PR #17 timed out at 186s with coder_attempts=0 (the
+first turn of multi-file test-writing didn't finish). lint/test_fail/
+flake cells all comfortably finish in <30s coder time; coverage and
+similar multi-file code-gen tasks need ~1.5-2× that headroom. 300s
+keeps the per-turn cap bounded (3-turn loop = 15min hard ceiling)
+while covering realistic worst-case extended-thinking turns.
+
+If a future caller needs a different value, refactor build_sonnet_coder_callable
+to accept a timeout_seconds= parameter rather than rebumping this constant."""
 
 
 def translate_tool_schemas_to_anthropic(
@@ -70,14 +81,10 @@ def normalize_anthropic_response(raw: dict[str, Any]) -> LLMResponse:
         elif btype == "tool_use":
             tu_id = block.get("id", "") if isinstance(block, dict) else getattr(block, "id", "")
             tu_name = (
-                block.get("name", "")
-                if isinstance(block, dict)
-                else getattr(block, "name", "")
+                block.get("name", "") if isinstance(block, dict) else getattr(block, "name", "")
             )
             tu_input = (
-                block.get("input", {})
-                if isinstance(block, dict)
-                else getattr(block, "input", {})
+                block.get("input", {}) if isinstance(block, dict) else getattr(block, "input", {})
             )
             tool_uses.append(LLMToolUse(id=tu_id, name=tu_name, input=tu_input or {}))
         elif btype == "thinking":
@@ -122,9 +129,7 @@ async def _call_anthropic_api(
     # max_retries=0 — SDK retries can stack past our asyncio.wait_for
     # budget silently. We'd rather see a TimeoutError / one hard fail
     # than a 20-minute black box.
-    client = AsyncAnthropic(
-        api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS, max_retries=0
-    )
+    client = AsyncAnthropic(api_key=api_key, timeout=_LLM_CALL_TIMEOUT_SECONDS, max_retries=0)
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
