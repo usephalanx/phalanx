@@ -149,21 +149,43 @@ class CIFixSREAgent(BaseAgent):
             )
 
         self._log.info(
-            "cifix_sre.setup.ready",
+            "cifix_sre.setup.deterministic_done",
             container_id=provisioned.container_id,
             workspace=workspace_path,
             setup_steps=len(provisioned.setup_log),
         )
+
+        # Agentic gap-fill (Phase 3). The deterministic provision is the
+        # KERNEL — most repos resolve here. For repos using setup-uv,
+        # setup-go, custom curl installers, etc., env_detector misses tools
+        # that upstream CI installs. We probe the sandbox for the first-
+        # tokens of the failing CI commands; gaps trigger the agentic loop
+        # (or a cached install plan replay).
+        sre_output = await _agentic_gap_fill(
+            container_id=provisioned.container_id,
+            workspace_path=provisioned.workspace_path,
+            ci_context=ci_context,
+            det_spec=provisioned.env_spec,
+            det_setup_log=provisioned.setup_log,
+            log=self._log,
+        )
+
+        # BLOCKED → fail the SRE task so commander short-circuits the DAG.
+        if sre_output["final_status"] == "BLOCKED":
+            return AgentResult(
+                success=False,
+                output=sre_output,
+                error=f"sre_blocked: {sre_output.get('blocked_reason')}",
+            )
+
+        # READY or PARTIAL → continue (TL gets prior_sre_partial flag for the
+        # PARTIAL case via Task.output → ci_context propagation, when commander
+        # plumbs it. For now, PARTIAL still attempts; future TL-prompt update
+        # acknowledges gaps explicitly).
         return AgentResult(
             success=True,
-            output={
-                "mode": "setup",
-                "container_id": provisioned.container_id,
-                "workspace_path": provisioned.workspace_path,
-                "env_spec": provisioned.env_spec,
-                "setup_log": provisioned.setup_log,
-            },
-            tokens_used=0,
+            output=sre_output,
+            tokens_used=sre_output.get("tokens_used", 0),
         )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -434,3 +456,224 @@ def _collect_verify_commands(
 
 # Expose for unit tests
 _collect_verify_commands_for_test = _collect_verify_commands
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agentic gap-fill (Phase 3 hybrid integration)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_first_token(cmd: str) -> str:
+    """Best-effort first token of a shell command.
+
+    `'pytest --cov=src/calc'` → `'pytest'`. `'sudo apt install gettext'`
+    → `'sudo'` (we don't try to skip privilege wrappers — the LLM can
+    handle those if the sandbox lacks them, which it does for sudo).
+    """
+    parts = cmd.strip().split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
+async def _check_first_tokens_available(
+    container_id: str, tokens: list[str]
+) -> dict[str, bool]:
+    """Probe the sandbox for each first-token; True = command exists on PATH."""
+    out: dict[str, bool] = {}
+    for tok in tokens:
+        if not tok or tok in out:
+            continue
+        # Single shell-safe probe; reuses provisioner._exec_in_container
+        # which we already trust.
+        result = await _exec_in_container(
+            container_id, f"command -v {tok!r} >/dev/null 2>&1", as_root=False
+        )
+        out[tok] = result.exit_code == 0
+    return out
+
+
+def _det_spec_summary(env_spec: dict | None) -> dict:
+    """Compact summary for the LLM prompt — what the deterministic step
+    already installed."""
+    if not env_spec:
+        return {}
+    return {
+        "stack": env_spec.get("stack"),
+        "base_image": env_spec.get("base_image"),
+        "system_deps": env_spec.get("system_deps") or [],
+        "install_commands": env_spec.get("install_commands") or [],
+        "tool_versions": env_spec.get("tool_versions") or {},
+    }
+
+
+async def _agentic_gap_fill(
+    *,
+    container_id: str,
+    workspace_path: str,
+    ci_context: dict,
+    det_spec: dict,
+    det_setup_log: list[dict],
+    log,
+) -> dict:
+    """Hybrid decision tree: deterministic-first, agentic-on-gaps.
+
+    Returns the new Task.output schema (backwards-compatible — keeps the
+    old env_spec + setup_log fields, adds capabilities_installed,
+    final_status, etc.).
+    """
+    from phalanx.ci_fixer_v3.sre_setup.cache import (  # noqa: PLC0415
+        cache_lookup,
+        cache_write,
+        compute_cache_key,
+    )
+    from phalanx.ci_fixer_v3.sre_setup.loop import run_sre_setup_subagent  # noqa: PLC0415
+    from phalanx.ci_fixer_v3.sre_setup.schemas import SREToolContext  # noqa: PLC0415
+
+    # 1. Collect the failing-command first-tokens we need available.
+    failing_cmd = ci_context.get("failing_command") or ""
+    observed: list[str] = []
+    if failing_cmd:
+        observed.append(failing_cmd)
+
+    # Augment with workflow-derived interesting commands so we cover
+    # ancillary tools the upstream CI invokes.
+    extra = _collect_verify_commands(
+        Path(workspace_path), original_failing_command=""
+    )
+    for _label, cmd in extra:
+        if cmd not in observed:
+            observed.append(cmd)
+
+    first_tokens = [_extract_first_token(c) for c in observed if _extract_first_token(c)]
+    token_status = await _check_first_tokens_available(container_id, first_tokens)
+    gaps = [t for t in first_tokens if not token_status.get(t, False)]
+
+    log.info(
+        "cifix_sre.setup.gap_check",
+        first_tokens=first_tokens,
+        token_status=token_status,
+        gaps=gaps,
+    )
+
+    # 2. No gaps → READY fast path (no LLM call).
+    if not gaps:
+        return {
+            "mode": "setup",
+            "container_id": container_id,
+            "workspace_path": workspace_path,
+            "env_spec": det_spec,  # backwards-compat
+            "setup_log": det_setup_log,
+            "capabilities_installed": [],  # deterministic only
+            "final_status": "READY",
+            "blocked_reason": None,
+            "observed_token_status": [
+                {"cmd": c, "first_token": _extract_first_token(c),
+                 "found": token_status.get(_extract_first_token(c), False)}
+                for c in observed
+            ],
+            "tokens_used": 0,
+            "fallback_used": False,
+            "cache_hit": False,
+            "agentic_iterations": 0,
+        }
+
+    # 3. Cache lookup (memoized plan replay — Phase 2).
+    repo = ci_context.get("repo") or ""
+    cache_key = compute_cache_key(workspace_path)
+    cached_plan = await cache_lookup(cache_key, repo_full_name=repo)
+    if cached_plan is not None:
+        log.info(
+            "cifix_sre.setup.cache_hit",
+            cache_key=cache_key[:16],
+            capabilities=len(cached_plan.get("capabilities", [])),
+        )
+        return {
+            "mode": "setup",
+            "container_id": container_id,
+            "workspace_path": workspace_path,
+            "env_spec": det_spec,
+            "setup_log": det_setup_log + [{"step": "cache_hit", "cache_key": cache_key[:16]}],
+            "capabilities_installed": cached_plan.get("capabilities", []),
+            "final_status": "READY",
+            "blocked_reason": None,
+            "observed_token_status": cached_plan.get("observed_token_status", []),
+            "tokens_used": 0,
+            "fallback_used": False,
+            "cache_hit": True,
+            "agentic_iterations": 0,
+        }
+
+    # 4. Agentic loop (Phase 1).
+    # Build the LLM call from v2's existing Sonnet provider — same wiring
+    # the engineer uses.
+    from phalanx.ci_fixer_v2.prompts import CODER_SUBAGENT_SYSTEM_PROMPT  # noqa: PLC0415, F401
+    from phalanx.ci_fixer_v2.providers import build_sonnet_coder_callable  # noqa: PLC0415
+    from phalanx.ci_fixer_v3.sre_setup.tools import SRE_SETUP_TOOLS  # noqa: PLC0415
+
+    settings = get_settings()
+    # We pass our own SRE tool schemas — Sonnet's tool list matches what's
+    # actually allowed in the loop. The system prompt is the SRE one, not
+    # the coder one (built into the loop's seed prompt).
+    sonnet_llm = build_sonnet_coder_callable(
+        model=settings.anthropic_model_ci_fixer_coder,
+        api_key=settings.anthropic_api_key,
+        system_prompt="You are the CI Fixer v3 SRE Agent. Follow the user message's instructions exactly.",
+        tool_schemas=[s for s, _ in SRE_SETUP_TOOLS],
+    )
+
+    async def exec_in_sandbox(_container_id, cmd, **kwargs):
+        return await _exec_in_container(container_id, cmd, **kwargs)
+
+    sre_ctx = SREToolContext(
+        container_id=container_id,
+        workspace_path=workspace_path,
+        exec_in_sandbox=exec_in_sandbox,
+    )
+    sre_result = await run_sre_setup_subagent(
+        sre_ctx,
+        gaps=gaps,
+        det_spec_summary=_det_spec_summary(det_spec),
+        observed_failing_commands=observed,
+        llm_call=sonnet_llm,
+    )
+
+    log.info(
+        "cifix_sre.setup.agentic_done",
+        final_status=sre_result.final_status,
+        iterations=sre_result.iterations_used,
+        tokens=sre_result.tokens_used,
+        fallback_used=sre_result.fallback_used,
+    )
+
+    # 5. Write cache on READY.
+    if sre_result.final_status == "READY":
+        try:
+            await cache_write(
+                cache_key,
+                repo_full_name=repo,
+                install_plan={
+                    "capabilities": sre_result.capabilities,
+                    "observed_token_status": sre_result.observed_token_status,
+                },
+                final_status="READY",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cifix_sre.setup.cache_write_failed", error=str(exc)[:200])
+
+    return {
+        "mode": "setup",
+        "container_id": container_id,
+        "workspace_path": workspace_path,
+        "env_spec": det_spec,
+        "setup_log": det_setup_log + sre_result.setup_log,
+        "capabilities_installed": sre_result.capabilities,
+        "final_status": sre_result.final_status,
+        "blocked_reason": sre_result.blocked_reason,
+        "blocked_evidence": sre_result.blocked_evidence,
+        "observed_token_status": sre_result.observed_token_status,
+        "gaps_remaining": sre_result.gaps_remaining,
+        "tokens_used": sre_result.tokens_used,
+        "fallback_used": sre_result.fallback_used,
+        "cache_hit": False,
+        "agentic_iterations": sre_result.iterations_used,
+        "notes": sre_result.notes,
+    }
