@@ -1,147 +1,180 @@
-# CI Fixer v3 — Agentic SRE design
+# CI Fixer v3 — Agentic SRE design (v2)
 
-**Status**: design (2026-04-30). Implementation deferred to a fresh session.
-**Surfaced by**: humanize regression smoke 2026-04-28, where SRE setup couldn't replicate humanize's CI env (`astral-sh/setup-uv@v8`) and forced TL to handle "sandbox env mismatch" outside its charter.
-**Replaces**: deferred Path 1 (fat base image). The fat-image approach is per-language and accumulates dead weight. Agentic SRE is language-agnostic and matches the rest of v3's LLM-driven shape.
+**Status**: design v2 (2026-04-30) — v1 reviewed, 7 reliability gaps closed. Implementation deferred to fresh session.
+**Surfaced by**: humanize regression smoke 2026-04-28; SRE setup couldn't replicate humanize CI env (`astral-sh/setup-uv@v8`) and forced TL to handle "sandbox env mismatch" outside its charter.
+**Replaces**: deferred Path 1 (fat base image) — per-language, accumulates dead weight. This design is language-agnostic.
 
 ## 1. Problem statement
 
-Today's SRE setup is **deterministic regex** over `pyproject.toml` + `apt install` lines in workflow YAML. That works for the common Python case but fails the moment a workflow uses anything novel:
-
-- `astral-sh/setup-uv@v8` → sandbox lacks `uv`/`uvx` (humanize)
-- `actions/setup-go@v5` → sandbox lacks `go`
-- `actions/setup-node@v4` → sandbox lacks `node`/`npm`
-- Custom `run:` blocks with `curl … | sh` installers
-- Dockerfile-based CI (`container:` directive)
-- Composite actions, custom local actions
-
-When SRE setup is incomplete, SRE verify re-runs upstream commands literally and gets `127 not found`. Those failures bubble up as `new_failures` to commander → iter-2 TL is asked to "fix" what is actually a sandbox gap. TL correctly says "no code change possible" but the commander, engineer, and run-state machine have no clean way to handle this — runs FAIL without a deployable verdict.
-
-Root cause: SRE charter is "make sandbox a faithful replica of upstream CI", and the deterministic implementation can't fulfill that charter for the long tail of CI patterns.
+Today's SRE setup is deterministic regex over `pyproject.toml` + `apt install` lines. That covers a narrow band of Python repos. Anything else (`uses: setup-uv`, `setup-go`, `setup-node`, custom curl installers, monorepos, matrices, composite actions) trips it. SRE then can't fulfill its charter — replicate upstream CI in the sandbox — and the system has no clean recovery, so iter-2 TL gets asked questions outside its charter.
 
 ## 2. Goals
 
-1. **Language-agnostic env setup**: SRE figures out what upstream CI installs (Python, Node, Go, Java, C#, Rust, ...) without per-language hardcoding.
-2. **Self-recovery within charter**: SRE detects missing tools, tries reasonable install strategies (apt → pip → curl → conda), and reports ready/blocked clearly.
-3. **Clean cross-agent contract**: TL only ever sees real code-failure questions. The "sandbox env mismatch" path moves entirely inside SRE.
-4. **Bounded cost & latency**: per-run SRE LLM cost ≤ $0.20, wall-clock ≤ 90s on average for runs needing extra tools (vs ~30s deterministic today).
-5. **External Python repos work without manual config**: humanize lint cell SHIPS in a single iter post-fix; one additional external Python repo using uv/poetry/pdm also works.
+1. **Language-agnostic env setup** — Python, Node, Go, Java, C# without per-language hardcoding.
+2. **Reliable** (numeric criteria in §11) — predictable behavior, bounded cost, low false-install rate.
+3. **Self-recovery within charter** — SRE detects missing tools, tries reasonable strategies, reports clearly.
+4. **Clean cross-agent contract** — TL only sees real code-failure questions. Env-mismatch path stays inside SRE.
+5. **External Python repos work without manual config** — humanize lint cell SHIPS in single iter post-fix; one additional external Python repo also works.
 
 ## 3. Non-goals
 
-- Replacing TL or Engineer with a different model. They stay GPT-5.4 / Sonnet.
-- Making SRE verify-mode agentic too. Verify stays deterministic for now (different problem class — comparing observed exit codes, not planning installs).
-- Supporting arbitrary Dockerfile-based CI (`container:` directive). That's a separate base-image-swap design; SRE remains a "Linux sandbox + tools" model.
-- Fixing TL/Engineer prompt weaknesses unrelated to env setup.
+- Replacing TL or Engineer agents.
+- Making SRE verify-mode agentic (different problem class — comparing exit codes, not planning installs).
+- Supporting `container:` directive (custom upstream container) — separate base-image-swap design.
+- Supporting `services:` block (sidecar databases etc.) — out of scope for v3.
 
-## 4. Architecture
+## 4. Architecture — **hybrid deterministic-first**
 
-### Current (deterministic)
+The biggest mistake of design v1 was assuming the LLM should drive setup from scratch. That's expensive, non-deterministic, and unnecessary for the common case. Most repos resolve cleanly with deterministic detection. The LLM only needs to fill GAPS.
 
-```
-SRE setup task:
-  ├─ clone repo
-  ├─ env_detector.py (regex over pyproject.toml + workflow YAML)
-  ├─ provisioner.provision_on_the_fly(env_spec)  # docker run + apt + pip install
-  └─ Task.output: { container_id, workspace_path, env_spec, setup_log }
-```
-
-### Proposed (agentic)
+### Decision tree per setup task
 
 ```
-SRE setup task:
-  ├─ clone repo
-  ├─ provisioner.provision_bare_sandbox()  # docker run + base apt only
-  ├─ run_sre_setup_subagent(  # LLM loop, mirrors run_coder_subagent
-  │     llm_call=sonnet,
-  │     tools=[read_file, list_workflows, exec_in_sandbox,
-  │             check_command_available, install_apt, install_pip,
-  │             install_via_curl, report_ready, report_blocked],
-  │     repo_workspace=...,
-  │     observed_failing_commands=ci_context.failing_commands,
-  │     max_iterations=10,
-  │   )
-  └─ Task.output: {
-       container_id, workspace_path,
-       capabilities_installed: [{tool, version, install_method}],
-       setup_log: [...],     # tool calls + observations, audit trail
-       final_status: READY | PARTIAL | BLOCKED,
-       blocked_reason: str | None,
-     }
+1. provision_bare_sandbox()                 # docker run + base apt
+2. det_spec = env_detector.detect_env(repo) # current deterministic logic
+3. provision_from_spec(det_spec)            # apt installs + pip installs from det_spec
+4. observed_first_tokens = [
+     extract_first_token(cmd) for cmd in observed_failing_commands
+   ]
+5. for token in observed_first_tokens:
+       if not check_command_available(token):
+           gaps.append(token)
+6. if not gaps:
+       return Output(final_status=READY, ...)   # FAST PATH — no LLM call
+7. else:
+       agentic_result = run_sre_setup_subagent(
+           workspace=repo,
+           container_id=sandbox.container_id,
+           gaps=gaps,
+           det_spec=det_spec,             # what we already installed
+           token_budget=TOKEN_BUDGET,
+           iteration_cap=10,
+           hot_fallback_on_provider_failure=True,
+       )
+       return Output(final_status=agentic_result.status, ...)
 ```
 
-### Key design points
+**Properties**:
+- **Most runs never invoke the LLM.** If env_detector + base provisioning produces a sandbox where all `observed_first_tokens` exist, we return READY with zero LLM cost.
+- **LLM is augmentation, not replacement.** It only addresses specific gaps the deterministic path missed.
+- **Hot fallback**: if Sonnet is degraded (rate-limited, 5xx), we surface PARTIAL with `det_spec` results — not BLOCKED. Run continues with whatever deterministic detection found.
 
-- **Reuses the coder subagent loop pattern** — `run_sre_setup_subagent` is structured like `run_coder_subagent` (proven in production for the engineer agent). Same LLM call interface, same tool dispatch, same retry-and-cap mechanics.
-- **Tools are restricted** to env-setup operations only (no `apply_patch`, no `commit_and_push`, no `comment_on_pr`). SRE cannot accidentally edit the customer's code.
-- **Bounded loop**: max 10 tool calls. If exhausted, return PARTIAL with what was installed.
-- **Provider choice**: Sonnet for cost (pattern recognition + tool sequencing, not deep reasoning). Estimate ~5-7 tool calls per run, ~$0.05-$0.10 per setup.
+### Tools the LLM agent gets
+
+All tools are **strict-input** — they validate args before doing anything. Hallucinated args become tool errors, not state changes.
+
+| tool | signature | constraints |
+|---|---|---|
+| `read_file(path)` | path: str within `repo/` | path must be inside workspace; max 200KB |
+| `list_workflows()` | () → list[str] | returns relative paths; readonly |
+| `check_command_available(name, min_version=None)` | name: str | name = single shell-safe token |
+| `install_apt(packages, evidence_file, evidence_line)` | packages: list[str], evidence: file+line | packages must be alnum+`-`+`+`; evidence_file must exist; rejected if evidence span doesn't textually contain ANY of the package names |
+| `install_pip(packages, evidence_file, evidence_line)` | same shape | same validation |
+| `install_via_curl(tool_name, install_url, evidence_file, evidence_line)` | tool_name validates, install_url must be in domain whitelist | whitelist: pypi.org, files.pythonhosted.org, github.com (raw), astral.sh, get.pnpm.io, sh.rustup.rs (extensible) |
+| `report_ready(capabilities, observed_token_status)` | capabilities: list[{tool, version, install_method, evidence_ref}], observed_token_status: list[{cmd, first_token, found}] | terminal — exits the loop |
+| `report_partial(capabilities, gaps_remaining, reason)` | partial = some installed, some not | terminal |
+| `report_blocked(reason, evidence)` | reason: enum | terminal — see §8 for enum values |
+
+**Why evidence is required**: gap #2 from the v1 review. LLMs violate "only install what's evidenced" prompt instructions; we make this a tool-level constraint that can't be bypassed. The tool itself reads the evidence file, checks the package name actually appears at/near the evidence line, and rejects the call otherwise. Tracked in audit log.
+
+### Token budget + memoization
+
+Gap #3 from v1 review.
+
+- **Per-run token budget**: `MAX_SETUP_TOKENS = 50_000` (input + output combined). Enforced by the loop wrapper. Exceeding → return PARTIAL with what installed.
+- **Iteration cap**: 10 tool calls (independent of token budget; whichever hits first).
+- **Memoization**: before invoking LLM, compute `setup_cache_key = sha256(pyproject.toml + all .github/workflows/*.yml + .pre-commit-config.yaml + tool-versions)`. Look up in `sre_setup_cache` table. If hit AND cached final_status==READY AND ≤24h old, replay the cached install plan deterministically (skip LLM entirely). Cache invalidation on repo change.
+
+```sql
+-- New table (alembic migration with the implementation):
+CREATE TABLE sre_setup_cache (
+  cache_key      VARCHAR(64) PRIMARY KEY,           -- hex sha256
+  repo_full_name VARCHAR(255) NOT NULL,
+  install_plan   JSONB NOT NULL,                    -- ordered install steps
+  final_status   VARCHAR(20) NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  hit_count      INTEGER DEFAULT 0
+);
+CREATE INDEX sre_setup_cache_repo ON sre_setup_cache(repo_full_name, created_at DESC);
+```
+
+### Provider-degradation fallback
+
+Gap #4. The loop wrapper maintains a 3-strikes counter:
+- Sonnet 5xx / rate-limit / timeout = 1 strike.
+- 3 consecutive strikes → break loop, return `final_status=PARTIAL` with `det_spec` + reason `"agentic_unavailable_used_deterministic_only"`.
+- Run continues to TL. TL prompt update (see §6) explicitly handles this case.
 
 ## 5. System prompt sketch
 
+Tighter than v1, with hard constraints up front:
+
 ```
-You are the SRE Agent in the CI Fixer pipeline. Your job: prepare a Linux
-sandbox to faithfully replicate upstream CI's environment.
+You are the CI Fixer v3 SRE Agent. Your charter: ensure the sandbox can run
+the customer repo's failing CI commands.
 
-You receive:
-  - A workspace_path (already cloned at the failing PR's HEAD)
-  - A bare sandbox container_id (Linux, sudo available, base packages only)
-  - observed_failing_commands: the CI commands that failed and need to run here
-  - Optional tech_lead_hints (rare — TL usually focuses on code, not env)
+You are invoked AFTER deterministic env_detector has already run. The base
+sandbox has Python + apt baseline + whatever det_spec found in pyproject.toml.
 
-Your goal: when run_in_sandbox is called on each observed_failing_command, it
-must execute (it may exit non-zero from real test failures — that's fine —
-but it must NOT fail with "command not found" or environment errors).
+Your job: address the SPECIFIC gaps listed in your inputs.
 
-Workflow you MUST follow:
+INPUTS:
+  - workspace_path:    repo cloned at PR HEAD (read-only to you)
+  - container_id:      sandbox where you exec installs
+  - gaps:              list of first-tokens from failing CI commands that
+                       are NOT YET available in the sandbox
+  - det_spec:          summary of what env_detector already installed
+                       (so you don't re-install things)
 
-1. INVESTIGATE: read the repo to understand the env contract.
-   - Read .github/workflows/*.yml — look for `uses:` (action installs) and
-     `run:` (shell installs). Common: setup-uv, setup-go, setup-node, custom
-     curl installers.
-   - Read pyproject.toml / package.json / go.mod / etc. for dep declarations.
-   - Read .pre-commit-config.yaml / .tool-versions / Dockerfile if present.
+OBJECTIVE:
+  For each token in `gaps`, install it via tools. Then call report_ready
+  (or report_partial / report_blocked).
 
-2. PLAN: list the install steps you intend, in order.
-   Examples:
-     - "Install uv via pip" (workflow uses setup-uv)
-     - "Install tox + tox-uv via pip" (workflow uses uvx tox)
-     - "apt install gettext" (workflow has 'sudo apt install gettext')
+HARD CONSTRAINTS:
+  1. Every install_* call REQUIRES an evidence_file + evidence_line pointing
+     to where in the repo the package or tool is mentioned. The tool
+     verifies the evidence is real; calls without valid evidence fail.
 
-3. EXECUTE: one install at a time, verifying each.
-   - Use install_apt for system packages.
-   - Use install_pip for Python packages.
-   - Use install_via_curl ONLY for tools that explicitly require it (rust
-     toolchain, deno, etc.) and only from known-safe domains.
-   - After each install, call check_command_available to verify.
+  2. You may NOT install a package not directly evidenced in the repo
+     (workflow YAML, pyproject.toml, package.json, .pre-commit-config, etc.).
+     "Common Python repos use X" is NOT evidence.
 
-4. VERIFY: for each observed_failing_command's first token, confirm the
-   command exists. (Don't run the failing_command — that's the next agent's
-   job.)
+  3. You may NOT run the failing CI commands themselves. That's the next
+     agent's job.
 
-5. REPORT: call report_ready with a summary of what you installed, OR
-   report_blocked with a specific reason if a required tool can't be installed
-   (no sudo, network failure, command requires GitHub Actions context, etc.).
+  4. You may NOT edit any files in the workspace.
 
-Constraints:
-  - Cap your tool calls at 10. Stop and report_partial if exhausted.
-  - Only install what is EVIDENCED in the repo's setup files. Don't guess
-    based on language stereotypes (e.g., not every Python repo needs `uv`).
-  - Don't run the observed_failing_commands themselves.
-  - Don't edit any files. Read-only on the workspace.
-  - GitHub Actions expressions like `${{ matrix.python-version }}` cannot be
-    expanded outside GHA. If a workflow needs them to function, report that
-    in report_blocked — the run cannot proceed without GHA context.
+  5. install_via_curl is restricted to a whitelist of installer domains.
+     Do not attempt arbitrary URLs.
 
-Output: your final tool call must be one of report_ready, report_partial,
-or report_blocked.
+  6. Token budget: 50000 tokens (input+output combined). Iteration cap:
+     10 tool calls. Whichever hits first ends the loop.
+
+ESCALATE (call report_blocked) WHEN:
+  - A gap requires GHA-only context (e.g., `${{ matrix.* }}` expansion that
+    isn't expanded outside GitHub Actions).
+  - A gap requires `services:` (sidecar containers — out of scope for v3).
+  - A gap requires sudo for system install but sudo is denied.
+  - You discover the workflow uses a `container:` directive (custom upstream
+    image — out of scope).
+  - You're stuck (same install attempted twice and failed both times).
+
+SELF-RECOVERY (do try):
+  - If install_pip fails for "package not found", check if upstream uses
+    a different install method (curl script, prebuilt binary).
+  - If install_via_curl is blocked by whitelist, see if the same tool is
+    pip-installable.
+  - One alternative attempt per gap. No more.
+
+OUTPUT:
+  Final tool call MUST be one of report_ready / report_partial /
+  report_blocked. The loop ignores any non-terminal call after a terminal
+  one (defensive).
 ```
 
 ## 6. DAG contract changes
 
 ### Task description (cifix_commander → cifix_sre setup)
-
-Today's `Task.description` already carries `ci_context` JSON. Add:
 
 ```json
 {
@@ -153,221 +186,276 @@ Today's `Task.description` already carries `ci_context` JSON. Add:
 }
 ```
 
-Commander populates this from the webhook + check_runs API. List of strings, in any order; SRE iterates over them.
-
 ### Task output schema (cifix_sre setup)
 
-Today:
-```json
-{
-  "mode": "setup",
-  "container_id": "...",
-  "workspace_path": "...",
-  "env_spec": {...},
-  "setup_log": [...]
-}
-```
+Backwards-compatible — old `env_spec` field stays, new fields ADDED:
 
-After:
 ```json
 {
   "mode": "setup",
   "container_id": "...",
   "workspace_path": "...",
+  "env_spec": {...},                           // KEEP — populated by deterministic det
   "capabilities_installed": [
-    {"tool": "uv", "version": "0.8.x", "install_method": "pip"},
-    {"tool": "tox", "version": "4.x", "install_method": "pip"}
+    {"tool": "uv", "version": "0.8.4",
+     "install_method": "pip",
+     "evidence_ref": ".github/workflows/lint.yml:18"}
   ],
   "setup_log": [
-    {"step": "read_workflow", "file": ".github/workflows/lint.yml", ...},
-    {"step": "install_pip", "packages": ["uv"], "exit_code": 0},
-    ...
+    {"phase": "deterministic", "step": "apt_install_baseline", ...},
+    {"phase": "agentic", "tool": "read_file", ...}
   ],
-  "final_status": "READY",       // READY | PARTIAL | BLOCKED
-  "blocked_reason": null,        // populated if BLOCKED
-  "observed_failing_commands_status": [
-    {"cmd": "uvx --with tox-uv tox -e mypy", "first_token_available": true},
-    {"cmd": "ruff check .", "first_token_available": true}
-  ]
+  "final_status": "READY",                     // READY | PARTIAL | BLOCKED
+  "blocked_reason": null,
+  "observed_token_status": [
+    {"cmd": "uvx ...", "first_token": "uvx", "found": true}
+  ],
+  "tokens_used": 4823,
+  "fallback_used": false,                      // true if agentic provider degraded
+  "cache_hit": false                           // true if memoized plan replayed
 }
 ```
 
-### Commander handling of SRE final_status
+### Commander handling of final_status
 
 | status | commander action |
 |---|---|
 | READY | proceed to TL (current path) |
-| PARTIAL | proceed to TL with a flag `sre_setup_partial=true`. TL sees which capabilities are missing in `prior_sre_partial`. |
-| BLOCKED | terminate run with `status=ESCALATED`, `escalation_reason=sre_blocked: <reason>`. No TL attempt. |
+| PARTIAL | proceed to TL with `prior_sre_partial=true` flag in TL task description; TL prompt acknowledges gaps |
+| BLOCKED | terminate run with `status=ESCALATED`, `escalation_reason=sre_blocked: <enum>`. No TL attempt, no engineer attempt. |
 
-## 7. State machine — SRE setup loop
+### TL prompt update (in scope for v1.4.0)
+
+Add to TL system prompt:
+
+```
+You may receive a `prior_sre_partial` flag. When this is set, the sandbox
+is missing some capabilities upstream CI uses. Inspect `prior_sre_gaps` —
+if your diagnosis depends on running a failing_command that uses a missing
+capability, set confidence=0.5, list the missing capability in
+open_questions, and proceed with best-effort code diagnosis only.
+
+You should NEVER receive a `prior_sre_blocked` indicator — those runs
+terminate before reaching you. If you see one anyway, return
+confidence=0.0 + open_questions=["unexpected: SRE blocked, run should
+have terminated"].
+```
+
+## 7. State machine
 
 ```
 [start]
-  → INVESTIGATING (read workflow YAML, pyproject, etc.)
-  → PLANNING     (LLM produces ordered install plan)
-  → INSTALLING   (loop: one install per iteration, verify each)
-       ↓
-       └→ if all installs succeed + first_tokens available: READY
-       └→ if loop budget exhausted but some installs succeeded: PARTIAL
-       └→ if a critical install fails after retry: BLOCKED
-       └→ if workflow needs GHA-only context: BLOCKED with specific reason
+  → DETERMINISTIC_DETECT  (env_detector.detect_env — current logic)
+  → BASE_PROVISION         (apt baseline + det_spec installs)
+  → CHECK_GAPS             (any failing first-tokens missing?)
+       ↓ no gaps
+       → READY (return early, NO LLM call)
+       ↓ gaps present
+  → MEMOIZE_LOOKUP         (sha256 of setup files; cache hit?)
+       ↓ hit (cached plan, recent, READY)
+       → REPLAY_PLAN → READY
+       ↓ miss
+  → AGENTIC_INSTALL        (LLM loop, up to 10 iter / 50k tokens)
+       ↓ all gaps closed
+       → READY
+       ↓ some closed, budget hit
+       → PARTIAL
+       ↓ provider degraded ≥3 strikes
+       → PARTIAL (fallback_used=true)
+       ↓ explicit report_blocked
+       → BLOCKED
 ```
 
-Loop budget: 10 tool calls total (read_file + install + check_command counts each).
+## 8. Failure modes & escalation enum
 
-## 8. Failure modes & escalation
-
-| failure | SRE response |
+| `blocked_reason` enum value | when |
 |---|---|
-| Network failure during install | retry the install once with same params |
-| Install command exit-non-zero | try ONE alternative path (apt→pip→curl), then BLOCKED |
-| Loop budget exhausted | PARTIAL with installed list + missing list |
-| `sudo` denied | BLOCKED ("sandbox lacks sudo for system package install") |
-| Workflow uses `${{ matrix.* }}` expressions essential for command execution | BLOCKED ("workflow requires GitHub Actions context for matrix expansion") |
-| `container:` directive in workflow | BLOCKED ("upstream uses custom container; out of scope for v3") |
-| LLM produces malformed tool call | retry once; second malformed → BLOCKED |
-| LLM tries to call disallowed tool | refuse silently, show available-tools error in next observation |
+| `gha_context_required` | workflow uses `${{ matrix.* }}` essential to command execution |
+| `services_required` | workflow has `services:` block (sidecar DBs) |
+| `custom_container` | workflow has `container:` directive |
+| `sudo_denied` | system install needed but sudo unavailable |
+| `tool_unavailable` | tool can't be installed via any method (apt + pip + curl all failed) |
+| `loop_exhausted` | budget/iteration cap before all gaps closed (when fallback also unavailable) |
+| `evidence_missing` | LLM tried to install something with no evidence in the repo |
+| `tool_chain_blocked` | install A succeeded but tool A needs B which isn't installable |
 
 ## 9. Testing strategy
 
-Three tiers + a canary, mirroring the bug-#9/#10/#11 discipline.
+Three tiers + canary, with **explicit fixtures for the hard cases gap #5 surfaced**.
 
-### Tier-1 — fast, no Docker, no LLM (target < 5s)
+### Tier-1 (no Docker, no LLM, < 5s)
 
-Unit tests for tool implementations:
-- `read_file`, `list_workflows` against in-memory fixture repos
-- `check_command_available` (mock subprocess)
-- `install_apt`, `install_pip`, `install_via_curl` (mock subprocess + assert command shape)
-- Output schema validation (`final_status` ∈ {READY,PARTIAL,BLOCKED})
-- System prompt parser: regex fixture LLM outputs and assert tool dispatch
-- Loop-budget enforcement: mock LLM emits 11 tool_use messages, assert PARTIAL after 10
+Tool-level + loop-level unit tests:
+- Each tool's input validation (evidence required, domain whitelist, etc.)
+- Loop budget enforcement (mock LLM emits 11 tool_use → assert PARTIAL after 10)
+- Token budget enforcement (mock LLM that returns 60k-token responses → abort)
+- Cache memoization (insert pretend cache row → assert plan replayed without LLM)
+- Provider degradation (mock LLM raises 3× → assert fallback path returns PARTIAL with det_spec)
+- Decision tree (no gaps → no LLM call ever invoked; mock LLM is verified untouched)
 
-Fixture repos:
-- `tests/integration/v3_harness/fixtures/python_uv/` — pyproject + workflow with setup-uv
-- `tests/integration/v3_harness/fixtures/python_pip_only/` — vanilla pip
-- `tests/integration/v3_harness/fixtures/node_pnpm/` — package.json with pnpm
-- `tests/integration/v3_harness/fixtures/blocked_container/` — workflow with `container:` directive
+### Tier-2 (real Postgres, mocked LLM, < 30s)
 
-### Tier-2 — real Postgres, mocked LLM (target < 30s)
+Run full SRE setup task end-to-end with scripted LLM, against fixture repos:
 
-Run full SRE setup task end-to-end with a scripted LLM:
-- Fixture: `python_uv` → scripted LLM emits read_workflow + install_pip(uv) + check + report_ready
-  - Assert: capabilities_installed includes uv; final_status=READY; Task.output schema valid
-- Fixture: `blocked_container` → scripted LLM identifies `container:` and emits report_blocked
-  - Assert: final_status=BLOCKED; blocked_reason mentions "custom container"
-- Fixture: budget-exhausted (script LLM into 11 tool calls)
-  - Assert: final_status=PARTIAL; setup_log has exactly 10 tool entries
+| fixture | expected outcome |
+|---|---|
+| `python_uv` (setup-uv@v8 + uvx tox) | READY, capabilities=[uv,tox], 1 LLM call |
+| `python_pip_only` (vanilla pyproject) | READY, no LLM call (deterministic suffices) |
+| `python_poetry` (poetry-based) | READY, capabilities=[poetry], 1 LLM call |
+| `node_pnpm` (package.json + setup-pnpm) | READY, capabilities=[node, pnpm] |
+| **`monorepo_subdir`** (root workflow with `working-directory: backend/`) | READY, install scoped to backend/ deps |
+| **`matrix_narrowed`** (workflow has matrix py 3.10/3.11/3.12, failing run was 3.12) | READY, sandbox uses 3.12 specifically |
+| **`composite_action`** (workflow uses local `./.github/actions/setup`) | READY, recursively reads composite, gets uv |
+| **`conditional_install`** (`if: matrix.os == 'ubuntu-latest'` block with `apt install`) | READY, installs unconditionally (sandbox is linux) |
+| **`gha_required`** (workflow needs `${{ matrix.python-version }}` literal in cmd) | BLOCKED with `gha_context_required` |
+| **`custom_container`** (`container: ghcr.io/example:latest`) | BLOCKED with `custom_container` |
+| **`hallucination_attempt`** (LLM scripted to install `numpy` with fake evidence_line=999) | install rejected; tool returns evidence-validation error |
+| **`provider_degraded`** (LLM mock raises 3× consecutive) | PARTIAL, fallback_used=true |
+| **`cache_hit`** (pre-populate sre_setup_cache for fixture's hash) | READY, cache_hit=true, no LLM call |
 
-### Tier-3 — real Docker, mocked LLM (target < 2 min, opt-in via env var)
+### Tier-3 (real Docker, mocked LLM, < 2 min, opt-in via `RUN_TIER3=1`)
 
-Provisions an actual sandbox container, runs scripted install commands:
-- Fixture: `python_uv` with real `pip install uv` → assert `uv --version` works
-- Fixture: `blocked_container` → assert sandbox not even created
-- Tests are GATED on `RUN_TIER3=1` env var so default test runs stay fast
+For three core fixtures (`python_uv`, `python_pip_only`, `python_poetry`), provision a real container, run real install commands, assert tools work end-to-end.
 
-### Canary — real LLM, real Docker, real prod
+### Canary (real LLM, real Docker, real prod)
 
-Three runs:
-1. **Internal testbed coverage cell** — regression check; expect SHIPPED unchanged.
-2. **Internal testbed all 4 cells** — bulk regression; expect 4/4 SHIP unchanged.
-3. **Humanize lint cell** — primary unlock; expect SHIPPED in a single iter (no iter-2). Validates the agentic SRE installs `uv` correctly.
-4. (Stretch) **One new external Python repo with poetry or pdm** — proves language-agnostic claim for Python siblings.
-
-Success threshold: 4/4 internal still green AND humanize SHIPS in single iter AND new external repo SHIPS.
+Run order:
+1. **Internal testbed all 4 cells** — must SHIP unchanged (regression).
+2. **Humanize lint cell** — must SHIP in single iter (primary unlock).
+3. **One new external Python repo** using poetry or pdm — must SHIP without manual config.
+4. **(Stretch)** Re-run testbed with `RUN_NO_DETERMINISTIC=1` env override (force agentic path always) — confirm agentic path also works alone, not just as augmentation.
 
 ## 10. Execution plan (phased, with checkpoints)
 
-### Phase 1 — Tools (Day 1, ~4-6 hours)
-- [ ] Implement read_file, list_workflows, exec_in_sandbox, check_command_available
-- [ ] Implement install_apt, install_pip, install_via_curl
-- [ ] Implement report_ready, report_partial, report_blocked (sentinel tools)
-- [ ] Tier-1 tests for each tool
-- [ ] **Checkpoint**: tier-1 green; can dispatch tools manually from a python REPL
+### Phase 0 — Tools + validation (Day 1, ~3-4 hours)
+- [ ] Tool implementations with strict input validation
+- [ ] Evidence-checking helper (read file, find package name in line span)
+- [ ] Domain whitelist for install_via_curl
+- [ ] Tier-1 tests for each tool's validation
+- [ ] **Checkpoint**: tier-1 tools green; manually call from REPL works
 
-### Phase 2 — Loop + LLM wiring (Day 1-2, ~4 hours)
-- [ ] `run_sre_setup_subagent` function modeled on `run_coder_subagent`
-- [ ] Sonnet provider call wired (reuse `build_sonnet_coder_callable` pattern)
-- [ ] System prompt v1 finalized
-- [ ] Loop-budget enforcement
-- [ ] Tier-1 tests with scripted LLM
+### Phase 1 — Loop + LLM wiring (Day 1-2, ~4 hours)
+- [ ] `run_sre_setup_subagent` modeled on `run_coder_subagent`
+- [ ] Sonnet provider call (reuse `build_sonnet_coder_callable` pattern)
+- [ ] Token budget + iteration cap + provider-strikes counter
+- [ ] System prompt v2 finalized
+- [ ] Tier-1 tests with scripted LLM (incl. hallucination, degradation, exhaustion)
 - [ ] **Checkpoint**: scripted-LLM tests pass; output schema validates
 
-### Phase 3 — Integration (Day 2, ~3-4 hours)
-- [ ] Update `cifix_sre._execute_setup` to call `run_sre_setup_subagent`
-- [ ] Update Task.output schema (capabilities_installed, final_status, etc.)
-- [ ] Update commander to handle PARTIAL/BLOCKED states
-- [ ] Update existing tier-1 + tier-2 tests for new schema
+### Phase 2 — Memoization + cache (Day 2, ~2 hours)
+- [ ] Alembic migration: `sre_setup_cache` table
+- [ ] Cache key computation (sha256 of relevant files)
+- [ ] Cache lookup before LLM invocation; replay on hit
+- [ ] Cache write on READY
+- [ ] **Checkpoint**: tier-2 cache_hit fixture passes
+
+### Phase 3 — Hybrid integration (Day 2, ~3 hours)
+- [ ] Update `cifix_sre._execute_setup` with hybrid decision tree
+- [ ] Backwards-compatible Task.output schema
+- [ ] Commander handling of PARTIAL/BLOCKED
+- [ ] TL prompt updates in `cifix_techlead.py`
+- [ ] Update existing tier-1+tier-2 tests for new schema
 - [ ] **Checkpoint**: existing harness still green; new schema tests pass
 
-### Phase 4 — Validation (Day 2-3, ~3 hours)
-- [ ] Tier-3 docker-real tests (opt-in)
+### Phase 4 — Validation (Day 2-3, ~4 hours)
+- [ ] All 13 tier-2 fixtures green
+- [ ] Tier-3 (opt-in) green
 - [ ] Local end-to-end run on fixture repos
-- [ ] **Checkpoint**: tier-3 green when run; mocked end-to-end green
+- [ ] **Checkpoint**: success criteria measurement script ready
 
 ### Phase 5 — Deploy + canary (Day 3, ~3 hours)
-- [ ] Tag v1.4.0 (architectural change merits minor bump)
-- [ ] Deploy via `deploy.sh`
-- [ ] Verify schema migration (none needed, just code change)
-- [ ] Run testbed 4/4 — must SHIP unchanged
-- [ ] Run humanize lint cell — must SHIP in single iter
-- [ ] (Stretch) Run one new external Python repo
-- [ ] **Checkpoint**: success criteria from §2 all met
+- [ ] Tag v1.4.0
+- [ ] Deploy via `deploy.sh` (runs alembic migration)
+- [ ] Verify schema in prod + agent code shipped
+- [ ] Run canary sequence (testbed 4/4 → humanize → new external)
+- [ ] **Checkpoint**: success criteria from §11 all met
 
-### Phase 6 — Document & wrap (Day 3, ~1 hour)
-- [ ] Update [docs/ci-fixer-v3-webhook-coordination.md](ci-fixer-v3-webhook-coordination.md) with reference to this doc
-- [ ] Update memory: bug #11/#12/#13 status, agentic-SRE status
-- [ ] Mark Path 1 (fat base image) as superseded in any plan/changelog references
-- [ ] Update website changelog v1.4.0
+### Phase 6 — Operate + observe (Day 3, ~2 hours)
+- [ ] Add structured trace per SRE setup run (existing `setup_log` extended)
+- [ ] Simple SQL views for observability:
+  - "% runs reaching READY/PARTIAL/BLOCKED last 7d"
+  - "Top 10 install methods used"
+  - "Cache hit rate"
+  - "Fallback rate (provider degraded)"
+- [ ] Update memory + website changelog v1.4.0
 
-## 11. Success criteria (measurable)
+## 11. Success criteria — **numeric and measurable**
 
-| # | criterion | measurement |
-|---|---|---|
-| 1 | No regression on internal Python | `tests/integration/v3_harness*/` all green; testbed 4/4 cells SHIP |
-| 2 | Humanize lint cell SHIPS in single iter | task chain has ≤4 tasks; no iter-2; 1 commit on src only |
-| 3 | New external Python repo works | one new repo (poetry, pdm, or pip-tools based) SHIPS without manual config |
-| 4 | Cost per run delta | < $0.20 average; tracked via task tokens_used field |
-| 5 | Wall-clock delta | < 90s average for runs that need extra tool installs |
-| 6 | Test coverage | tier-1 + tier-2 covers ≥ 80% of new SRE code |
-| 7 | Cross-agent contract clean | TL never produces `confidence=0.0` for env reasons in 10 consecutive canary runs |
+Gap #7 from v1 review. All 7 must be met to declare v1.4.0 ready:
 
-## 12. Open questions
+| # | criterion | measurement | target |
+|---|---|---|---|
+| 1 | Internal Python regression | testbed 4/4 cells SHIP across 5 consecutive runs | 4/4 × 5 |
+| 2 | Humanize lint single-iter | task chain ≤ 4 tasks; only src/ touched | confirmed |
+| 3 | New external Python repo SHIPS | one new repo (poetry, pdm, or rye-based) commits successfully | confirmed |
+| 4 | Reliability — terminal state rate | % SRE tasks reaching READY/PARTIAL/BLOCKED (not stuck/error) | ≥ 95% |
+| 5 | Reliability — false install rate | % installed packages without valid repo evidence | < 1% |
+| 6 | Cost overhead vs deterministic | wall-clock delta on no-gap runs (where LLM never invoked) | ≤ 5% |
+| 7 | Cost overhead with gaps | dollar cost per run with LLM invocation | < $0.20 avg |
+| 8 | TL contract clean | TL produces confidence=0.0 for env reasons in 10 consecutive canary runs | 0 occurrences |
 
-1. **Provider choice**: Sonnet (cheap, pattern-match) or GPT-4o (better tool-use sequencing)? Recommend start with Sonnet, A/B if tool sequencing degrades.
-2. **Caching**: should we memoize "this repo's setup looks like X" to skip the LLM loop on repeat runs? Defer to v1.4.1 — first prove the loop works.
-3. **Verify mode**: should it ALSO be agentic? Defer; today's deterministic verify works once setup is correct.
-4. **Tool variety**: do we need `install_brew` for macOS-base sandboxes? No — sandbox is Linux-only by design.
-5. **Network egress**: agentic SRE will hit pypi.org, github.com, raw.githubusercontent.com. Already allowed in sandbox. Document allowed domains.
-6. **Audit trail**: setup_log entries must be PII-free (no commit shas of customer code in logs). Standard practice; just call out.
+## 12. Open questions deferred to implementation
 
-## 13. Appendix — example trace (humanize lint)
+1. **Provider choice**: Sonnet vs Haiku? Sonnet for now — cost/latency comparable, reasoning headroom helpful. A/B with Haiku in v1.4.1 if cost dominates.
+2. **Cache TTL**: 24h proposed. Could be longer (7d) given setup file changes are rare. Start with 24h, observe.
+3. **Cache key vs version**: should `python>=3.11` in pyproject vs `python>=3.12` invalidate cache? Currently yes (any setup-file change invalidates). May be over-aggressive; observe.
+4. **Composite action recursion**: how deep? Cap at 3 levels.
+5. **Network egress logging**: log every install_* outbound call for SOC2 / supply chain review later.
+
+## 13. Appendix — example traces
+
+### Example A — fast path, no LLM (most runs)
 
 ```
-Tool: list_workflows
-Result: [".github/workflows/lint.yml", ".github/workflows/test.yml", ...]
+Phase: deterministic_detect
+  env_detector.detect_env(workspace) → spec={python_version: 3.12, system_deps: [], install_commands: ["pip install -e .[dev]"]}
 
-Tool: read_file(".github/workflows/lint.yml")
-Result: <yaml content showing setup-uv@v8 + uvx tox -e mypy>
+Phase: base_provision
+  apt_install_baseline → ok
+  pip install -e .[dev] → ok (3s)
 
-Tool: install_pip(["uv"])
-Result: {exit_code: 0, stdout: "Successfully installed uv-0.8.4"}
+Phase: check_gaps
+  observed_failing_commands = ["ruff check ."]
+  first_tokens = ["ruff"]
+  check_command_available("ruff") → found, version 0.4.1
+  gaps = []
 
-Tool: check_command_available("uv")
-Result: {found: true, version: "uv 0.8.4"}
-
-Tool: install_pip(["tox", "tox-uv"])
-Result: {exit_code: 0}
-
-Tool: check_command_available("tox")
-Result: {found: true, version: "tox 4.27.0"}
-
-Tool: report_ready(
-  capabilities=[{tool:"uv",method:"pip"},{tool:"tox",method:"pip"}],
-  observed_failing_commands_status=[
-    {cmd:"uvx --with tox-uv tox -e mypy", first_token_available: true}
-  ]
-)
+Phase: ready
+  final_status=READY, tokens_used=0, cache_hit=false (key written)
 ```
 
-Total: 6 tool calls, ~30s wall, ~3000 input tokens + 200 output ≈ $0.04.
+### Example B — humanize, with LLM augmentation
+
+```
+Phase: deterministic_detect → spec={python_version: 3.12, system_deps: [], install_commands: ["pip install -e ."]}
+Phase: base_provision → ok
+Phase: check_gaps → gaps=["uvx"] (workflow uses uvx, env_detector missed it)
+Phase: memoize_lookup → MISS
+
+Phase: agentic_install (Sonnet)
+  Tool: list_workflows → [".github/workflows/lint.yml", "test.yml", ...]
+  Tool: read_file(".github/workflows/lint.yml") → <yaml with setup-uv@v8>
+  Tool: install_pip(["uv"], evidence_file=".github/workflows/lint.yml", evidence_line=18)
+        → evidence valid (line 18: "uses: astral-sh/setup-uv@v8.0.0"), exit 0
+  Tool: check_command_available("uv") → found, 0.8.4
+  Tool: check_command_available("uvx") → found (bundled with uv)
+  Tool: report_ready(capabilities=[{tool:"uv", version:"0.8.4", install_method:"pip", evidence_ref:".github/workflows/lint.yml:18"}])
+
+Result: final_status=READY, tokens_used=~4500, cache_key written
+Total wall: ~30s, cost ~$0.05
+```
+
+### Example C — blocked (custom container)
+
+```
+Phase: deterministic → spec
+Phase: base_provision → ok
+Phase: check_gaps → gaps=["python3.12-something-weird"]
+Phase: agentic_install
+  Tool: list_workflows → ["test.yml"]
+  Tool: read_file("test.yml") → <yaml with `container: ghcr.io/example/ci:v1`>
+  Tool: report_blocked(reason="custom_container",
+                      evidence={"file":".github/workflows/test.yml","line":12})
+
+Result: final_status=BLOCKED, run terminated, escalation_reason="sre_blocked: custom_container"
+```
