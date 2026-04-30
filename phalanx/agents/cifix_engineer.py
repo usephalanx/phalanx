@@ -96,6 +96,31 @@ class CIFixEngineerAgent(BaseAgent):
                 output={},
                 error="upstream cifix_techlead fix_spec not found or invalid",
             )
+
+        # Guard against low-confidence specs FIRST — when TL legitimately says
+        # "no code fix possible" (sandbox env mismatch, CI-infra-only failure,
+        # PR meta gate, etc.) it sets confidence=0.0 with empty affected_files
+        # and may also leave failing_command empty. Checking confidence FIRST
+        # gives those cases a clean low_confidence skip rather than a
+        # misleading "no failing_command" error. Bug #13 (humanize iter-2,
+        # 2026-04-28: TL flagged "uv/uvx missing in sandbox" with conf 0.0 →
+        # engineer failed on failing_command guard before the confidence
+        # check could run).
+        confidence = fix_spec.get("confidence") or 0.0
+        if confidence < 0.5:
+            return AgentResult(
+                success=False,
+                output={
+                    "committed": False,
+                    "skipped_reason": "low_confidence",
+                    "tech_lead_confidence": confidence,
+                    "tech_lead_open_questions": fix_spec.get("open_questions", []),
+                    "tech_lead_root_cause": fix_spec.get("root_cause", ""),
+                    "tech_lead_fix_spec": fix_spec.get("fix_spec", ""),
+                },
+                error=f"Tech Lead confidence {confidence:.2f} below 0.5 threshold",
+            )
+
         # Prefer the exact failing_command Tech Lead observed in the CI log.
         # Fall back to ci_context (simulate path can seed it up-front).
         failing_command = fix_spec.get("failing_command") or ci_context.get("failing_command") or ""
@@ -106,24 +131,6 @@ class CIFixEngineerAgent(BaseAgent):
                 error="no failing_command available from fix_spec or ci_context",
             )
         ci_context["failing_command"] = failing_command
-
-        # Guard against low-confidence specs — escalate without attempting.
-        # Threshold matches the contract in Tech Lead's system prompt:
-        #   "confidence < 0.5 and list open_questions" (honesty clause)
-        # If TL itself flagged the spec as below 0.5, don't run against it —
-        # the commander can decide to re-dispatch or escalate.
-        confidence = fix_spec.get("confidence") or 0.0
-        if confidence < 0.5:
-            return AgentResult(
-                success=False,
-                output={
-                    "committed": False,
-                    "skipped_reason": "low_confidence",
-                    "tech_lead_confidence": confidence,
-                    "tech_lead_open_questions": fix_spec.get("open_questions", []),
-                },
-                error=f"Tech Lead confidence {confidence:.2f} below 0.5 threshold",
-            )
 
         affected_files = fix_spec.get("affected_files") or []
         if not affected_files:
