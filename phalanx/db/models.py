@@ -858,6 +858,26 @@ class CIFixRun(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
 
+class SREsSetupCache(Base):
+    """Memoization cache for agentic SRE setup plans (Phase 2).
+
+    cache_key = sha256 of relevant setup files (pyproject.toml, workflow YAMLs,
+    pre-commit-config, tool-versions). On hit AND status=READY AND ≤24h old,
+    the cached install_plan is replayed deterministically — no LLM call.
+
+    Migration: 20260430_0001.
+    """
+
+    __tablename__ = "sre_setup_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    install_plan: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    final_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
 class CIFailureFingerprint(Base):
     """
     Stable identity for a CI failure class.
