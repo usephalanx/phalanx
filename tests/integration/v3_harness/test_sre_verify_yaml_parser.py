@@ -208,3 +208,76 @@ def test_uninteresting_commands_filtered_out(tmp_path):
     cmds = _collect_verify_commands_for_test(tmp_path, original_failing_command="")
     just_commands = [c for _, c in cmds]
     assert just_commands == ["ruff check ."], just_commands
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bug #14 — GHA expression literals
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_skips_commands_with_gha_matrix_expression(tmp_path):
+    """Bug #14 (2026-04-30 humanize canary): workflow YAML commands that
+    contain ${{ matrix.* }} expressions only expand inside GitHub Actions.
+    Running them literally in the sandbox triggers `sh: 1: Bad substitution`,
+    which iter-1 SRE verify mistakes for a real CI failure.
+    Parser must skip these entirely."""
+    _write_workflow(
+        tmp_path,
+        dedent(
+            """\
+            name: Test
+            on: [pull_request]
+            jobs:
+              test:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: uvx --python ${{ matrix.python-version }} --with tox-uv tox -e py
+                  - run: pytest -xvs
+            """
+        ),
+    )
+    cmds = _collect_verify_commands_for_test(tmp_path, original_failing_command="")
+    just_commands = [c for _, c in cmds]
+    assert "uvx --python ${{ matrix.python-version }} --with tox-uv tox -e py" not in just_commands
+    # The non-GHA command (pytest) is still picked up.
+    assert any(c.startswith("pytest") for c in just_commands), just_commands
+
+
+def test_skips_commands_with_gha_env_expression(tmp_path):
+    """Other GHA expression forms (env, secrets, github.) also unsafe outside Actions."""
+    _write_workflow(
+        tmp_path,
+        dedent(
+            """\
+            name: CI
+            on: [pull_request]
+            jobs:
+              test:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: pytest --cov-fail-under=${{ env.COV_THRESHOLD }}
+                  - run: ruff check .
+            """
+        ),
+    )
+    cmds = _collect_verify_commands_for_test(tmp_path, original_failing_command="")
+    just_commands = [c for _, c in cmds]
+    for c in just_commands:
+        assert "${{" not in c, f"GHA expression leaked through: {c!r}"
+    # ruff (no expression) survives.
+    assert any(c.startswith("ruff") for c in just_commands), just_commands
+
+
+def test_original_failing_command_passthrough_unaffected(tmp_path):
+    """If the COMMANDER passes a failing_command that happens to contain
+    ${{ ... }}, we still include it (caller's responsibility, our log
+    will surface it). The skip-rule applies only to workflow-derived
+    commands."""
+    _write_workflow(tmp_path, "name: x\non: [push]\njobs: {}\n")
+    cmds = _collect_verify_commands_for_test(
+        tmp_path,
+        original_failing_command="uvx --python ${{ matrix.python-version }} tox",
+    )
+    just_commands = [c for _, c in cmds]
+    # Original failing command IS preserved (commander's call, not parser's).
+    assert any("${{" in c for c in just_commands)

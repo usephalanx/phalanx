@@ -444,6 +444,20 @@ def _collect_verify_commands(
                 )
                 if not first_line or first_line in seen:
                     continue
+                # Bug #14 (2026-04-30 humanize canary): GHA expressions like
+                # `${{ matrix.python-version }}` ONLY expand inside GitHub
+                # Actions. Running such commands in the sandbox produces
+                # `sh: 1: Bad substitution`. Skip them — they're not
+                # meaningfully runnable outside GHA, and verify-mode treats
+                # their failure as a real CI fail (which it isn't).
+                if "${{" in first_line:
+                    log.info(
+                        "v3.sre.skipping_gha_only_command",
+                        cmd=first_line[:200],
+                        workflow=wf.stem,
+                        job=job_name,
+                    )
+                    continue
                 if not any(first_line.startswith(p) for p in _INTERESTING_COMMAND_PREFIXES):
                     continue
                 out.append((f"{wf.stem}.{job_name}", first_line))
