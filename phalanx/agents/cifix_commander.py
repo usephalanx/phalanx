@@ -54,6 +54,13 @@ _MAX_WAIT_SECONDS = 2700  # 45 min — CI fixes should never take longer
 # failures, not so many that cost balloons on pathological repos.
 _MAX_ITERATIONS = 3
 
+# v1.6 Phase 2 — per-run cost cap. Aggregate `tasks.tokens_used` per run;
+# abort dispatch of any further iteration if the running estimate exceeds
+# the cap. Conservative blended rate covers GPT-5.4 input+output + Sonnet
+# input+output; a finer split per-model lives in v1.7.
+_COST_PER_TOKEN_USD: float = 20e-6  # blended; conservative (real avg ~$10/1M)
+_MAX_RUN_COST_USD: float = 1.00     # hard abort above this
+
 # Chain of ceremonial transitions from VERIFYING to SHIPPED. We don't invoke
 # approval gates for CI fixes (they're auto-commit), but we respect the state
 # machine edges — same pattern build-flow Commander uses.
@@ -205,6 +212,37 @@ class CIFixCommanderAgent(BaseAgent):
 
             if verdict == "all_green":
                 return await self._finalize_shipped(ci_context, verify_output)
+
+            # v1.6 Phase 2 — per-run cost cap. Check BEFORE deciding to
+            # dispatch another iteration. The MAX_ITERATIONS guard caps
+            # COUNT; this caps SPEND. Both must hold.
+            should_abort, estimate, total_tokens = await self._check_cost_cap()
+            if should_abort:
+                self._log.warning(
+                    "cifix_commander.cost_cap_exceeded",
+                    run_id=self.run_id,
+                    tokens=total_tokens,
+                    estimate_usd=round(estimate, 3),
+                    cap_usd=_MAX_RUN_COST_USD,
+                )
+                await self._transition_run(
+                    "VERIFYING",
+                    "FAILED",
+                    error_message=(
+                        f"cost_cap_exceeded: ~${estimate:.2f} > ${_MAX_RUN_COST_USD} "
+                        f"({total_tokens} tokens)"
+                    ),
+                )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "verdict": "cost_cap_exceeded",
+                        "iterations_used": iterations_done,
+                        "tokens_used": total_tokens,
+                        "estimated_cost_usd": round(estimate, 3),
+                    },
+                    error=f"cost_cap_exceeded: ~${estimate:.2f} > ${_MAX_RUN_COST_USD}",
+                )
 
             # Non-green (or missing verdict — treat as inconclusive). If we
             # still have iterations left, spawn another (techlead, engineer,
@@ -465,6 +503,25 @@ class CIFixCommanderAgent(BaseAgent):
             iteration=iteration,
             added_seq_range=(current_max + 1, current_max + 3),
         )
+
+    async def _check_cost_cap(self) -> tuple[bool, float, int]:
+        """Returns (should_abort, current_estimate_usd, total_tokens).
+
+        Aggregates tasks.tokens_used for this run; returns abort=True if
+        estimate > _MAX_RUN_COST_USD. Caller is responsible for transitioning
+        Run.status to FAILED with a structured error_message on abort.
+        """
+        from sqlalchemy import func  # noqa: PLC0415
+
+        async with get_db() as session:
+            result = await session.execute(
+                select(func.coalesce(func.sum(Task.tokens_used), 0)).where(
+                    Task.run_id == self.run_id
+                )
+            )
+            total_tokens = int(result.scalar() or 0)
+        estimate = total_tokens * _COST_PER_TOKEN_USD
+        return (estimate > _MAX_RUN_COST_USD, estimate, total_tokens)
 
     async def _read_last_sre_verify_verdict(
         self,

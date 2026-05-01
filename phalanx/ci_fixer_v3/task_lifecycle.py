@@ -38,6 +38,9 @@ async def persist_task_completion(task_id: str, result: AgentResult) -> None:
     """
     new_status = "COMPLETED" if result.success else "FAILED"
     err_text = (result.error or "")[:2000] if not result.success else None
+    # v1.6 Phase 2: tokens_used aggregated at the Task level so commander's
+    # cost cap can SUM efficiently. Defaults 0 when agent didn't emit a count.
+    tokens = int(getattr(result, "tokens_used", 0) or 0)
     try:
         async with get_db() as session:
             await session.execute(
@@ -47,6 +50,7 @@ async def persist_task_completion(task_id: str, result: AgentResult) -> None:
                     status=new_status,
                     output=result.output,
                     error=err_text,
+                    tokens_used=tokens,
                     completed_at=datetime.now(UTC),
                 )
             )

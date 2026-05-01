@@ -233,6 +233,10 @@ class Task(Base):
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     escalation_reason: Mapped[str | None] = mapped_column(Text)
     risk_flags: Mapped[list] = mapped_column(ARRAY(String), default=list)
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    """v1.6 cost-cap aggregator. Filled by persist_task_completion from
+    AgentResult.tokens_used. Sum(tasks.tokens_used) per run drives the
+    commander's cost cap. Migration: 20260502_0001."""
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
