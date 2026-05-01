@@ -89,15 +89,28 @@ When you have enough evidence, end your turn with a single markdown fenced
   "root_cause": "one-sentence diagnosis of why CI failed",
   "affected_files": ["repo-relative/path.py"],
   "fix_spec": "natural-language description of the minimum edit required",
-  "failing_command": "exact shell command the engineer must re-run in sandbox",
+  "failing_command": "exact shell command that was failing in CI",
+  "verify_command": "exact shell command engineer runs after applying the patch to confirm success",
+  "verify_success": {
+    "exit_codes": [0],
+    "stdout_contains": null,
+    "stderr_excludes": null
+  },
   "confidence": 0.0,
-  "open_questions": ["any unknowns the engineer should be aware of"]
+  "open_questions": ["any unknowns the engineer should be aware of"],
+  "self_critique": {
+    "ci_log_addresses_root_cause": true,
+    "affected_files_exist_in_repo": true,
+    "verify_command_will_distinguish_success": true,
+    "notes": "one-sentence senior-engineer-style sanity check"
+  }
 }
 ```
 
-`failing_command` is REQUIRED and is the sandbox verification gate — the
-engineer will run this exact command and refuse to commit unless it exits 0.
-Choose it carefully, following these rules:
+`failing_command` documents what was failing in CI. `verify_command` is the
+sandbox verification gate — the engineer runs this exact command after
+applying your patch and uses `verify_success` to interpret the result.
+Choose `failing_command` carefully, following these rules:
 
   DO pick the NARROWEST command that re-runs JUST the check that failed.
   If Ruff reported E501 and CI ran `prek run --all-files` which invokes
@@ -127,12 +140,93 @@ Choose it carefully, following these rules:
   log shows pytest collected 300 tests and only test_login failed,
   emit `pytest <path>::test_login`, not the full pytest command.
 
+How to choose `verify_command` (v1.5.0 contract):
+
+  DEFAULT: when the fix is to change code so a failing test passes,
+  set verify_command = failing_command. Engineer runs it and exits 0.
+  Example:
+    failing_command:  "ruff check src/foo.py"
+    verify_command:   "ruff check src/foo.py"        (same)
+    verify_success:   {"exit_codes": [0]}
+
+  FIX REMOVES A TEST: if your fix_spec is "delete test_X", the
+  failing_command would have been a pytest selector targeting test_X.
+  After the fix, that selector matches nothing → pytest exit 4. Use
+  verify_command targeting the WHOLE suite (or parent module), and
+  set exit_codes [0] only — broken test is gone, others must still pass.
+  Example:
+    failing_command:  "pytest tests/foo.py::test_bar -xvs"
+    verify_command:   "pytest tests/"                (whole suite)
+    verify_success:   {"exit_codes": [0]}
+
+  FIX RENAMES OR MOVES: verify_command targets the new name/location.
+  Example:
+    failing_command:  "pytest tests/old_name.py::test_x"
+    verify_command:   "pytest tests/new_name.py::test_x"
+    verify_success:   {"exit_codes": [0]}
+
+  FIX IS ENV/CONFIG-ONLY (yaml/toml/ini): verify_command exercises the
+  config path, not a test runner.
+  Example:
+    fix_spec:         "set tool.ruff.line-length = 120 in pyproject.toml"
+    failing_command:  "ruff check ."
+    verify_command:   "python -c 'import tomllib; assert tomllib.loads(open(\"pyproject.toml\",\"rb\").read())[\"tool\"][\"ruff\"][\"line-length\"] == 120'"
+    verify_success:   {"exit_codes": [0]}
+
+  FIX BUMPS A LIBRARY VERSION: verify the import + version.
+  Example:
+    fix_spec:         "bump pydantic to 2.10"
+    verify_command:   "python -c 'import pydantic; print(pydantic.VERSION)'"
+    verify_success:   {"exit_codes": [0], "stdout_contains": "2.10"}
+
+How to fill `verify_success`:
+
+  exit_codes: list of acceptable exit codes (default [0]). Add other
+  values ONLY when explicitly justified by the fix's intent. NEVER
+  add non-zero codes "just in case" — that defeats the gate.
+
+  stdout_contains: optional. A required substring. Use sparingly; only
+  when exit code alone can't distinguish success.
+
+  stderr_excludes: optional. A forbidden substring. Use for fixes that
+  remove deprecated calls (assert no DeprecationWarning) etc.
+
+How to fill `self_critique` (a senior-engineer-style review of YOUR own diagnosis):
+
+  ci_log_addresses_root_cause: did your root_cause directly correspond
+  to the actual error message you read in the CI log via fetch_ci_log?
+  If you summarized + extrapolated rather than matched verbatim, this is
+  false.
+
+  affected_files_exist_in_repo: did you confirm via read_file or glob
+  that each path in affected_files actually exists on this PR's branch?
+  Don't list a file you only inferred from CI output.
+
+  verify_command_will_distinguish_success: walk through what happens
+  when verify_command runs against the patched repo. Does exit code
+  actually flip from non-zero to in-range, OR does verify_success need
+  stdout/stderr matchers to disambiguate? If unsure, false.
+
+  notes: one sentence — what would a senior engineer flag in this
+  fix_spec on a code review? E.g., "fix is plausible but I can't
+  verify the import path is correct without running it" — that's a
+  legitimate self-critique note.
+
+  If any of the three booleans is false, you SHOULD investigate further
+  (re-read the CI log, glob for files, etc.) before emitting fix_spec.
+  If after iterating you still can't say all true, lower your
+  `confidence` to ≤ 0.5 and fill `open_questions` with the unknowns.
+
 CRITICAL: Your final turn must contain the fenced ```json``` block. You
 MAY include a short prose summary before it. You MUST NOT omit any of the
 six required keys (root_cause, affected_files, fix_spec, failing_command,
 confidence, open_questions) — every key must be present even when the
-value is an empty list or an empty string. A missing key causes an
-investigation failure and the run is escalated.
+value is an empty list or an empty string. The four v1.5.0 OPTIONAL keys
+(verify_command, verify_success, self_critique) are STRONGLY ENCOURAGED
+but a missing one falls back to the v1.4.x default (verify_command =
+failing_command, verify_success = {exit_codes:[0]}, self_critique
+omitted). A missing REQUIRED key causes an investigation failure and
+the run is escalated.
 
 Confidence 0.0-1.0. Be honest — if the fix is unclear, confidence < 0.5 and
 list open_questions. The engineer will escalate rather than guess.
@@ -186,9 +280,7 @@ class CIFixTechLeadAgent(BaseAgent):
         async with get_db() as session:
             task = await self._load_task(session)
             if task is None:
-                return AgentResult(
-                    success=False, output={}, error=f"Task {self.task_id} not found"
-                )
+                return AgentResult(success=False, output={}, error=f"Task {self.task_id} not found")
             # Tech Lead reads ci_context from its own Task.description (seeded by
             # cifix_commander when persisting the DAG).
             ci_context = _parse_ci_context(task.description)
@@ -229,9 +321,7 @@ class CIFixTechLeadAgent(BaseAgent):
                 )
             except Exception as exc:
                 self._log.exception("cifix_techlead.clone_failed", error=str(exc))
-                return AgentResult(
-                    success=False, output={}, error=f"workspace clone failed: {exc}"
-                )
+                return AgentResult(success=False, output={}, error=f"workspace clone failed: {exc}")
 
         # Build an AgentContext reused from v2 — Tech Lead's tools don't need sandbox.
         ctx = _build_techlead_context(
@@ -357,9 +447,7 @@ async def _run_investigation_loop(
         # Record the assistant's turn in the history for the next round.
         from phalanx.ci_fixer_v2.agent import _assistant_message_content  # noqa: PLC0415
 
-        ctx.messages.append(
-            {"role": "assistant", "content": _assistant_message_content(response)}
-        )
+        ctx.messages.append({"role": "assistant", "content": _assistant_message_content(response)})
 
         if response.stop_reason == "end_turn" and not response.tool_uses:
             # Model thinks it's done. Parse the text for a JSON fix_spec.
@@ -392,13 +480,9 @@ async def _run_investigation_loop(
                 )
             if use.name not in _TECHLEAD_TOOLS:
                 # Shouldn't happen — LLM only sees TL tools — but belt and braces.
-                raise _InvestigationError(
-                    "forbidden_tool", f"Tech Lead tried to call {use.name!r}"
-                )
+                raise _InvestigationError("forbidden_tool", f"Tech Lead tried to call {use.name!r}")
             if not tools_base.is_registered(use.name):
-                raise _InvestigationError(
-                    "unregistered_tool", f"Tool {use.name!r} not in registry"
-                )
+                raise _InvestigationError("unregistered_tool", f"Tool {use.name!r} not in registry")
             tool = tools_base.get(use.name)
             try:
                 result = await tool.handler(ctx, use.input)
@@ -444,6 +528,23 @@ _FIX_SPEC_REQUIRED_KEYS = {
     "failing_command",
     "confidence",
     "open_questions",
+}
+
+# v1.5.0 contract additions — verify_command + verify_success matrix.
+# Kept OPTIONAL on the wire (backwards compat); engineer falls back to
+# failing_command + exit_code==0 when absent. See
+# docs/ci-fixer-v3-agent-contracts.md §4.
+_FIX_SPEC_OPTIONAL_KEYS = {
+    "verify_command",
+    "verify_success",
+    "self_critique",
+}
+
+# verify_success keys — closed schema on the matrix.
+_VERIFY_SUCCESS_KEYS = {
+    "exit_codes",  # list[int]; default [0]
+    "stdout_contains",  # str | None
+    "stderr_excludes",  # str | None
 }
 
 _JSON_FENCE_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -504,9 +605,59 @@ def _parse_fix_spec_from_text(text: str) -> dict | None:
             obj["confidence"] = float(obj["confidence"])
         except (TypeError, ValueError):
             continue
+
+        # v1.5.0 contract — validate + normalize OPTIONAL fields. Missing
+        # = backwards-compat defaults (engineer treats verify_command as
+        # failing_command and verify_success.exit_codes as [0]).
+        _normalize_v15_optional_fields(obj)
         return obj
 
     return None
+
+
+def _normalize_v15_optional_fields(obj: dict) -> None:
+    """In-place normalization of v1.5.0 contract additions.
+
+    - `verify_command`: str (drop if not str)
+    - `verify_success`: closed-schema dict; drop unknown keys; normalize
+      exit_codes to list[int] with [0] default; stdout_contains /
+      stderr_excludes must be str if present
+    - `self_critique`: pass-through dict (informational; not load-bearing)
+
+    Invalid optional fields are DROPPED rather than failing the parse —
+    we'd rather lose richness than reject a fix_spec on a typo.
+    """
+    # verify_command — keep iff str, else drop
+    vc = obj.get("verify_command")
+    if vc is not None and not isinstance(vc, str):
+        obj.pop("verify_command", None)
+
+    # verify_success — closed schema
+    vs = obj.get("verify_success")
+    if vs is not None:
+        if not isinstance(vs, dict):
+            obj.pop("verify_success", None)
+        else:
+            cleaned: dict = {}
+            ec = vs.get("exit_codes")
+            if isinstance(ec, list) and all(isinstance(x, int) for x in ec):
+                cleaned["exit_codes"] = ec or [0]
+            elif ec is None:
+                cleaned["exit_codes"] = [0]
+            else:
+                cleaned["exit_codes"] = [0]  # invalid → default
+
+            for matcher in ("stdout_contains", "stderr_excludes"):
+                m = vs.get(matcher)
+                if isinstance(m, str) and m:
+                    cleaned[matcher] = m
+
+            obj["verify_success"] = cleaned
+
+    # self_critique — pass-through dict, drop if not a dict
+    sc = obj.get("self_critique")
+    if sc is not None and not isinstance(sc, dict):
+        obj.pop("self_critique", None)
 
 
 _UNLABELED_FENCE_RE = re.compile(r"```\s*(\{.*?\})\s*```", re.DOTALL)
@@ -645,7 +796,7 @@ def _build_initial_message(ci_context: dict) -> str:
     if iteration and iteration > 1 and prior:
         failures_summary = "\n".join(
             f"  - job={f.get('name')!r}  exit={f.get('exit_code')}  "
-            f"cmd={f.get('cmd')!r}\n    stderr_tail: {f.get('stderr_tail','').strip()[:240]!r}"
+            f"cmd={f.get('cmd')!r}\n    stderr_tail: {f.get('stderr_tail', '').strip()[:240]!r}"
             for f in prior[:6]
         )
         header += (

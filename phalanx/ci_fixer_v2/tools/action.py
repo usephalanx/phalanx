@@ -60,16 +60,12 @@ RUN_IN_SANDBOX_SCHEMA = ToolSchema(
             "command": {
                 "type": "string",
                 "description": (
-                    "Shell command to execute (invoked as `sh -c <command>` "
-                    "inside the container)."
+                    "Shell command to execute (invoked as `sh -c <command>` inside the container)."
                 ),
             },
             "timeout_seconds": {
                 "type": "integer",
-                "description": (
-                    "Optional timeout in seconds (clamped to [5, 600]). "
-                    "Default: 120."
-                ),
+                "description": ("Optional timeout in seconds (clamped to [5, 600]). Default: 120."),
                 "minimum": _TIMEOUT_MIN_S,
                 "maximum": _TIMEOUT_MAX_S,
             },
@@ -92,9 +88,7 @@ def _build_exec_argv(container_id: str, shell_cmd: str) -> list[str]:
 # Test seam: runs argv with a timeout, returns (exit_code, stdout, stderr,
 # timed_out, elapsed_seconds). Tests patch this directly to return canned
 # outcomes without spawning real subprocesses.
-async def _exec_argv(
-    argv: list[str], timeout_seconds: int
-) -> tuple[int, str, str, bool, float]:
+async def _exec_argv(argv: list[str], timeout_seconds: int) -> tuple[int, str, str, bool, float]:
     start = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -107,9 +101,7 @@ async def _exec_argv(
         raise RuntimeError(f"docker_binary_missing: {exc}") from exc
 
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_seconds
-        )
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
         elapsed = time.monotonic() - start
         return (
             proc.returncode or 0,
@@ -138,9 +130,41 @@ def _clamp_timeout(requested: Any) -> int:
     return requested
 
 
-async def _handle_run_in_sandbox(
-    ctx: AgentContext, tool_input: dict[str, Any]
-) -> ToolResult:
+def _verify_success_matches(
+    *,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+    criteria: dict[str, Any] | None,
+) -> bool:
+    """v1.5.0 verify gate matcher. Closed schema:
+
+      criteria = None         → backwards-compat: exit_code == 0 alone
+      criteria.exit_codes     → exit_code MUST be in this list
+      criteria.stdout_contains→ stdout MUST contain this substring
+      criteria.stderr_excludes→ stderr MUST NOT contain this substring
+
+    All present matchers must hold. Empty/None matchers don't gate.
+    """
+    if criteria is None:
+        return exit_code == 0
+
+    allowed = criteria.get("exit_codes") or [0]
+    if exit_code not in allowed:
+        return False
+
+    needle = criteria.get("stdout_contains")
+    if needle and needle not in (stdout or ""):
+        return False
+
+    excl = criteria.get("stderr_excludes")
+    if excl and excl in (stderr or ""):
+        return False
+
+    return True
+
+
+async def _handle_run_in_sandbox(ctx: AgentContext, tool_input: dict[str, Any]) -> ToolResult:
     command = tool_input.get("command")
     if not command or not isinstance(command, str):
         return ToolResult(ok=False, error="command is required (non-empty string)")
@@ -165,9 +189,17 @@ async def _handle_run_in_sandbox(
     ctx.cost.sandbox_runtime_seconds += elapsed
 
     # Verification gate: flip iff command covers original failing command
-    # AND exit code is 0. Spec §6.
+    # AND the exit code / stdout / stderr satisfy the verify_success
+    # criteria. v1.5.0 contract (docs/ci-fixer-v3-agent-contracts.md).
+    # Backwards-compat: when ctx.verify_success_criteria is None, fall
+    # back to "exit_code == 0" gate (Spec §6).
     verified = False
-    if exit_code == 0:
+    if _verify_success_matches(
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        criteria=ctx.verify_success_criteria,
+    ):
         verified = ctx.mark_sandbox_verified(command)
 
     log.info(
@@ -242,9 +274,7 @@ COMMENT_ON_PR_SCHEMA = ToolSchema(
             },
             "pr_number": {
                 "type": "integer",
-                "description": (
-                    "PR number. Defaults to AgentContext.pr_number if omitted."
-                ),
+                "description": ("PR number. Defaults to AgentContext.pr_number if omitted."),
             },
         },
         "required": ["body"],
@@ -252,9 +282,7 @@ COMMENT_ON_PR_SCHEMA = ToolSchema(
 )
 
 
-async def _handle_comment_on_pr(
-    ctx: AgentContext, tool_input: dict[str, Any]
-) -> ToolResult:
+async def _handle_comment_on_pr(ctx: AgentContext, tool_input: dict[str, Any]) -> ToolResult:
     body = tool_input.get("body")
     if not body or not isinstance(body, str):
         return ToolResult(ok=False, error="body is required (non-empty string)")
@@ -469,9 +497,7 @@ _VALID_ESCALATION_REASONS = frozenset(
 )
 
 
-async def _handle_escalate(
-    ctx: AgentContext, tool_input: dict[str, Any]
-) -> ToolResult:
+async def _handle_escalate(ctx: AgentContext, tool_input: dict[str, Any]) -> ToolResult:
     reason = tool_input.get("reason")
     explanation = tool_input.get("explanation") or ""
     draft_patch = tool_input.get("draft_patch") or ""
@@ -632,9 +658,7 @@ async def _run_git_command(
     )
 
 
-def _resolve_commit_branch(
-    ctx: AgentContext, strategy: str
-) -> tuple[str | None, str | None]:
+def _resolve_commit_branch(ctx: AgentContext, strategy: str) -> tuple[str | None, str | None]:
     """Return (branch_name, error). Exactly one is non-None."""
     if strategy == "author_branch":
         if not ctx.has_write_permission:
@@ -655,17 +679,13 @@ def _resolve_commit_branch(
     return None, f"invalid_branch_strategy: {strategy!r}"
 
 
-async def _handle_commit_and_push(
-    ctx: AgentContext, tool_input: dict[str, Any]
-) -> ToolResult:
+async def _handle_commit_and_push(ctx: AgentContext, tool_input: dict[str, Any]) -> ToolResult:
     strategy = tool_input.get("branch_strategy")
     commit_message = tool_input.get("commit_message")
     files = tool_input.get("files")
 
     if strategy not in ("author_branch", "fix_branch"):
-        return ToolResult(
-            ok=False, error=f"branch_strategy must be author_branch|fix_branch"
-        )
+        return ToolResult(ok=False, error=f"branch_strategy must be author_branch|fix_branch")
     if not commit_message or not isinstance(commit_message, str):
         return ToolResult(ok=False, error="commit_message is required")
     if not isinstance(files, list) or not files:
@@ -731,9 +751,7 @@ async def _handle_commit_and_push(
             return ToolResult(ok=False, error=f"git_commit_failed: {msg}")
 
         # 4. Capture the commit sha for return.
-        ec, sha_out, _ = await _run_git_command(
-            ctx.repo_workspace_path, ["rev-parse", "HEAD"]
-        )
+        ec, sha_out, _ = await _run_git_command(ctx.repo_workspace_path, ["rev-parse", "HEAD"])
         if ec != 0:
             return ToolResult(
                 ok=False,

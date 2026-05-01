@@ -132,6 +132,16 @@ class CIFixEngineerAgent(BaseAgent):
             )
         ci_context["failing_command"] = failing_command
 
+        # v1.5.0 contract — verify_command + verify_success.
+        # Backwards-compat: missing fields fall back to v1.4.x behavior
+        # (verify_command = failing_command, exit_code == 0 gate).
+        # See docs/ci-fixer-v3-agent-contracts.md.
+        verify_command = fix_spec.get("verify_command") or failing_command
+        verify_success = fix_spec.get("verify_success")  # may be None — gate falls back
+        ci_context["verify_command"] = verify_command
+        if verify_success is not None:
+            ci_context["verify_success"] = verify_success
+
         affected_files = fix_spec.get("affected_files") or []
         if not affected_files:
             return AgentResult(
@@ -230,12 +240,16 @@ class CIFixEngineerAgent(BaseAgent):
             tool_schemas=coder_subagent_tool_schemas(),
         )
 
+        # v1.5.0: pass verify_command (what should run to confirm) as the
+        # failing_command param. Coder uses this for the post-patch sandbox
+        # gate. Backwards compat: when fix_spec lacks verify_command, this
+        # equals failing_command (today's behavior).
         coder_result = await run_coder_subagent(
             ctx=ctx,
             task_description=fix_spec["fix_spec"],
             target_files=affected_files,
             diagnosis_summary=fix_spec.get("root_cause", ""),
-            failing_command=ci_context["failing_command"],
+            failing_command=ci_context.get("verify_command") or ci_context["failing_command"],
             llm_call=sonnet_llm,
         )
 
@@ -477,17 +491,22 @@ def _build_engineer_context(
 ):
     from phalanx.ci_fixer_v2.context import AgentContext  # noqa: PLC0415
 
+    # v1.5.0: original_failing_command becomes the verify_command (which is
+    # what the engineer ACTUALLY runs to confirm the fix). For backwards
+    # compat, ci_context.verify_command was populated upstream from
+    # fix_spec.verify_command OR fix_spec.failing_command.
     return AgentContext(
         ci_fix_run_id=f"v3-{run_id}",
         repo_full_name=ci_context["repo"],
         repo_workspace_path=workspace_path,
-        original_failing_command=ci_context["failing_command"],
+        original_failing_command=ci_context.get("verify_command") or ci_context["failing_command"],
         pr_number=ci_context.get("pr_number"),
         has_write_permission=True,  # Engineer can commit to the PR branch
         ci_api_key=_resolve_github_token(integration),
         ci_provider=(integration.ci_provider if integration else "github_actions"),
         author_head_branch=ci_context.get("branch"),
         sandbox_container_id=sandbox_container_id,
+        verify_success_criteria=ci_context.get("verify_success"),
     )
 
 

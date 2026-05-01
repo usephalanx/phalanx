@@ -15,17 +15,16 @@ import pytest
 
 from phalanx.agents.cifix_techlead import _parse_fix_spec_from_text
 
-
 # A schema-valid fix_spec body, reused across tests.
 _VALID = (
-    '{'
+    "{"
     '"root_cause": "E501 long line",'
     '"affected_files": ["src/x.py"],'
     '"fix_spec": "shorten line",'
     '"failing_command": "ruff check .",'
     '"confidence": 0.9,'
     '"open_questions": []'
-    '}'
+    "}"
 )
 
 
@@ -123,10 +122,7 @@ def test_provider_error_text_is_not_a_fix_spec():
     (we've seen it during canary #5 with the wrong tool_result shape),
     the parser must NOT mistake that for a fix_spec. None is correct.
     """
-    text = (
-        "provider_error: Error code: 400 - {'error': {'message': "
-        "\"Invalid value: 'tool'\"}}"
-    )
+    text = "provider_error: Error code: 400 - {'error': {'message': \"Invalid value: 'tool'\"}}"
     assert _parse_fix_spec_from_text(text) is None
 
 
@@ -162,3 +158,114 @@ def test_parser_accepts_wrapper_failing_command_but_engineer_will_handle(
     parsed = _parse_fix_spec_from_text(f"```json\n{body}\n```")
     assert parsed is not None
     assert parsed["failing_command"] == wrapper_command
+
+
+# ── v1.5.0 contract additions: verify_command + verify_success + self_critique ──
+
+
+def _wrap(body: str) -> str:
+    return f"```json\n{body}\n```"
+
+
+def test_parse_with_verify_command_and_full_verify_success():
+    """v1.5.0 happy path: TL emits verify_command + full verify_success matrix."""
+    body = (
+        "{"
+        '"root_cause": "test failure",'
+        '"affected_files": ["tests/test_x.py"],'
+        '"fix_spec": "remove the broken test",'
+        '"failing_command": "pytest tests/test_x.py::test_bar -xvs",'
+        '"verify_command": "pytest tests/",'
+        '"verify_success": {"exit_codes": [0, 4, 5]},'
+        '"confidence": 0.95,'
+        '"open_questions": []'
+        "}"
+    )
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert parsed["verify_command"] == "pytest tests/"
+    assert parsed["verify_success"]["exit_codes"] == [0, 4, 5]
+
+
+def test_parse_backwards_compat_no_verify_fields():
+    """Old-format fix_spec (no verify_command / verify_success) still parses.
+    Engineer fallback handles missing fields."""
+    parsed = _parse_fix_spec_from_text(_wrap(_VALID))
+    assert parsed is not None
+    assert "verify_command" not in parsed
+    assert "verify_success" not in parsed
+
+
+def test_parse_drops_invalid_verify_command():
+    """If verify_command is not a string, drop it silently — better to fall
+    back to backwards-compat default than reject the whole fix_spec."""
+    body = _VALID.rstrip("}") + ',"verify_command": 12345}'
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert "verify_command" not in parsed
+
+
+def test_parse_normalizes_verify_success_with_default_exit_codes():
+    """Empty exit_codes → default to [0]."""
+    body = _VALID.rstrip("}") + ',"verify_success": {}}'
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert parsed["verify_success"]["exit_codes"] == [0]
+
+
+def test_parse_normalizes_invalid_exit_codes_to_default():
+    """exit_codes contains non-int → fall back to [0]."""
+    body = _VALID.rstrip("}") + ',"verify_success": {"exit_codes": ["not", "ints"]}}'
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert parsed["verify_success"]["exit_codes"] == [0]
+
+
+def test_parse_keeps_stdout_stderr_matchers():
+    body = (
+        _VALID.rstrip("}") + ',"verify_success": {"exit_codes": [0], '
+        '"stdout_contains": "All checks passed", '
+        '"stderr_excludes": "DeprecationWarning"}}'
+    )
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert parsed["verify_success"]["stdout_contains"] == "All checks passed"
+    assert parsed["verify_success"]["stderr_excludes"] == "DeprecationWarning"
+
+
+def test_parse_drops_empty_string_matchers():
+    """Empty string matchers are falsy → filtered out (cleaner downstream)."""
+    body = _VALID.rstrip("}") + ',"verify_success": {"exit_codes": [0], "stdout_contains": ""}}'
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert "stdout_contains" not in parsed["verify_success"]
+
+
+def test_parse_passthrough_self_critique_dict():
+    body = (
+        _VALID.rstrip("}") + ',"self_critique": {"ci_log_addresses_root_cause": true, '
+        '"affected_files_exist_in_repo": true, '
+        '"verify_command_will_distinguish_success": true, '
+        '"notes": "looks good"}}'
+    )
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert parsed["self_critique"]["notes"] == "looks good"
+    assert parsed["self_critique"]["ci_log_addresses_root_cause"] is True
+
+
+def test_parse_drops_invalid_self_critique():
+    body = _VALID.rstrip("}") + ',"self_critique": "not a dict"}'
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert "self_critique" not in parsed
+
+
+def test_parse_drops_unknown_verify_success_keys():
+    """Closed schema on verify_success — extra keys silently dropped."""
+    body = (
+        _VALID.rstrip("}") + ',"verify_success": {"exit_codes": [0], "weird_extra_key": "noise"}}'
+    )
+    parsed = _parse_fix_spec_from_text(_wrap(body))
+    assert parsed is not None
+    assert "weird_extra_key" not in parsed["verify_success"]

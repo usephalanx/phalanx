@@ -127,10 +127,22 @@ class AgentContext:
     """Ordered record of every tool call + result. Feeds the decision
     timeline written to CIFixRun at finalization."""
 
+    # ── v1.5.0 verify contract (TL → Engineer hand-off) ──────────────────
+    verify_success_criteria: dict[str, Any] | None = None
+    """v1.5.0 contract. Set by the engineer before invoking the coder
+    subagent. Matches `fix_spec.verify_success` from TL's output:
+        {"exit_codes": [int, ...],
+         "stdout_contains": str | None,
+         "stderr_excludes": str | None}
+    None = backwards-compat default (exit_code == 0 alone gates verify).
+    See docs/ci-fixer-v3-agent-contracts.md."""
+
     # ── Mutable gates + diagnostics ────────────────────────────────────────
     last_sandbox_verified: bool = False
     """Hard gate. True iff the most recent sandbox run covered the
-    original failing command and exited 0. Cleared by any patch write."""
+    original failing command AND its exit code/stdout/stderr satisfied
+    the verify_success_criteria (or, in backwards-compat mode, exit_code
+    was 0). Cleared by any patch write."""
 
     last_attempted_diff: str | None = None
     """Most recent diff the coder subagent produced (verified or not).
