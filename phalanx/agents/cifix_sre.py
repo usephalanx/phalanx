@@ -600,21 +600,81 @@ async def _agentic_gap_fill(
             cache_key=cache_key[:16],
             capabilities=len(cached_plan.get("capabilities", [])),
         )
-        return {
-            "mode": "setup",
-            "container_id": container_id,
-            "workspace_path": workspace_path,
-            "env_spec": det_spec,
-            "setup_log": det_setup_log + [{"step": "cache_hit", "cache_key": cache_key[:16]}],
-            "capabilities_installed": cached_plan.get("capabilities", []),
-            "final_status": "READY",
-            "blocked_reason": None,
-            "observed_token_status": cached_plan.get("observed_token_status", []),
-            "tokens_used": 0,
-            "fallback_used": False,
-            "cache_hit": True,
-            "agentic_iterations": 0,
-        }
+        # Bug #15 (2026-04-30 self-found): cache hit must REPLAY the install
+        # steps in the fresh sandbox before claiming READY. Earlier impl
+        # just returned the cached plan metadata, but the sandbox itself
+        # is fresh — none of the cached tools are actually present.
+        replay_log: list[dict] = []
+        replay_failed = False
+        for cap in cached_plan.get("capabilities", []):
+            method = cap.get("install_method")
+            tool = cap.get("tool")
+            if method == "preinstalled" or not tool:
+                continue
+            if method == "pip":
+                cmd = f"pip install --quiet --no-cache-dir {tool}"
+            elif method == "apt":
+                cmd = (
+                    f"apt-get update -qq && apt-get install -y --no-install-recommends {tool}"
+                )
+            else:
+                replay_log.append({"step": "skip_unknown_method", "tool": tool, "method": method})
+                replay_failed = True
+                continue
+            r = await _exec_in_container(container_id, cmd, as_root=(method == "apt"))
+            replay_log.append({
+                "step": "cache_replay_install",
+                "tool": tool,
+                "method": method,
+                "exit_code": r.exit_code,
+            })
+            if r.exit_code != 0:
+                replay_failed = True
+                log.warning(
+                    "cifix_sre.setup.cache_replay_install_failed",
+                    tool=tool,
+                    method=method,
+                    exit_code=r.exit_code,
+                )
+
+        # Re-verify first-tokens FRESH after replay (don't trust cached status).
+        fresh_status = await _check_first_tokens_available(container_id, first_tokens)
+        all_present = all(fresh_status.get(t, False) for t in first_tokens)
+
+        if not replay_failed and all_present:
+            return {
+                "mode": "setup",
+                "container_id": container_id,
+                "workspace_path": workspace_path,
+                "env_spec": det_spec,
+                "setup_log": det_setup_log
+                + [{"step": "cache_hit", "cache_key": cache_key[:16]}]
+                + replay_log,
+                "capabilities_installed": cached_plan.get("capabilities", []),
+                "final_status": "READY",
+                "blocked_reason": None,
+                "observed_token_status": [
+                    {"cmd": c, "first_token": _extract_first_token(c),
+                     "found": fresh_status.get(_extract_first_token(c), False)}
+                    for c in observed
+                ],
+                "tokens_used": 0,
+                "fallback_used": False,
+                "cache_hit": True,
+                "agentic_iterations": 0,
+            }
+        # Cache replay didn't actually fix the gaps — fall through to agentic
+        # loop. Add a marker so observability shows we tried the cache.
+        log.info(
+            "cifix_sre.setup.cache_replay_insufficient",
+            cache_key=cache_key[:16],
+            replay_failed=replay_failed,
+            all_present=all_present,
+            fresh_status=fresh_status,
+        )
+        det_setup_log = det_setup_log + [
+            {"step": "cache_hit_replay_insufficient", "cache_key": cache_key[:16]}
+        ] + replay_log
 
     # 4. Agentic loop (Phase 1).
     # Build the LLM call from v2's existing Sonnet provider — same wiring
