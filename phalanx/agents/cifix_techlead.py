@@ -61,7 +61,13 @@ _TECHLEAD_TOOLS: tuple[str, ...] = (
     "read_file",
     "glob",
     "grep",
+    "validate_self_critique",  # v1.6.0 Phase 1: REQUIRED before emit_fix_spec
 )
+
+# Side-effect import: register validate_self_critique with the v2 tool
+# registry so the TL loop can dispatch it. Module-level so it's done once
+# at import time (mirrors v2 tool registration pattern).
+from phalanx.agents import _tl_self_critique  # noqa: F401, E402
 
 _MAX_TURNS = 8
 _MAX_TOOL_CALLS = 15  # hard upper bound across all turns
@@ -191,31 +197,45 @@ How to fill `verify_success`:
   stderr_excludes: optional. A forbidden substring. Use for fixes that
   remove deprecated calls (assert no DeprecationWarning) etc.
 
-How to fill `self_critique` (a senior-engineer-style review of YOUR own diagnosis):
+How to fill `self_critique` — v1.6.0: tool-validated, not declared.
 
-  ci_log_addresses_root_cause: did your root_cause directly correspond
-  to the actual error message you read in the CI log via fetch_ci_log?
-  If you summarized + extrapolated rather than matched verbatim, this is
-  false.
+  Before emitting fix_spec, you MUST call `validate_self_critique` with
+  your draft root_cause + affected_files + verify_command + the verbatim
+  ci_log_text you fetched earlier. The tool returns the AUTHORITATIVE
+  booleans. Use the returned values verbatim in your fix_spec.
 
-  affected_files_exist_in_repo: did you confirm via read_file or glob
-  that each path in affected_files actually exists on this PR's branch?
-  Don't list a file you only inferred from CI output.
+  Do NOT overwrite the validator's output with your own opinion. The
+  commander re-runs the same checks against your final fix_spec; if
+  what you emit disagrees with what the validator returns, your TL
+  task is marked FAILED with `self_critique_mismatch` and re-dispatched.
 
-  verify_command_will_distinguish_success: walk through what happens
-  when verify_command runs against the patched repo. Does exit code
-  actually flip from non-zero to in-range, OR does verify_success need
-  stdout/stderr matchers to disambiguate? If unsure, false.
+  What the three checks mean:
 
-  notes: one sentence — what would a senior engineer flag in this
-  fix_spec on a code review? E.g., "fix is plausible but I can't
-  verify the import path is correct without running it" — that's a
-  legitimate self-critique note.
+    ci_log_addresses_root_cause:
+      tokens from your root_cause must overlap with the CI log text
+      (≥1 hit AND ≥30% of distinctive ≥4-char tokens). Catches
+      fabricated diagnoses that don't reference what actually failed.
 
-  If any of the three booleans is false, you SHOULD investigate further
-  (re-read the CI log, glob for files, etc.) before emitting fix_spec.
-  If after iterating you still can't say all true, lower your
-  `confidence` to ≤ 0.5 and fill `open_questions` with the unknowns.
+    affected_files_exist_in_repo:
+      every path in affected_files must resolve to a real file under
+      the repo workspace. No path traversal, no absolute paths, no
+      hallucinated paths.
+
+    verify_command_will_distinguish_success:
+      first shell token of verify_command must be a valid identifier
+      AND `command -v <token>` must succeed in the sandbox.
+
+  If validate_self_critique returns ANY false:
+    - Investigate further (re-read CI log; glob for files; pick a
+      different verify_command first-token) BEFORE emitting fix_spec.
+    - Re-call validate_self_critique with the corrected draft.
+    - After 2 iterations max, if you still can't reach all-true,
+      emit fix_spec with `confidence: 0.4` and the failing checks
+      documented in `open_questions`.
+
+  notes: one sentence — what would a senior engineer flag on code
+  review of this fix_spec? E.g., "fix is plausible but the import path
+  may need adjusting per the .pyi stub I didn't read."
 
 CRITICAL: Your final turn must contain the fenced ```json``` block. You
 MAY include a short prose summary before it. You MUST NOT omit any of the
@@ -354,6 +374,55 @@ class CIFixTechLeadAgent(BaseAgent):
                 error=f"{exc.kind}: {exc.detail}",
                 tokens_used=ctx.cost.total_tokens if hasattr(ctx.cost, "total_tokens") else 0,
             )
+
+        # v1.6.0 Phase 1 — self-critique gate. The LLM was prompted to call
+        # validate_self_critique and place its output in fix_spec.self_critique.
+        # Here we verify what was actually emitted has all-true booleans. If
+        # any false, mark TL FAILED — this surfaces a TL that didn't iterate
+        # to all-true (or lied about validator output).
+        sc = fix_spec.get("self_critique")
+        if isinstance(sc, dict):
+            booleans = {
+                "ci_log_addresses_root_cause": sc.get("ci_log_addresses_root_cause"),
+                "affected_files_exist_in_repo": sc.get("affected_files_exist_in_repo"),
+                "verify_command_will_distinguish_success": sc.get(
+                    "verify_command_will_distinguish_success"
+                ),
+            }
+            failing = [k for k, v in booleans.items() if v is not True]
+            if failing:
+                # If TL flagged ITSELF as low-confidence (≤0.5), allow it
+                # through with the failing self_critique — engineer's
+                # confidence guard then triggers low_confidence skip cleanly.
+                # Otherwise: a high-confidence claim with failing self_critique
+                # is an inconsistency we reject.
+                conf = float(fix_spec.get("confidence") or 0.0)
+                if conf > 0.5:
+                    self._log.warning(
+                        "cifix_techlead.self_critique_inconsistent",
+                        failing_checks=failing,
+                        confidence=conf,
+                    )
+                    return AgentResult(
+                        success=False,
+                        output={
+                            "error_class": "self_critique_inconsistent",
+                            "failing_checks": failing,
+                            "confidence": conf,
+                            **fix_spec,
+                        },
+                        error=(
+                            f"self_critique_inconsistent: confidence={conf:.2f} but "
+                            f"checks failing={failing}. Re-investigate or lower confidence."
+                        ),
+                        tokens_used=_tokens_used_from_ctx(ctx),
+                    )
+                # Low-confidence path is allowed — engineer's guard will skip cleanly.
+                self._log.info(
+                    "cifix_techlead.self_critique_low_confidence_skip",
+                    failing_checks=failing,
+                    confidence=conf,
+                )
 
         self._log.info(
             "cifix_techlead.done",
