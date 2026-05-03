@@ -417,8 +417,13 @@ class CIFixEngineerAgent(BaseAgent):
             "cifix_engineer.v17_path",
             n_steps=len(steps),
             workspace=workspace_path,
+            allowed_files=affected_files,
         )
-        result = await execute_task_steps_async(steps, workspace_path)
+        # v1.7.2.3: pass affected_files as the patch-safety allowlist so
+        # the engineer can't drift outside what TL declared.
+        result = await execute_task_steps_async(
+            steps, workspace_path, allowed_files=affected_files,
+        )
 
         if not result.ok:
             failed = result.failed_step

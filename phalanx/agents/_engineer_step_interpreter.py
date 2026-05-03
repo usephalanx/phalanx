@@ -401,12 +401,24 @@ _HANDLERS: dict[str, Any] = {
 }
 
 
-def execute_step(step: dict, workspace: str | Path) -> StepResult:
+def execute_step(
+    step: dict,
+    workspace: str | Path,
+    *,
+    allowed_files: list[str] | None = None,
+) -> StepResult:
     """Dispatch one Step. All-sync; no LLM; no async. Tests can call directly.
 
     Returns StepResult; never raises. Unknown action → ok=False with
     error='unknown_action'.
+
+    v1.7.2.3: BEFORE handler dispatch, runs `validate_step_safety` to block:
+      - CI config edits (.github/workflows, codecov, pre-commit)
+      - test deletion / @pytest.skip injection
+      - paths outside TL's allowed_files allowlist
     """
+    from phalanx.agents._patch_safety import validate_step_safety  # noqa: PLC0415
+
     sid = int(step.get("id", 0))
     action = step.get("action")
     handler = _HANDLERS.get(action)
@@ -423,6 +435,24 @@ def execute_step(step: dict, workspace: str | Path) -> StepResult:
             error="bad_workspace",
             detail=f"workspace path is not a directory: {workspace}",
         )
+
+    # v1.7.2.3 — patch safety gate (blocked paths, test deletion, skip
+    # injection, allowlist). Runs before handler dispatch so we never
+    # half-apply a blocked patch.
+    verdict = validate_step_safety(step, allowed_files=allowed_files)
+    if not verdict.ok:
+        log.warning(
+            "v3.engineer.step.patch_safety_violation",
+            action=action,
+            rule=verdict.rule,
+            detail=verdict.detail,
+        )
+        return StepResult(
+            ok=False, step_id=sid, action=action or "?",
+            error=f"patch_safety_violation:{verdict.rule}",
+            detail=verdict.detail or "blocked by patch safety guard",
+        )
+
     try:
         return handler(step, workspace_path)
     except Exception as exc:  # noqa: BLE001
@@ -445,16 +475,24 @@ class TaskExecutionResult:
     narrow_verify_detail: str | None = None
 
 
-def execute_task_steps(steps: list[dict], workspace: str | Path) -> TaskExecutionResult:
+def execute_task_steps(
+    steps: list[dict],
+    workspace: str | Path,
+    *,
+    allowed_files: list[str] | None = None,
+) -> TaskExecutionResult:
     """Walk all steps in order. Stop at first failure.
 
     On success, extracts commit_sha from the most recent commit step.
     The caller (cifix_engineer agent) handles narrow_verify separately
     after this returns ok=True.
+
+    v1.7.2.3: `allowed_files` (from TL's affected_files) is enforced by
+    the patch-safety gate inside execute_step.
     """
     result = TaskExecutionResult(ok=True)
     for step in steps:
-        outcome = execute_step(step, workspace)
+        outcome = execute_step(step, workspace, allowed_files=allowed_files)
         if not outcome.ok:
             result.ok = False
             result.failed_step = outcome
@@ -466,13 +504,18 @@ def execute_task_steps(steps: list[dict], workspace: str | Path) -> TaskExecutio
 
 
 async def execute_task_steps_async(
-    steps: list[dict], workspace: str | Path
+    steps: list[dict],
+    workspace: str | Path,
+    *,
+    allowed_files: list[str] | None = None,
 ) -> TaskExecutionResult:
     """Async wrapper for the agent's async loop. The interpreter itself is
     sync because subprocess is sync; we just hop to a thread pool to avoid
     blocking the event loop on long `run` steps.
     """
-    return await asyncio.to_thread(execute_task_steps, steps, workspace)
+    return await asyncio.to_thread(
+        execute_task_steps, steps, workspace, allowed_files=allowed_files
+    )
 
 
 __all__ = [
