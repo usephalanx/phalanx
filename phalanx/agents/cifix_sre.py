@@ -32,7 +32,7 @@ import yaml
 from sqlalchemy import select
 
 from phalanx.agents.base import AgentResult, BaseAgent
-from phalanx.ci_fixer_v3.env_detector import detect_env
+from phalanx.ci_fixer_v3.env_detector import EnvSpec, detect_env
 from phalanx.ci_fixer_v3.provisioner import (
     ProvisionedSandbox,
     _exec_in_container,
@@ -123,10 +123,19 @@ class CIFixSREAgent(BaseAgent):
             self._log.exception("cifix_sre.setup.clone_failed", error=str(exc))
             return AgentResult(success=False, output={}, error=f"clone_failed: {exc}")
 
-        # Step B: detect env
-        env_spec = detect_env(workspace_path)
+        # ── v1.7.1 — Tier 0/Cache lookup BEFORE detect_env ─────────────────
+        # Cache hit → use stored commands. Tier 0 (workflow YAML extract) →
+        # if successful, use those commands. Tier 1 (existing detect_env)
+        # is the fallback. Tier 2 (agentic gap-fill) catches any remaining
+        # gaps after the deterministic provision attempt.
+        env_spec, tier_source = self._select_env_spec_v171(
+            workspace_path=workspace_path,
+            ci_context=ci_context,
+        )
         self._log.info(
-            "cifix_sre.setup.env_detected",
+            "cifix_sre.setup.env_selected",
+            tier=tier_source["tier"],
+            source=tier_source.get("source", ""),
             stack=env_spec.stack,
             base_image=env_spec.base_image,
             install_cmds=len(env_spec.install_commands),
@@ -182,11 +191,148 @@ class CIFixSREAgent(BaseAgent):
         # PARTIAL case via Task.output → ci_context propagation, when commander
         # plumbs it. For now, PARTIAL still attempts; future TL-prompt update
         # acknowledges gaps explicitly).
+
+        # v1.7.1 — annotate the output with tier provenance + persist to cache
+        # if the run produced a working recipe. Cache is keyed by repo +
+        # workflow_path + dep file hashes; next run with same deps can skip
+        # tiers entirely.
+        sre_output["v171_tier"] = tier_source
+        if sre_output["final_status"] == "READY" and env_spec.install_commands:
+            self._maybe_cache_recipe(
+                workspace_path=workspace_path,
+                ci_context=ci_context,
+                tier=tier_source["tier"],
+                commands=env_spec.install_commands,
+                source=tier_source.get("source", ""),
+            )
+
         return AgentResult(
             success=True,
             output=sre_output,
             tokens_used=sre_output.get("tokens_used", 0),
         )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # v1.7.1 — tier selection helpers
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _select_env_spec_v171(
+        self, *, workspace_path: str, ci_context: dict
+    ) -> tuple["EnvSpec", dict]:
+        """Pick install commands using the v1.7.1 tier ladder:
+
+          1. Cache lookup — if a validated recipe exists for the same
+             (repo, workflow, dep-file-content) hash, use it.
+          2. Tier 0 — parse .github/workflows/<job>.yml; render the steps.
+          3. Tier 1 (existing v1.4.0 detect_env) — file-fingerprint fallback.
+
+        Returns (env_spec, tier_source) where tier_source records which
+        path produced the commands for telemetry / cache write-back.
+        """
+        from phalanx.agents._v171_setup_cache import lookup as cache_lookup
+        from phalanx.agents._v171_workflow_extractor import extract_recipe
+        from phalanx.config.settings import get_settings
+
+        cache_dir = self._cache_dir_path()
+        repo = ci_context.get("repo") or ""
+        failing_job_name = ci_context.get("failing_job_name") or ""
+        # Workflow path is informational here; the cache key uses it
+        # directly so two different workflow files get distinct entries.
+        workflow_path: str | None = None
+
+        # 1. Tier 0 first (workflow YAML extraction). We do this BEFORE the
+        # cache lookup because the workflow_path it discovers is part of
+        # the cache key. Tier 0 is fast (just YAML parse) so the order is
+        # cheap.
+        tier0 = extract_recipe(
+            workspace_path=workspace_path,
+            failing_job_name=failing_job_name,
+        )
+        if tier0 is not None:
+            workflow_path = tier0.workflow_file
+
+        # 2. Cache lookup with whatever workflow_path we have
+        cached = cache_lookup(
+            cache_dir=cache_dir,
+            repo_full_name=repo,
+            workflow_path=workflow_path,
+            workspace_path=workspace_path,
+        )
+        if cached is not None:
+            return (
+                self._env_spec_from_cached(workspace_path, cached),
+                {"tier": "cache", "source": cached.source},
+            )
+
+        # 3. Use Tier 0 commands if we got them
+        if tier0 is not None and tier0.commands:
+            return (
+                self._env_spec_from_commands(
+                    workspace_path=workspace_path,
+                    commands=tier0.commands,
+                    source_label=f"workflow:{tier0.workflow_file}::{tier0.job_key}",
+                ),
+                {"tier": "0", "source": tier0.workflow_file},
+            )
+
+        # 4. Tier 1 — existing v1.4.0 detect_env path
+        env_spec = detect_env(workspace_path)
+        return (env_spec, {"tier": "1", "source": "detect_env"})
+
+    def _env_spec_from_cached(self, workspace_path: str, cached) -> "EnvSpec":
+        """Build an EnvSpec around cached install_commands."""
+        return EnvSpec(
+            stack="python",  # cached recipes assumed Python for v1.7.1
+            base_image="python:3.12-slim",
+            workspace_path=str(workspace_path),
+            install_commands=list(cached.commands),
+            detected_from=[f"v171_cache:{cached.source}"],
+            notes=[f"v1.7.1 cache hit; tier={cached.tier}"],
+        )
+
+    def _env_spec_from_commands(
+        self, *, workspace_path: str, commands: list[str], source_label: str
+    ) -> "EnvSpec":
+        """Build an EnvSpec around commands rendered from Tier 0."""
+        return EnvSpec(
+            stack="python",
+            base_image="python:3.12-slim",
+            workspace_path=str(workspace_path),
+            install_commands=list(commands),
+            detected_from=[source_label],
+            notes=["v1.7.1 Tier 0 (workflow YAML extraction)"],
+        )
+
+    def _cache_dir_path(self) -> str:
+        from phalanx.config.settings import get_settings
+        settings = get_settings()
+        return f"{settings.git_workspace}/_v171_setup_cache"
+
+    def _maybe_cache_recipe(
+        self,
+        *,
+        workspace_path: str,
+        ci_context: dict,
+        tier: str,
+        commands: list[str],
+        source: str,
+    ) -> None:
+        """Best-effort write-back to the per-repo JSONL cache."""
+        from phalanx.agents._v171_setup_cache import store as cache_store
+        try:
+            cache_store(
+                cache_dir=self._cache_dir_path(),
+                repo_full_name=ci_context.get("repo") or "",
+                workflow_path=ci_context.get("v171_workflow_path"),
+                workspace_path=workspace_path,
+                tier=tier if tier in {"0", "1", "2"} else "1",
+                commands=commands,
+                source=source,
+                validated=True,
+                validation_evidence={"final_status": "READY"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("cifix_sre.setup.cache_write_failed", error=str(exc))
 
     # ─────────────────────────────────────────────────────────────────────
     # Verify mode — re-run the repo's CI against the sandbox
@@ -300,7 +446,9 @@ class CIFixSREAgent(BaseAgent):
             select(Task.output)
             .where(
                 Task.run_id == self.run_id,
-                Task.agent_role == "cifix_sre",
+                Task.agent_role.in_(
+                    ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                ),
                 Task.status == "COMPLETED",
             )
             .order_by(Task.sequence_num.asc())
