@@ -303,19 +303,26 @@ async def _docker_run_detached(base_image: str) -> tuple[str | None, str | None]
             "--pids-limit", "256",        # cap at 256 procs — kills fork bombs
             "--ulimit", "nofile=4096:4096",
             "--ulimit", "nproc=512:512",
-            # ── Capabilities + privileges (v1.7.2) ────────────────────
-            "--cap-drop", "ALL",
-            "--cap-add", "DAC_OVERRIDE",  # needed for pip/apt to write to system paths
-            "--cap-add", "FOWNER",        # ditto
-            "--cap-add", "SETUID",        # apt needs to drop privs
-            "--cap-add", "SETGID",
-            "--security-opt", "no-new-privileges:true",
+            # ── Capabilities + privileges ──────────────────────────────
+            # NOTE (v1.7.2.1 rollback): Initial v1.7.2 added --cap-drop=ALL
+            # + --security-opt=no-new-privileges:true. Both broke apt-get
+            # in the sandbox (testbed lint cell, 2026-05-03):
+            #   - no-new-privileges prevents apt's setuid `_apt` helper
+            #     from gaining the caps it needs for download workers,
+            #     producing "Operation not permitted" on every URI fetch
+            #   - cap-drop ALL also strips CHOWN / FSETID which dpkg
+            #     uses during package extraction
+            # Keeping the safer no-side-effect hardening (--pids-limit,
+            # --memory-swap=memory, --ulimits) which don't interact with
+            # apt. Cap dropping deferred to v1.7.3 where we either
+            # pre-bake apt-needed packages into the base image (so the
+            # sandbox never runs apt-get) OR use a finer-grained capability
+            # set that apt has been confirmed to work under.
+            #
             # NOTE: read-only root + tmpfs mounts intentionally NOT
             # applied here. The existing v1.4.0 install flow uses
             # `docker exec --user 0 apt install` which needs a writable
-            # /var/lib/apt + /var/cache/apt. Adding --read-only would
-            # require a deploy-side overlay strategy. Defer to v1.7.3
-            # where we have the deploy support.
+            # /var/lib/apt + /var/cache/apt. Same v1.7.3 rationale.
             "--entrypoint", "sleep",
             base_image,
             "infinity",

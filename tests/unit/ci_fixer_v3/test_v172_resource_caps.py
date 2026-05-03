@@ -57,18 +57,20 @@ class TestDockerRunHardeningArgs:
         # When --memory-swap == --memory, swap is disabled
         assert args[idx + 1] == "2g"
 
-    def test_cap_drop_all(self, captured_argv):
+    def test_cap_drop_NOT_applied_due_to_apt_incompatibility(self, captured_argv):
+        """v1.7.2.1 rollback: --cap-drop=ALL broke apt-get in the testbed
+        (Operation not permitted on every URI fetch). Re-applying caps
+        deferred to v1.7.3 where we pre-bake apt deps into the base image.
+        Test pins the rollback so we don't re-introduce the breaking flags
+        without the v1.7.3 prerequisite work."""
         asyncio.run(_docker_run_detached("python:3.12-slim"))
         args = captured_argv["args"]
-        assert "--cap-drop" in args
-        # Multiple --cap-drop / --cap-add can appear; at least one ALL
-        assert "ALL" in args
-
-    def test_no_new_privileges(self, captured_argv):
-        asyncio.run(_docker_run_detached("python:3.12-slim"))
-        args = captured_argv["args"]
-        assert "--security-opt" in args
-        assert "no-new-privileges:true" in args
+        assert "--cap-drop" not in args, (
+            "v1.7.2.1 rolled back cap-drop; do not re-add without v1.7.3 prereq"
+        )
+        assert "no-new-privileges:true" not in args, (
+            "v1.7.2.1 rolled back no-new-privileges; do not re-add without v1.7.3 prereq"
+        )
 
     def test_ulimit_nofile_set(self, captured_argv):
         asyncio.run(_docker_run_detached("python:3.12-slim"))
@@ -86,18 +88,13 @@ class TestDockerRunHardeningArgs:
             isinstance(a, str) and "nproc" in a for a in args
         )
 
-    def test_cap_add_minimal_for_apt(self, captured_argv):
-        """We drop ALL caps then add back only the minimal set apt needs.
-        Verify we ADD back DAC_OVERRIDE (write to system paths) and SETUID
-        (apt drops privs) but NOT broader caps like SYS_ADMIN."""
+    def test_cap_add_NOT_applied_due_to_rollback(self, captured_argv):
+        """Same v1.7.2.1 rollback rationale — cap-add lines were tied to
+        cap-drop=ALL. Without the drop, no need to add. Test pins the
+        rolled-back state."""
         asyncio.run(_docker_run_detached("python:3.12-slim"))
         args = captured_argv["args"]
-        # Filter to just --cap-add value pairs
-        cap_adds = [args[i+1] for i, a in enumerate(args) if a == "--cap-add"]
-        assert "DAC_OVERRIDE" in cap_adds
-        assert "SETUID" in cap_adds
-        assert "SYS_ADMIN" not in cap_adds
-        assert "NET_ADMIN" not in cap_adds
+        assert "--cap-add" not in args
 
 
 class TestBackwardsCompatibility:
