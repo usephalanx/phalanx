@@ -96,7 +96,10 @@ class TestTier0WorkflowExtraction:
         assert tier_source["tier"] == "0"
         assert "workflow" in tier_source["source"] or ".github" in tier_source["source"]
         assert "pip install -e .[dev]" in env_spec.install_commands
-        assert "pytest tests/" in env_spec.install_commands
+        # v1.7.1.1: test-runner commands (pytest, ruff, etc.) are filtered
+        # out of install_commands so we don't run the failing CI command
+        # during setup. They go through SRE verify instead.
+        assert "pytest tests/" not in env_spec.install_commands
 
     def test_falls_through_when_failing_job_not_in_workflow(
         self, monkeypatch, workspace_with_workflow

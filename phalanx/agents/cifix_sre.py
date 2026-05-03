@@ -341,6 +341,7 @@ class CIFixSREAgent(BaseAgent):
     async def _execute_verify(self, ci_context: dict) -> AgentResult:
         async with get_db() as session:
             setup = await self._load_upstream_sre_setup(session)
+            tl_fix_spec = await self._load_upstream_tl_fix_spec(session)
         if not setup or not setup.get("container_id"):
             return AgentResult(
                 success=False,
@@ -351,7 +352,22 @@ class CIFixSREAgent(BaseAgent):
         container_id = setup["container_id"]
         workspace_path = setup["workspace_path"]
 
-        # Build the job list: original failing command + workflow YAML commands.
+        # v1.7.2.2: prefer TL's narrow verify_command. The broad workflow
+        # enumeration finds unrelated failures elsewhere in the repo, masking
+        # a correct fix. Only fall back to enumeration when TL didn't emit a
+        # usable verify_command.
+        tl_verify_command = (tl_fix_spec or {}).get("verify_command") or ""
+        tl_verify_success = (tl_fix_spec or {}).get("verify_success") or {}
+        if isinstance(tl_verify_command, str) and tl_verify_command.strip():
+            return await self._execute_verify_narrow(
+                container_id=container_id,
+                workspace_path=workspace_path,
+                verify_command=tl_verify_command.strip(),
+                verify_success=tl_verify_success if isinstance(tl_verify_success, dict) else {},
+            )
+
+        # Fallback: legacy broad enumeration (used when no TL fix_spec or
+        # TL omitted verify_command).
         commands = _collect_verify_commands(
             workspace_path=Path(workspace_path),
             original_failing_command=ci_context.get("failing_command") or "",
@@ -424,6 +440,80 @@ class CIFixSREAgent(BaseAgent):
             },
         )
 
+    async def _execute_verify_narrow(
+        self,
+        *,
+        container_id: str,
+        workspace_path: str,
+        verify_command: str,
+        verify_success: dict,
+    ) -> AgentResult:
+        """v1.7.2.2: run TL's narrow verify_command and apply its
+        verify_success matcher. Single command, single verdict — no broad
+        workflow enumeration that risks finding unrelated lint elsewhere.
+        """
+        exec_result = await _exec_in_container(
+            container_id=container_id,
+            cmd=verify_command,
+            as_root=True,
+            workdir="/workspace",
+            timeout_s=_VERIFY_JOB_TIMEOUT_S,
+        )
+
+        exit_codes = verify_success.get("exit_codes") or [0]
+        if not isinstance(exit_codes, list) or not all(
+            isinstance(c, int) for c in exit_codes
+        ):
+            exit_codes = [0]
+        stderr_excludes = verify_success.get("stderr_excludes") or []
+        if not isinstance(stderr_excludes, list):
+            stderr_excludes = []
+
+        stderr_tail = (exec_result.stderr_tail or "")[-500:]
+        exit_ok = exec_result.exit_code in exit_codes
+        excluded_hit: str | None = None
+        for needle in stderr_excludes:
+            if isinstance(needle, str) and needle and needle in stderr_tail:
+                excluded_hit = needle
+                break
+
+        passed = exit_ok and excluded_hit is None
+        job = {
+            "name": "tl_verify_command",
+            "cmd": verify_command,
+            "exit_code": exec_result.exit_code,
+            "stderr_tail": stderr_tail,
+        }
+        new_failures = [] if passed else [job]
+        verdict = "all_green" if passed else "new_failures"
+
+        self._log.info(
+            "cifix_sre.verify.done",
+            mode="narrow",
+            verdict=verdict,
+            cmd=verify_command[:120],
+            exit_code=exec_result.exit_code,
+            exit_ok=exit_ok,
+            excluded_hit=excluded_hit,
+        )
+        return AgentResult(
+            success=True,
+            output={
+                "mode": "verify",
+                "verdict": verdict,
+                "jobs": [job],
+                "new_failures": new_failures,
+                "container_id": container_id,
+                "workspace_path": workspace_path,
+                "verify_scope": "narrow_from_tl",
+                "verify_command": verify_command,
+                "verify_success": {
+                    "exit_codes": exit_codes,
+                    "stderr_excludes": stderr_excludes,
+                },
+            },
+        )
+
     # ─────────────────────────────────────────────────────────────────────
     # DB helpers
     # ─────────────────────────────────────────────────────────────────────
@@ -457,6 +547,29 @@ class CIFixSREAgent(BaseAgent):
             if isinstance(output, dict) and output.get("mode") == "setup":
                 return output
         return None
+
+    async def _load_upstream_tl_fix_spec(self, session) -> dict | None:
+        """Latest COMPLETED cifix_techlead Task.output for this run.
+
+        Used by verify mode to read TL's narrow verify_command +
+        verify_success matcher. Returns None if no TL task has completed
+        yet (e.g., first SRE setup before TL has run).
+        """
+        result = await session.execute(
+            select(Task.output)
+            .where(
+                Task.run_id == self.run_id,
+                Task.agent_role == "cifix_techlead",
+                Task.status == "COMPLETED",
+            )
+            .order_by(Task.sequence_num.desc())
+            .limit(1)
+        )
+        row = result.one_or_none()
+        if row is None or row[0] is None:
+            return None
+        output = row[0]
+        return output if isinstance(output, dict) else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
