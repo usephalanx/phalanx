@@ -152,7 +152,11 @@ async def test_read_file_truncates_oversize(tmp_path: Path):
     r = await h(ctx, {"path": "big.txt"})
     assert r.ok
     assert r.data["truncated"] is True
-    assert len(r.data["content"]) <= 200_000
+    # v1.7.2 — content includes the BEGIN/END untrusted-content framing
+    # wrapper (~300 bytes overhead). Budget for it.
+    assert len(r.data["content"]) <= 200_500
+    # Original byte count is still accurate
+    assert r.data["bytes"] == 250_000
 
 
 # ────────────────────────────────────────────────────────────────────────

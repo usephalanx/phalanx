@@ -294,9 +294,28 @@ async def _docker_run_detached(base_image: str) -> tuple[str | None, str | None]
             "-d",
             "--rm",
             "--name", run_tag,
+            # ── Networking ─────────────────────────────────────────────
             "--network", "bridge",  # bridge needed for pip/apt downloads
-            "--memory", "2g",       # on-the-fly installs can spike memory
+            # ── Resource caps (v1.7.2 hardening) ──────────────────────
+            "--memory", "2g",
+            "--memory-swap", "2g",        # disable swap (no OOM masking via 30s hangs)
             "--cpus", "2",
+            "--pids-limit", "256",        # cap at 256 procs — kills fork bombs
+            "--ulimit", "nofile=4096:4096",
+            "--ulimit", "nproc=512:512",
+            # ── Capabilities + privileges (v1.7.2) ────────────────────
+            "--cap-drop", "ALL",
+            "--cap-add", "DAC_OVERRIDE",  # needed for pip/apt to write to system paths
+            "--cap-add", "FOWNER",        # ditto
+            "--cap-add", "SETUID",        # apt needs to drop privs
+            "--cap-add", "SETGID",
+            "--security-opt", "no-new-privileges:true",
+            # NOTE: read-only root + tmpfs mounts intentionally NOT
+            # applied here. The existing v1.4.0 install flow uses
+            # `docker exec --user 0 apt install` which needs a writable
+            # /var/lib/apt + /var/cache/apt. Adding --read-only would
+            # require a deploy-side overlay strategy. Defer to v1.7.3
+            # where we have the deploy support.
             "--entrypoint", "sleep",
             base_image,
             "infinity",
