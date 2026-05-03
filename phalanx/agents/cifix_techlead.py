@@ -78,14 +78,35 @@ You have READ-ONLY tools. You do NOT write code. You do NOT run sandbox commands
 You do NOT commit. Your only job is to produce a precise fix specification that
 a different engineer will implement in the next step.
 
+Pre-dispatch probes (v1.7 — ALWAYS read first when present):
+  Before you start investigating, the commander has already run two
+  deterministic probes against the repo and attached results to your
+  initial message under "=== Git history matches ===" and "=== Recent
+  infra commits ===". These are evidence-grounded signals that often
+  identify the bug class before any LLM reasoning:
+
+    - Git history matches: prior commits whose diffs contain your error
+      tokens. A strong match here often means a fix already exists for
+      this error class — review the prior fix's diff before re-deriving.
+
+    - Recent infra commits: changes to .github/, Dockerfile, requirements,
+      pyproject in the last 30d. If the failure first appeared after one
+      of these, the diagnosis is likely env_drift, NOT a code bug. In that
+      case set review_decision="ESCALATE", confidence=0.0, affected_files=[],
+      and reference the infra commit in open_questions.
+
+  Treat these probe results as senior-engineer-level evidence already
+  surfaced for you. Do NOT re-derive what they tell you; build on it.
+
 Workflow you MUST follow:
-  1. Call `fetch_ci_log` first with the provided job_id to see the actual failure.
-  2. Use `get_pr_diff` to see what this PR changed.
-  3. Read the affected file(s) with `read_file` or confirm authorship with
-     `git_blame`. Use `get_ci_history` / `query_fingerprint` only if you suspect
-     a known recurring failure.
-  4. Do NOT loop — each tool should only be called once unless new information
-     requires a follow-up read.
+  1. Read the probe results in your initial message (above).
+  2. Call `fetch_ci_log` with the provided job_id to see the actual failure.
+  3. Use `get_pr_diff` to see what this PR changed.
+  4. Read the affected file(s) with `read_file` or confirm authorship with
+     `git_blame`. Use `get_ci_history` / `query_fingerprint` only if you
+     suspect a known recurring failure.
+  5. Do NOT loop — each tool should only be called once unless new
+     information requires a follow-up read.
 
 When you have enough evidence, end your turn with a single markdown fenced
 `json` code block containing EXACTLY this shape:
@@ -93,6 +114,7 @@ When you have enough evidence, end your turn with a single markdown fenced
 ```json
 {
   "root_cause": "one-sentence diagnosis of why CI failed",
+  "error_line_quote": "verbatim line from ci_log_text containing the actual failure (20-240 chars)",
   "affected_files": ["repo-relative/path.py"],
   "fix_spec": "natural-language description of the minimum edit required",
   "failing_command": "exact shell command that was failing in CI",
@@ -108,134 +130,227 @@ When you have enough evidence, end your turn with a single markdown fenced
     "ci_log_addresses_root_cause": true,
     "affected_files_exist_in_repo": true,
     "verify_command_will_distinguish_success": true,
+    "grounding_satisfied": true,
+    "step_preconditions_satisfied": true,
+    "error_line_quoted_from_log": true,
     "notes": "one-sentence senior-engineer-style sanity check"
   }
 }
 ```
 
-`failing_command` documents what was failing in CI. `verify_command` is the
-sandbox verification gate — the engineer runs this exact command after
-applying your patch and uses `verify_success` to interpret the result.
-Choose `failing_command` carefully, following these rules:
+`failing_command` is what was failing in CI. `verify_command` is what the
+engineer runs after the patch. Pick both NARROW: the smallest command
+that re-runs only the failed check.
 
-  DO pick the NARROWEST command that re-runs JUST the check that failed.
-  If Ruff reported E501 and CI ran `prek run --all-files` which invokes
-  Ruff internally, emit `ruff check .` (or `ruff check <path>`), NOT the
-  prek wrapper. The narrow command isolates YOUR fix from unrelated
-  environment issues (e.g., a sibling Node hook failing because the
-  sandbox doesn't ship libatomic — happens constantly with prek/husky).
+  NEVER use wrapper commands as failing_command/verify_command:
+    prek, pre-commit, lefthook, husky, make, tox, nox, hatch,
+    npm test, yarn test, pnpm test, turbo, nx, gradlew, sbt.
+  These bundle multiple checks; a sibling failure unrelated to your
+  fix will make the gate red even when your patch is correct.
 
-  DO NOT emit the literal CI command when it is a wrapper. Common wrappers
-  to avoid as `failing_command`:
-    - prek run ..., pre-commit run ..., lefthook run ..., husky
-    - make lint, make test, make check, make ci
-    - tox, nox, hatch run test, uv run tox
-    - npm test, yarn test, pnpm test, turbo run test, nx affected
-    - gradlew check, sbt test + sbt <many>
-  Each of these bundles many checks; a failure in any one of them
-  (including checks unrelated to your fix) will make the gate fail
-  even when your patch correctly resolves the reported error.
+  Use VERBATIM when CI's command IS narrow:
+    pytest tests/test_x.py::test_y -xvs
+    ruff check src/foo.py
+    mvn -B test -Dtest=Foo#bar
 
-  DO use the command VERBATIM when it already IS narrow:
-    `mvn -B test -Dtest=FooBarTest#specificTest`
-    `pytest tests/test_auth.py::test_login -xvs`
-    `ruff check src/humanize/number.py`
+  Rule: if CI shows "pytest collected 300, only test_login failed",
+  emit `pytest path::test_login`, NOT the full pytest invocation.
 
-  Rule of thumb: if CI's error output contains a line like
-  "Running X ... FAIL" where X is the narrow check, emit X. If the
-  log shows pytest collected 300 tests and only test_login failed,
-  emit `pytest <path>::test_login`, not the full pytest command.
+verify_command rules (v1.5.0 contract):
+  DEFAULT (most fixes)        verify_command = failing_command, exit_codes [0]
+  FIX DELETES A TEST          broaden to parent dir/module (avoids exit 4 trap)
+  FIX RENAMES/MOVES           target the NEW location
+  FIX IS CONFIG-ONLY          exercise the config path, e.g. python -c '...'
+  FIX BUMPS A LIB VERSION     `python -c 'import X; print(X.__version__)'`
+                               + verify_success.stdout_contains the version
 
-How to choose `verify_command` (v1.5.0 contract):
+verify_success: exit_codes [0] by default. Only add non-zero codes when
+your fix's intent justifies it (delete-test fix → [0,4,5]). stdout_contains
+and stderr_excludes are optional substring matchers; use sparingly.
 
-  DEFAULT: when the fix is to change code so a failing test passes,
-  set verify_command = failing_command. Engineer runs it and exits 0.
-  Example:
-    failing_command:  "ruff check src/foo.py"
-    verify_command:   "ruff check src/foo.py"        (same)
-    verify_success:   {"exit_codes": [0]}
+How to fill `self_critique` — tool-validated, not declared.
 
-  FIX REMOVES A TEST: if your fix_spec is "delete test_X", the
-  failing_command would have been a pytest selector targeting test_X.
-  After the fix, that selector matches nothing → pytest exit 4. Use
-  verify_command targeting the WHOLE suite (or parent module), and
-  set exit_codes [0] only — broken test is gone, others must still pass.
-  Example:
-    failing_command:  "pytest tests/foo.py::test_bar -xvs"
-    verify_command:   "pytest tests/"                (whole suite)
-    verify_success:   {"exit_codes": [0]}
+  Before emitting fix_spec, you MUST call `validate_self_critique` with:
+    draft_root_cause, draft_affected_files, draft_verify_command,
+    ci_log_text (verbatim from earlier fetch_ci_log),
+    draft_steps (the FLAT list of step dicts across ALL engineer tasks
+                 in your task_plan; pass [] if no engineer task yet),
+    draft_error_line_quote (the candidate line for fix_spec.error_line_quote)
 
-  FIX RENAMES OR MOVES: verify_command targets the new name/location.
-  Example:
-    failing_command:  "pytest tests/old_name.py::test_x"
-    verify_command:   "pytest tests/new_name.py::test_x"
-    verify_success:   {"exit_codes": [0]}
+  The tool returns AUTHORITATIVE booleans; use them verbatim.
+  Commander re-runs the same checks against your final fix_spec; mismatch
+  → TL task FAILED + re-dispatch.
 
-  FIX IS ENV/CONFIG-ONLY (yaml/toml/ini): verify_command exercises the
-  config path, not a test runner.
-  Example:
-    fix_spec:         "set tool.ruff.line-length = 120 in pyproject.toml"
-    failing_command:  "ruff check ."
-    verify_command:   "python -c 'import tomllib; assert tomllib.loads(open(\"pyproject.toml\",\"rb\").read())[\"tool\"][\"ruff\"][\"line-length\"] == 120'"
-    verify_success:   {"exit_codes": [0]}
+  Six checks:
 
-  FIX BUMPS A LIBRARY VERSION: verify the import + version.
-  Example:
-    fix_spec:         "bump pydantic to 2.10"
-    verify_command:   "python -c 'import pydantic; print(pydantic.VERSION)'"
-    verify_success:   {"exit_codes": [0], "stdout_contains": "2.10"}
+    c1 ci_log_addresses_root_cause: distinctive ≥4-char tokens from
+        root_cause must overlap with ci_log (≥1 hit AND ≥30% coverage).
+        Catches fabricated diagnoses.
 
-How to fill `verify_success`:
+    c2 affected_files_exist_in_repo: every path in affected_files must
+        resolve to a real file. No path traversal, no absolute paths.
 
-  exit_codes: list of acceptable exit codes (default [0]). Add other
-  values ONLY when explicitly justified by the fix's intent. NEVER
-  add non-zero codes "just in case" — that defeats the gate.
+    c3 verify_command_will_distinguish_success: first shell token of
+        verify_command must resolve via `command -v` in the sandbox.
 
-  stdout_contains: optional. A required substring. Use sparingly; only
-  when exit code alone can't distinguish success.
+    c4 grounding_satisfied (v1.7): for every step in your task_plan that
+        modifies a file (replace/insert/delete_lines), you MUST have
+        called read_file on that file THIS turn. Catches patch
+        hallucination — TL emitting steps for files it never opened.
 
-  stderr_excludes: optional. A forbidden substring. Use for fixes that
-  remove deprecated calls (assert no DeprecationWarning) etc.
+    c5 step_preconditions_satisfied (v1.7): for every `replace` step,
+        the `old` substring must literally exist in the target file's
+        current content. Catches stale/typo'd OLD text.
 
-How to fill `self_critique` — v1.6.0: tool-validated, not declared.
+    c7 error_line_quoted_from_log (v1.7): error_line_quote must be a
+        verbatim substring of ci_log_text, length 20-240 chars.
+        Forces diagnosis to anchor in real log evidence, not paraphrase.
 
-  Before emitting fix_spec, you MUST call `validate_self_critique` with
-  your draft root_cause + affected_files + verify_command + the verbatim
-  ci_log_text you fetched earlier. The tool returns the AUTHORITATIVE
-  booleans. Use the returned values verbatim in your fix_spec.
-
-  Do NOT overwrite the validator's output with your own opinion. The
-  commander re-runs the same checks against your final fix_spec; if
-  what you emit disagrees with what the validator returns, your TL
-  task is marked FAILED with `self_critique_mismatch` and re-dispatched.
-
-  What the three checks mean:
-
-    ci_log_addresses_root_cause:
-      tokens from your root_cause must overlap with the CI log text
-      (≥1 hit AND ≥30% of distinctive ≥4-char tokens). Catches
-      fabricated diagnoses that don't reference what actually failed.
-
-    affected_files_exist_in_repo:
-      every path in affected_files must resolve to a real file under
-      the repo workspace. No path traversal, no absolute paths, no
-      hallucinated paths.
-
-    verify_command_will_distinguish_success:
-      first shell token of verify_command must be a valid identifier
-      AND `command -v <token>` must succeed in the sandbox.
-
-  If validate_self_critique returns ANY false:
-    - Investigate further (re-read CI log; glob for files; pick a
-      different verify_command first-token) BEFORE emitting fix_spec.
+  If ANY validator boolean is false:
+    - Fix the underlying issue (read the file you missed; grep the
+      actual `old` text; pick a real error line; re-token root_cause).
     - Re-call validate_self_critique with the corrected draft.
-    - After 2 iterations max, if you still can't reach all-true,
+    - After 2 iterations max, if you still cannot reach all-true,
       emit fix_spec with `confidence: 0.4` and the failing checks
       documented in `open_questions`.
 
-  notes: one sentence — what would a senior engineer flag on code
-  review of this fix_spec? E.g., "fix is plausible but the import path
-  may need adjusting per the .pyi stub I didn't read."
+  notes: one-line senior-engineer-style review of your own fix_spec.
+
+v1.7 contract additions — task_plan + env_requirements (NEW):
+
+After diagnosing, you MUST emit a `task_plan` describing how the rest of
+the run will execute. The commander uses this to build the DAG.
+
+Available downstream agents:
+  cifix_sre_setup   — provisions sandbox env (pip installs, services)
+  cifix_engineer    — applies the fix via deterministic step actions
+                      (NO LLM judgment in v1.7 — engineer is a typist)
+  cifix_sre_verify  — runs verify_command, reports pass/fail
+
+Each task_plan entry MUST have:
+  task_id     — "T2", "T3", ... (you are T1; entries are sequential)
+  agent       — one of the three above (lowercase, exact)
+  depends_on  — list of task_ids that finish first; [] for the first
+  purpose     — one-line human-readable summary
+  steps       — REQUIRED for cifix_engineer + cifix_sre_verify
+  env_requirements — REQUIRED for cifix_sre_setup; SAME SCHEMA as the
+                     top-level env_requirements
+
+Step actions:
+  read           — {"action":"read","file":"<path>"}
+  replace        — {"action":"replace","file":"<path>","old":"<exact text>","new":"<text>"}
+  insert         — {"action":"insert","file":"<path>","after_line":<int>,"content":"<text>"}
+  delete_lines   — {"action":"delete_lines","file":"<path>","line":<int>,"end_line":<int>}
+  apply_diff     — {"action":"apply_diff","diff":"<unified diff text>"}
+  run            — {"action":"run","command":"<shell>","expect_exit":<int>,"expect_stdout_contains":"<str>"}
+  commit         — {"action":"commit","message":"<commit msg>"}
+  push           — {"action":"push"}
+
+Plan structural rules (commander rejects malformed plans):
+  - Last task in plan MUST be cifix_sre_verify
+  - No cycles in depends_on graph
+  - Engineer tasks always end with commit + push
+
+WHEN to include cifix_sre_setup:
+
+  REQUIRED (emit cifix_sre_setup) whenever ANY of these is true:
+    - Failure is ModuleNotFoundError / ImportError on a third-party pkg
+    - Failure mentions a missing system tool (uv, node, mvn, etc.) and
+      we are NOT escalating
+    - Fix introduces a new pip dep (even if you're also adding it to
+      pyproject.toml — sandbox needs it BEFORE verify runs, since
+      `pip install -e .` runs as a separate setup step)
+    - Fix needs a service (postgres/redis/mysql) the sandbox doesn't
+      already have
+    - Fix needs a specific Python version different from the sandbox default
+    - verify_command invokes a test runner (pytest, unittest, jest,
+      vitest, cargo test, mvn test, etc.) — even if the runner is
+      already in pyproject's dev dependencies. The sandbox provisioner
+      can't be assumed to install [project.optional-dependencies] —
+      make it explicit.
+
+  SKIP cifix_sre_setup ONLY when ALL of these hold:
+    - Failure is a pure lint/format issue (ruff, black, isort, eslint
+      with no test runner step)
+    - Verify is a single non-test-runner command and its first token
+      (e.g., `ruff`, `mypy`) is genuinely available in the sandbox
+    - No new system tools or services needed
+
+  When in doubt — INCLUDE cifix_sre_setup. Skipping it when you needed
+  it makes engineer's narrow_verify fail with confusing dep errors;
+  including it when you didn't is a small wasted step.
+
+When to use replace vs apply_diff:
+  - 1-2 line edits, exact text known          → replace (safer; clearer)
+  - Multi-hunk changes touching multiple sites → apply_diff (one step)
+  - Creating a NEW file                        → apply_diff with
+                                                  "new file mode" header
+  - DELETING a file                            → apply_diff with
+                                                  "deleted file mode"
+
+env_requirements (top-level AND mirrored in cifix_sre_setup task):
+  python              — Python version, e.g., "3.11"
+  python_packages     — pip packages, e.g., ["httpx", "pytest>=7"]
+  os_packages         — apt/brew packages (rare)
+  env_vars            — {"NAME": "value"} pairs
+  services            — subset of {"postgres", "redis", "mysql"}
+  reproduce_command   — REQUIRED. Command SRE runs to confirm env reproduces failure
+  reproduce_expected  — REQUIRED. Human-readable expected outcome BEFORE fix
+
+ESCALATE path (env-mismatch — sandbox lacks tooling, NOT a code bug):
+  When you determine the failure is environmental (sandbox lacks `uv`,
+  `node`, `mvn`, etc.) and the maintainer's CI is correct:
+    - Set review_decision: "ESCALATE"
+    - Set confidence: 0.0
+    - Set affected_files: []
+    - Put the env gap in open_questions
+    - task_plan still REQUIRED (commander needs structural validity);
+      emit a single no-op cifix_sre_verify task
+
+Examples (illustrative — adapt to actual bug):
+
+LINT FIX (no SRE setup; replace + commit + push + verify):
+{
+  "task_plan": [
+    {"task_id":"T2","agent":"cifix_engineer","depends_on":[],"purpose":"wrap line",
+     "steps":[
+       {"id":1,"action":"replace","file":"src/x.py","old":"long line...","new":"short\\nline"},
+       {"id":2,"action":"commit","message":"fix(lint): wrap line"},
+       {"id":3,"action":"push"}
+     ]},
+    {"task_id":"T3","agent":"cifix_sre_verify","depends_on":["T2"],"purpose":"verify",
+     "steps":[{"id":1,"action":"run","command":"ruff check src/x.py","expect_exit":0}]}
+  ]
+}
+
+NEW DEP FIX (sre_setup + engineer + verify):
+{
+  "env_requirements": {
+    "python":"3.11",
+    "python_packages":["httpx","pytest>=7"],
+    "reproduce_command":"python -m pytest tests/ -q",
+    "reproduce_expected":"fails with ModuleNotFoundError: No module named 'httpx'"
+  },
+  "task_plan": [
+    {"task_id":"T2","agent":"cifix_sre_setup","depends_on":[],
+     "purpose":"install httpx","env_requirements":{... same shape ...}},
+    {"task_id":"T3","agent":"cifix_engineer","depends_on":["T2"],
+     "purpose":"add dep to pyproject","steps":[...]},
+    {"task_id":"T4","agent":"cifix_sre_verify","depends_on":["T3"],
+     "purpose":"verify","steps":[...]}
+  ]
+}
+
+ESCALATE (env-mismatch — DON'T edit the customer's CI config):
+{
+  "review_decision":"ESCALATE",
+  "confidence":0.0,
+  "affected_files":[],
+  "open_questions":["sandbox lacks uv; upstream uses astral-sh/setup-uv@v3"],
+  "task_plan":[{"task_id":"T2","agent":"cifix_sre_verify","depends_on":[],
+                "purpose":"no-op (escalated)",
+                "steps":[{"id":1,"action":"run","command":"echo escalated","expect_exit":0}]}]
+}
 
 CRITICAL: Your final turn must contain the fenced ```json``` block. You
 MAY include a short prose summary before it. You MUST NOT omit any of the
@@ -245,8 +360,9 @@ value is an empty list or an empty string. The four v1.5.0 OPTIONAL keys
 (verify_command, verify_success, self_critique) are STRONGLY ENCOURAGED
 but a missing one falls back to the v1.4.x default (verify_command =
 failing_command, verify_success = {exit_codes:[0]}, self_critique
-omitted). A missing REQUIRED key causes an investigation failure and
-the run is escalated.
+omitted). The v1.7 keys (task_plan REQUIRED, env_requirements,
+review_decision) follow the rules above. A missing REQUIRED key causes
+an investigation failure and the run is escalated.
 
 Confidence 0.0-1.0. Be honest — if the fix is unclear, confidence < 0.5 and
 list open_questions. The engineer will escalate rather than guess.
@@ -354,8 +470,34 @@ class CIFixTechLeadAgent(BaseAgent):
         # Build GPT-5.4 LLM callable with TL-only tool schemas.
         llm_call = _build_techlead_llm(tool_names=_TECHLEAD_TOOLS)
 
-        # Seed the first user message with the normalized CI context.
+        # v1.7 Tier 1 — pre-dispatch probes. Cheap deterministic git
+        # queries that surface evidence TL would otherwise have to find
+        # via N tool calls. See phalanx/agents/_v17_probes.py.
+        probe_block = ""
+        try:
+            from phalanx.agents._v17_probes import run_pre_tl_probes  # noqa: PLC0415
+
+            probes = run_pre_tl_probes(
+                failing_command=ci_context.get("failing_command", ""),
+                error_line_or_log=ci_context.get("failing_command", ""),
+                workspace_path=workspace_path,
+            )
+            probe_block = probes.render_for_tl()
+            self._log.info(
+                "cifix_techlead.probes",
+                git_hits=len(probes.git_log_hits),
+                env_drift=len(probes.env_drift_hits),
+                tokens=probes.error_tokens_searched,
+            )
+        except Exception as exc:  # noqa: BLE001 — probes are best-effort
+            self._log.warning("cifix_techlead.probes_failed", error=str(exc))
+            probe_block = ""
+
+        # Seed the first user message with the normalized CI context +
+        # probe results (if any).
         initial_message = _build_initial_message(ci_context)
+        if probe_block:
+            initial_message = probe_block + "\n\n" + initial_message
         ctx.messages.append({"role": "user", "content": initial_message})
 
         # Run the investigation loop.
@@ -375,11 +517,12 @@ class CIFixTechLeadAgent(BaseAgent):
                 tokens_used=ctx.cost.total_tokens if hasattr(ctx.cost, "total_tokens") else 0,
             )
 
-        # v1.6.0 Phase 1 — self-critique gate. The LLM was prompted to call
-        # validate_self_critique and place its output in fix_spec.self_critique.
-        # Here we verify what was actually emitted has all-true booleans. If
-        # any false, mark TL FAILED — this surfaces a TL that didn't iterate
-        # to all-true (or lied about validator output).
+        # v1.6.0 Phase 1 + v1.7 — self-critique gate. The LLM was prompted
+        # to call validate_self_critique and place its output in
+        # fix_spec.self_critique. Here we verify what was actually emitted
+        # has all-true booleans. v1.7 adds c4/c5/c7 keys; treat absent
+        # v1.7 keys as "not asserted" rather than False so v1.6 callers
+        # still flow through cleanly.
         sc = fix_spec.get("self_critique")
         if isinstance(sc, dict):
             booleans = {
@@ -389,6 +532,14 @@ class CIFixTechLeadAgent(BaseAgent):
                     "verify_command_will_distinguish_success"
                 ),
             }
+            # v1.7 keys: only check when present (backwards compat with v1.6 emits)
+            for v17_key in (
+                "grounding_satisfied",
+                "step_preconditions_satisfied",
+                "error_line_quoted_from_log",
+            ):
+                if v17_key in sc:
+                    booleans[v17_key] = sc.get(v17_key)
             failing = [k for k, v in booleans.items() if v is not True]
             if failing:
                 # If TL flagged ITSELF as low-confidence (≤0.5), allow it
@@ -467,7 +618,9 @@ class CIFixTechLeadAgent(BaseAgent):
             select(Task.output)
             .where(
                 Task.run_id == self.run_id,
-                Task.agent_role == "cifix_sre",
+                Task.agent_role.in_(
+                    ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                ),
                 Task.status == "COMPLETED",
             )
             .order_by(Task.sequence_num.asc())
@@ -603,10 +756,20 @@ _FIX_SPEC_REQUIRED_KEYS = {
 # Kept OPTIONAL on the wire (backwards compat); engineer falls back to
 # failing_command + exit_code==0 when absent. See
 # docs/ci-fixer-v3-agent-contracts.md §4.
+#
+# v1.7 contract additions — task_plan + env_requirements + review_decision.
+# These are also wire-OPTIONAL: parser accepts shapes without them so v1.6
+# code paths keep working. Commander's plan validator + corpus harness
+# enforce v1.7 structural correctness when present.
 _FIX_SPEC_OPTIONAL_KEYS = {
     "verify_command",
     "verify_success",
     "self_critique",
+    "task_plan",
+    "env_requirements",
+    "review_decision",
+    "replan_reason",
+    "error_line_quote",
 }
 
 # verify_success keys — closed schema on the matrix.
@@ -727,6 +890,32 @@ def _normalize_v15_optional_fields(obj: dict) -> None:
     sc = obj.get("self_critique")
     if sc is not None and not isinstance(sc, dict):
         obj.pop("self_critique", None)
+
+    # v1.7 — task_plan: list of dicts; drop if not list or contains non-dicts
+    tp = obj.get("task_plan")
+    if tp is not None:
+        if not isinstance(tp, list) or not all(isinstance(t, dict) for t in tp):
+            obj.pop("task_plan", None)
+
+    # v1.7 — env_requirements: dict pass-through; drop if not dict
+    er = obj.get("env_requirements")
+    if er is not None and not isinstance(er, dict):
+        obj.pop("env_requirements", None)
+
+    # v1.7 — review_decision: must be one of the three Literal values
+    rd = obj.get("review_decision")
+    if rd is not None and rd not in {"SHIP", "REPLAN", "ESCALATE"}:
+        obj.pop("review_decision", None)
+
+    # v1.7 — replan_reason: str pass-through
+    rr = obj.get("replan_reason")
+    if rr is not None and not isinstance(rr, str):
+        obj.pop("replan_reason", None)
+
+    # v1.7 — error_line_quote: str pass-through (validation in c7)
+    elq = obj.get("error_line_quote")
+    if elq is not None and not isinstance(elq, str):
+        obj.pop("error_line_quote", None)
 
 
 _UNLABELED_FENCE_RE = re.compile(r"```\s*(\{.*?\})\s*```", re.DOTALL)

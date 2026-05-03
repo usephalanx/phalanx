@@ -57,9 +57,13 @@ _MAX_ITERATIONS = 3
 # v1.6 Phase 2 — per-run cost cap. Aggregate `tasks.tokens_used` per run;
 # abort dispatch of any further iteration if the running estimate exceeds
 # the cap. Conservative blended rate covers GPT-5.4 input+output + Sonnet
-# input+output; a finer split per-model lives in v1.7.
+# input+output.
+#
+# v1.7 — bumped from $1 to $30 to accommodate Challenger ($5) + reasonable
+# multi-iteration headroom. Per-task caps remain in each agent's local
+# config (TL=$5, Challenger=$5, SRE=$4, Engineer=$1).
 _COST_PER_TOKEN_USD: float = 20e-6  # blended; conservative (real avg ~$10/1M)
-_MAX_RUN_COST_USD: float = 1.00     # hard abort above this
+_MAX_RUN_COST_USD: float = 30.00    # hard abort above this
 
 # Chain of ceremonial transitions from VERIFYING to SHIPPED. We don't invoke
 # approval gates for CI fixes (they're auto-commit), but we respect the state
@@ -363,17 +367,23 @@ class CIFixCommanderAgent(BaseAgent):
     async def _persist_initial_dag(
         self, session: AsyncSession, ci_context: dict
     ) -> None:
-        """Insert the v3 iteration-1 DAG: 4 tasks in sequence.
+        """Insert the v3 iteration-1 DAG.
 
-          seq=1  cifix_sre      (sre_mode='setup')  — clone + provision
-          seq=2  cifix_techlead                     — investigate
-          seq=3  cifix_engineer                     — fix + commit
-          seq=4  cifix_sre      (sre_mode='verify') — full CI mimicry
+        v1.7 — 5 tasks (Challenger added between TL and Engineer in shadow
+        mode; verdict is logged but does NOT gate downstream dispatch yet):
+
+          seq=1  cifix_sre        (sre_mode='setup')   — clone + provision
+          seq=2  cifix_techlead                        — investigate
+          seq=3  cifix_challenger                      — adversarial review (NEW, shadow mode)
+          seq=4  cifix_engineer                        — fix + commit
+          seq=5  cifix_sre        (sre_mode='verify')  — full CI mimicry
 
         Each task carries the ci_context in its description so downstream
         agents can read it without re-loading the WorkOrder. The SRE setup
         and verify tasks get different `sre_mode` values inside their
-        serialized context.
+        serialized context. The Challenger inherits the SRE setup's
+        workspace via DB lookup (see CIFixChallengerAgent._load_ctx_payload)
+        and reads TL's output via DB lookup at execute time.
         """
         repo = ci_context.get("repo") or "?"
         pr = ci_context.get("pr_number")
@@ -381,13 +391,19 @@ class CIFixCommanderAgent(BaseAgent):
 
         setup_ctx = {**ci_context, "sre_mode": "setup"}
         verify_ctx = {**ci_context, "sre_mode": "verify"}
+        # Challenger needs the workspace_path which the SRE setup task
+        # produces in its output. Commander's poll loop already inherits
+        # workspace_path via _load_sre_setup_output pattern; Challenger
+        # mirrors that. ci_log_text is read by the Challenger from the
+        # TL task's tool history (fetch_ci_log result).
+        challenger_ctx = {**ci_context, "shadow_mode": True}
 
         setup_task = Task(
             run_id=self.run_id,
             sequence_num=1,
             title=f"Provision sandbox: {repo}#{pr}",
             description=json.dumps(setup_ctx),
-            agent_role="cifix_sre",
+            agent_role="cifix_sre_setup",  # v1.7 — was "cifix_sre"
             status="PENDING",
             estimated_complexity=2,
         )
@@ -400,9 +416,18 @@ class CIFixCommanderAgent(BaseAgent):
             status="PENDING",
             estimated_complexity=3,
         )
-        engineer = Task(
+        challenger = Task(
             run_id=self.run_id,
             sequence_num=3,
+            title=f"Adversarial review of fix plan: {repo}#{pr} (shadow mode)",
+            description=json.dumps(challenger_ctx),
+            agent_role="cifix_challenger",
+            status="PENDING",
+            estimated_complexity=2,
+        )
+        engineer = Task(
+            run_id=self.run_id,
+            sequence_num=4,
             title=f"Apply fix + sandbox verify: {repo}#{pr}",
             description=json.dumps(ci_context),
             agent_role="cifix_engineer",
@@ -411,15 +436,16 @@ class CIFixCommanderAgent(BaseAgent):
         )
         verify_task = Task(
             run_id=self.run_id,
-            sequence_num=4,
+            sequence_num=5,
             title=f"Re-run full CI in sandbox: {repo}#{pr}",
             description=json.dumps(verify_ctx),
-            agent_role="cifix_sre",
+            agent_role="cifix_sre_verify",  # v1.7 — was "cifix_sre"
             status="PENDING",
             estimated_complexity=2,
         )
         session.add(setup_task)
         session.add(techlead)
+        session.add(challenger)
         session.add(engineer)
         session.add(verify_task)
         await session.commit()
@@ -486,7 +512,7 @@ class CIFixCommanderAgent(BaseAgent):
                 sequence_num=current_max + 3,
                 title=f"[iter {iteration}] Re-run full CI: {repo}#{pr}",
                 description=json.dumps(verify_ctx),
-                agent_role="cifix_sre",
+                agent_role="cifix_sre_verify",  # v1.7 — was "cifix_sre"
                 status="PENDING",
                 estimated_complexity=2,
             )
@@ -532,12 +558,16 @@ class CIFixCommanderAgent(BaseAgent):
         'new_failures', or None if no verify task has completed yet (which
         is unusual — we only call this on VERIFYING).
         """
+        # v1.7 broadened the SRE role names; match all three to keep
+        # commander-vs-agent forward/backward compat during the cutover.
         async with get_db() as session:
             result = await session.execute(
                 select(Task.output)
                 .where(
                     Task.run_id == self.run_id,
-                    Task.agent_role == "cifix_sre",
+                    Task.agent_role.in_(
+                        ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                    ),
                     Task.status == "COMPLETED",
                 )
                 .order_by(Task.sequence_num.desc())
@@ -554,7 +584,9 @@ class CIFixCommanderAgent(BaseAgent):
             result = await session.execute(
                 select(Task.output).where(
                     Task.run_id == self.run_id,
-                    Task.agent_role == "cifix_sre",
+                    Task.agent_role.in_(
+                        ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                    ),
                     Task.status == "COMPLETED",
                 )
             )

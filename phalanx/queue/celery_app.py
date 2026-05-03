@@ -30,6 +30,7 @@ celery_app = Celery(
         # is not sufficient (learned the hard way during the v3 canary).
         "phalanx.agents.cifix_commander",
         "phalanx.agents.cifix_techlead",
+        "phalanx.agents.cifix_challenger",  # v1.7 reviewer (shadow mode initially)
         "phalanx.agents.cifix_engineer",
         "phalanx.agents.cifix_sre",
         "phalanx.workflow.advance_run",
@@ -71,6 +72,7 @@ celery_app.config_from_object(
             # CI Fixer v3 — multi-agent DAG (Commander → TechLead → Engineer → SRE)
             "cifix_commander": {"exchange": "cifix_commander", "routing_key": "cifix_commander"},
             "cifix_techlead": {"exchange": "cifix_techlead", "routing_key": "cifix_techlead"},
+            "cifix_challenger": {"exchange": "cifix_challenger", "routing_key": "cifix_challenger"},
             "cifix_engineer": {"exchange": "cifix_engineer", "routing_key": "cifix_engineer"},
             "cifix_sre": {"exchange": "cifix_sre", "routing_key": "cifix_sre"},
         },
@@ -89,6 +91,7 @@ celery_app.config_from_object(
             # v3 multi-agent routing (name-prefixed so they don't collide with v2)
             "phalanx.agents.cifix_commander.*": {"queue": "cifix_commander"},
             "phalanx.agents.cifix_techlead.*": {"queue": "cifix_techlead"},
+            "phalanx.agents.cifix_challenger.*": {"queue": "cifix_challenger"},
             "phalanx.agents.cifix_engineer.*": {"queue": "cifix_engineer"},
             "phalanx.agents.cifix_sre.*": {"queue": "cifix_sre"},
             "phalanx.skills.ingestion.*": {"queue": "ingestion"},

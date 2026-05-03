@@ -146,13 +146,15 @@ async def test_cost_cap_does_not_abort_under_threshold(monkeypatch):
 
 
 async def test_cost_cap_aborts_above_threshold(monkeypatch):
-    """60_000 tokens × $20e-6 = $1.20 — over the $1.00 cap; abort=True."""
-    _patch_cost_aggregate(monkeypatch, total_tokens=60_000)
+    """v1.7 — cap bumped to $30 to accommodate Challenger ($5) + per-agent
+    headroom. 1_600_000 tokens × $20e-6 = $32 — over the $30 cap; abort.
+    """
+    _patch_cost_aggregate(monkeypatch, total_tokens=1_600_000)
     agent = _make_commander_for_cost_check()
     should_abort, estimate, tokens = await agent._check_cost_cap()
     assert should_abort is True
-    assert tokens == 60_000
-    assert 1.19 <= estimate <= 1.21
+    assert tokens == 1_600_000
+    assert 31.9 <= estimate <= 32.1
 
 
 async def test_cost_cap_handles_zero_tokens(monkeypatch):
@@ -166,15 +168,19 @@ async def test_cost_cap_handles_zero_tokens(monkeypatch):
 
 def test_cost_cap_constants_documented():
     """Sanity: constants exposed at module level so future edits + this
-    test stay synced."""
+    test stay synced. v1.7 — bumped from $1 to $30 (see commander module
+    comment + docs/v17-architecture-gaps.md)."""
     assert cc_mod._COST_PER_TOKEN_USD == 20e-6
-    assert cc_mod._MAX_RUN_COST_USD == 1.0
+    assert cc_mod._MAX_RUN_COST_USD == 30.0
 
 
 def test_cost_cap_threshold_reasonable():
-    """The cap must let the typical-cell run finish (under $0.20) but
-    catch a runaway 3-iter loop (~$1.50+). $1.00 sits between."""
-    typical_cell_tokens = 10_000  # ~$0.20
-    runaway_tokens = 100_000  # ~$2.00
+    """The cap must let the typical-cell run finish (well under $30) but
+    catch a runaway loop (multiple agents × multiple iterations). v1.7
+    sizes for: TL ($5) + Challenger ($5) + SRE ($4) + Engineer ($1) per
+    iteration; up to ~3 iterations before something is structurally wrong.
+    """
+    typical_cell_tokens = 200_000  # ~$4 — single full run incl Challenger
+    runaway_tokens = 2_000_000  # ~$40 — 8+ iterations
     assert typical_cell_tokens * cc_mod._COST_PER_TOKEN_USD < cc_mod._MAX_RUN_COST_USD
     assert runaway_tokens * cc_mod._COST_PER_TOKEN_USD > cc_mod._MAX_RUN_COST_USD

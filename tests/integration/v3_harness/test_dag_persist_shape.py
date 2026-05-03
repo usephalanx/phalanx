@@ -1,10 +1,15 @@
 """Catches DAG-persistence shape bugs in cifix_commander.
 
-The 4-task DAG (sre_setup → techlead → engineer → sre_verify) is the
-core architectural commitment of v3. If a future change accidentally
-drops sre_verify, swaps order, or misses the sre_mode field on either
-SRE task, the canary won't ship. These tests assert the shape on a
-mocked DB session — no real Postgres needed.
+The v1.7 5-task DAG (sre_setup → techlead → challenger → engineer →
+sre_verify) is the core architectural commitment. If a future change
+accidentally drops sre_verify, swaps order, misses sre_mode on either
+SRE task, or skips the Challenger task, the canary won't ship. These
+tests assert the shape on a mocked DB session — no real Postgres needed.
+
+Note: Challenger runs in shadow mode in v1.7.0 — its verdict is logged
+but does NOT gate downstream dispatch. The DAG shape is unconditional;
+shadow-mode is enforced by the Challenger agent's own logic returning
+success regardless of verdict.
 """
 
 from __future__ import annotations
@@ -19,9 +24,9 @@ from phalanx.db.models import Task
 
 
 @pytest.mark.asyncio
-async def test_persist_initial_dag_creates_4_tasks_in_order():
-    """4 tasks with sequence_num 1..4 in the order:
-        sre_setup → techlead → engineer → sre_verify.
+async def test_persist_initial_dag_creates_5_tasks_in_order():
+    """v1.7 — 5 tasks with sequence_num 1..5 in the order:
+        sre_setup → techlead → challenger → engineer → sre_verify.
     """
     agent = CIFixCommanderAgent(
         run_id="test-run-1",
@@ -44,24 +49,25 @@ async def test_persist_initial_dag_creates_4_tasks_in_order():
 
     await agent._persist_initial_dag(session, ci_context)
 
-    # 4 tasks, in this exact order
-    assert len(captured) == 4, [t.agent_role for t in captured]
+    # 5 tasks, in this exact order
+    assert len(captured) == 5, [t.agent_role for t in captured]
     roles_in_order = [t.agent_role for t in captured]
     assert roles_in_order == [
-        "cifix_sre",
+        "cifix_sre_setup",  # v1.7 — split from "cifix_sre"
         "cifix_techlead",
+        "cifix_challenger",
         "cifix_engineer",
-        "cifix_sre",
+        "cifix_sre_verify",  # v1.7 — split from "cifix_sre"
     ], roles_in_order
 
-    # sequence_num strictly 1, 2, 3, 4
-    assert [t.sequence_num for t in captured] == [1, 2, 3, 4]
+    # sequence_num strictly 1, 2, 3, 4, 5
+    assert [t.sequence_num for t in captured] == [1, 2, 3, 4, 5]
 
 
 @pytest.mark.asyncio
 async def test_initial_dag_sre_modes_correct():
-    """seq=1 must carry sre_mode='setup'; seq=4 must carry sre_mode='verify'.
-    Engineer + Tech Lead descriptions must NOT contain sre_mode.
+    """seq=1 must carry sre_mode='setup'; seq=5 must carry sre_mode='verify'.
+    Tech Lead, Challenger, and Engineer descriptions must NOT contain sre_mode.
     """
     agent = CIFixCommanderAgent(
         run_id="test-run-2",
@@ -84,21 +90,25 @@ async def test_initial_dag_sre_modes_correct():
     await agent._persist_initial_dag(session, ci_context)
 
     setup_ctx = json.loads(captured[0].description)
-    verify_ctx = json.loads(captured[3].description)
     techlead_ctx = json.loads(captured[1].description)
-    engineer_ctx = json.loads(captured[2].description)
+    challenger_ctx = json.loads(captured[2].description)
+    engineer_ctx = json.loads(captured[3].description)
+    verify_ctx = json.loads(captured[4].description)
 
     assert setup_ctx.get("sre_mode") == "setup"
     assert verify_ctx.get("sre_mode") == "verify"
-    # Tech Lead and Engineer don't take a sre_mode — that field is
-    # only meaningful for SRE tasks.
+    # Tech Lead, Challenger, and Engineer don't take a sre_mode — that
+    # field is only meaningful for SRE tasks.
     assert "sre_mode" not in techlead_ctx
+    assert "sre_mode" not in challenger_ctx
     assert "sre_mode" not in engineer_ctx
+    # Challenger task carries shadow_mode=True flag
+    assert challenger_ctx.get("shadow_mode") is True
 
 
 @pytest.mark.asyncio
 async def test_initial_dag_pending_status():
-    """All 4 tasks must start as PENDING — advance_run only dispatches
+    """All 5 tasks must start as PENDING — advance_run only dispatches
     PENDING tasks. Any other initial status would block the run.
     """
     agent = CIFixCommanderAgent(

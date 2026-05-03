@@ -205,6 +205,22 @@ class CIFixEngineerAgent(BaseAgent):
                 reason="no sre_setup upstream output found (non-v3 path)",
             )
 
+        # ── v1.7 path: deterministic step interpreter ──────────────────
+        # When TL emits a task_plan with concrete steps for the engineer,
+        # we execute them deterministically instead of running the Sonnet
+        # coder loop. This structurally closes Bug #17 (coder turn-cap
+        # 0-length diffs). Falls through to the v1.6 Sonnet path when
+        # no engineer steps are present.
+        v17_engineer_steps = _extract_v17_engineer_steps(fix_spec)
+        if v17_engineer_steps:
+            return await self._execute_via_step_interpreter(
+                steps=v17_engineer_steps,
+                workspace_path=workspace_path,
+                fix_spec=fix_spec,
+                ci_context=ci_context,
+                affected_files=affected_files,
+            )
+
         # Build AgentContext with sandbox available
         ctx = _build_engineer_context(
             run_id=self.run_id,
@@ -369,6 +385,157 @@ class CIFixEngineerAgent(BaseAgent):
             tokens_used=tokens_used,
         )
 
+    # ── v1.7 step-interpreter path ───────────────────────────────────────────
+
+    async def _execute_via_step_interpreter(
+        self,
+        *,
+        steps: list[dict],
+        workspace_path: str,
+        fix_spec: dict,
+        ci_context: dict,
+        affected_files: list[str],
+    ) -> AgentResult:
+        """v1.7 deterministic execution of TL-emitted engineer steps.
+
+        TL planned every step explicitly (replace/insert/apply_diff/run/
+        commit/push). We walk them via execute_task_steps. If any step's
+        precondition fails (most commonly a stale `replace.old`), we
+        report `step_precondition_violated` and TL's re-plan loop kicks
+        in upstream.
+
+        On success: extract commit_sha from the last commit step, update
+        CIFixRun.fix_commit_sha (same bot-loop guard as v1.6 path),
+        return AgentResult mirroring the v1.6 success shape so commander
+        and downstream readers don't need to special-case.
+        """
+        from phalanx.agents._engineer_step_interpreter import (  # noqa: PLC0415
+            execute_task_steps_async,
+        )
+
+        self._log.info(
+            "cifix_engineer.v17_path",
+            n_steps=len(steps),
+            workspace=workspace_path,
+        )
+        result = await execute_task_steps_async(steps, workspace_path)
+
+        if not result.ok:
+            failed = result.failed_step
+            assert failed is not None
+            self._log.warning(
+                "cifix_engineer.v17_step_failed",
+                step_id=failed.step_id,
+                action=failed.action,
+                error=failed.error,
+                detail=(failed.detail or "")[:300],
+            )
+            return AgentResult(
+                success=False,
+                output={
+                    "committed": False,
+                    "v17_path": True,
+                    "failed_step_id": failed.step_id,
+                    "failed_step_action": failed.action,
+                    "failed_step_error": failed.error,
+                    "failed_step_detail": failed.detail,
+                    "completed_steps": result.completed_steps,
+                    "tech_lead_root_cause": fix_spec.get("root_cause", ""),
+                    "tech_lead_fix_spec": fix_spec.get("fix_spec", ""),
+                },
+                error=(
+                    f"step {failed.step_id} ({failed.action}) failed: "
+                    f"{failed.error}"
+                ),
+            )
+
+        commit_sha = result.commit_sha
+        if commit_sha is None:
+            # Steps completed but no commit step ran — TL's plan was
+            # incomplete (missing commit / push). Surface as failure so
+            # commander can re-route to TL.
+            self._log.warning(
+                "cifix_engineer.v17_no_commit_in_plan",
+                completed_steps=result.completed_steps,
+            )
+            return AgentResult(
+                success=False,
+                output={
+                    "committed": False,
+                    "v17_path": True,
+                    "skipped_reason": "tl_plan_missing_commit_step",
+                    "completed_steps": result.completed_steps,
+                },
+                error=(
+                    "TL's engineer task_plan completed all steps but did "
+                    "not include a `commit` action — refusing to claim "
+                    "success without a commit_sha"
+                ),
+            )
+
+        # Bot-loop guard parity with v1.6 path: record fix_commit_sha
+        # on CIFixRun so the webhook handler skips dispatching parallel
+        # v3 runs for our own push.
+        await self._update_fix_commit_sha(ci_context, commit_sha)
+
+        # Compute unified diff for scorecard / observability (parity).
+        unified_diff = ""
+        try:
+            from phalanx.ci_fixer_v2.tools.coder import _compute_final_diff  # noqa: PLC0415
+
+            unified_diff = await _compute_final_diff(workspace_path)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("cifix_engineer.v17_diff_compute_failed", error=str(exc))
+
+        self._log.info(
+            "cifix_engineer.v17_committed",
+            commit_sha=commit_sha,
+            n_steps=len(result.completed_steps),
+        )
+        return AgentResult(
+            success=True,
+            output={
+                "committed": True,
+                "v17_path": True,
+                "commit_sha": commit_sha,
+                "files_modified": affected_files,
+                "diff": unified_diff,
+                "completed_steps": result.completed_steps,
+                "verify": {
+                    "cmd": ci_context.get("verify_command")
+                    or ci_context.get("failing_command"),
+                    "exit_code": 0,
+                },
+                "model": "deterministic-step-interpreter",
+                "tokens_used": 0,
+            },
+            tokens_used=0,
+        )
+
+    async def _update_fix_commit_sha(self, ci_context: dict, commit_sha: str) -> None:
+        """Mirror of the v1.6 fix_commit_sha update — best-effort."""
+        ci_fix_run_id = ci_context.get("ci_fix_run_id")
+        if not (ci_fix_run_id and commit_sha):
+            return
+        try:
+            from sqlalchemy import update  # noqa: PLC0415
+
+            from phalanx.db.models import CIFixRun  # noqa: PLC0415
+
+            async with get_db() as session:
+                await session.execute(
+                    update(CIFixRun)
+                    .where(CIFixRun.id == ci_fix_run_id)
+                    .values(fix_commit_sha=commit_sha)
+                )
+                await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                "cifix_engineer.v17_fix_commit_sha_update_failed",
+                ci_fix_run_id=ci_fix_run_id,
+                error=str(exc),
+            )
+
     # ── DB helpers ────────────────────────────────────────────────────────────
 
     async def _load_task(self, session) -> Task | None:
@@ -433,7 +600,9 @@ class CIFixEngineerAgent(BaseAgent):
             select(Task.output)
             .where(
                 Task.run_id == self.run_id,
-                Task.agent_role == "cifix_sre",
+                Task.agent_role.in_(
+                    ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                ),
                 Task.status == "COMPLETED",
             )
             .order_by(Task.sequence_num.asc())
@@ -448,6 +617,30 @@ class CIFixEngineerAgent(BaseAgent):
 # Module helpers (reuse v2 clone + sandbox + context; kept as module-level
 # functions so unit tests can inject fakes)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_v17_engineer_steps(fix_spec: dict) -> list[dict] | None:
+    """v1.7 dispatch helper — returns the engineer task's `steps` list
+    when TL emitted a well-formed task_plan, else None.
+
+    Falls back gracefully: if fix_spec is v1.6-shape (no task_plan),
+    returns None and the engineer takes the Sonnet coder_subagent path.
+    Same if task_plan exists but contains no engineer task, or the
+    engineer task has no steps. This keeps the v1.6 testbed canaries
+    working unchanged through the cutover.
+    """
+    plan = fix_spec.get("task_plan")
+    if not isinstance(plan, list):
+        return None
+    for ts in plan:
+        if not isinstance(ts, dict):
+            continue
+        if ts.get("agent") != "cifix_engineer":
+            continue
+        steps = ts.get("steps")
+        if isinstance(steps, list) and steps:
+            return steps
+    return None
 
 
 async def _clone_workspace(

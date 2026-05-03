@@ -1,34 +1,42 @@
-"""Tech Lead self-critique validator (Phase 1, v1.6.0).
+"""Tech Lead self-critique validator.
 
-Replaces v1.5.0's prompt-driven self_critique with deterministic tool-side
-validation. The LLM can no longer fake the booleans — they're computed
-from real observable evidence (ci_log text overlap, file system state,
-sandbox command resolution).
+v1.6.0 introduced deterministic c1/c2/c3. v1.7 adds c4/c5/c7 to close
+the patch-hallucination class flagged in the corpus run review:
 
-Three checks, one per boolean:
+    c1 — ci_log_addresses_root_cause (v1.6)
+        token-overlap check on root_cause vs ci_log_text.
 
-    c1 — ci_log_addresses_root_cause:
-        extract distinctive ≥4-char tokens from draft_root_cause (drop
-        common stopwords); count how many appear in supplied ci_log_text;
-        pass iff ≥1 hit AND ≥30% of distinct tokens appear at least once.
+    c2 — affected_files_exist_in_repo (v1.6)
+        every path resolves to a real file in the workspace.
 
-    c2 — affected_files_exist_in_repo:
-        for each path in draft_affected_files, resolve under
-        ctx.repo_workspace_path; reject path traversal; require .is_file().
-        Pass iff EVERY path exists.
+    c3 — verify_command_will_distinguish_success (v1.6)
+        first shell token of verify_command resolves on PATH.
 
-    c3 — verify_command_will_distinguish_success:
-        extract first shell token of draft_verify_command; require it
-        matches `^[A-Za-z0-9._-]+$`. If sandbox available, run
-        `command -v <token>` and pass iff exit 0. If sandbox unavailable,
-        mark as "unverified" (treated as soft-pass for backwards compat
-        on non-v3 paths).
+    c4 — grounding_satisfied (v1.7 NEW)
+        every step in draft_steps that names a file (replace/insert/
+        delete_lines) MUST have been seen by a read_file call this
+        turn. Catches TL hallucinating line numbers / `old` text.
+
+    c5 — step_preconditions_satisfied (v1.7 NEW)
+        for every replace step's `old` substring, grep the target
+        file in the live workspace; pass iff `old` is actually
+        present. Catches typos / stale OLD text from earlier reads.
+
+    c7 — error_line_quoted_from_log (v1.7 NEW)
+        draft_error_line_quote MUST be a non-empty substring of
+        ci_log_text (length 20-200 chars). Forces TL to anchor its
+        diagnosis to a verbatim line from the failure log.
+
+(c6 — env_requirements_resolvable — reserved; will land with the
+SRE wiring phase.)
 
 Two consumers:
-    - LLM tool-call site: handler runs all three; returns booleans + mismatches.
-    - Commander gate: `verify_self_critique` re-runs all three deterministically
-      against the FINAL fix_spec to ensure the LLM didn't lie about validator
-      output. Returns mismatch list; commander marks TL FAILED if any.
+    - LLM tool-call site: handler runs all available checks; returns
+      booleans + mismatches.
+    - Commander gate: `commander_verify_fix_spec_self_critique` re-runs
+      every check deterministically against the FINAL fix_spec to
+      ensure the LLM didn't lie about validator output. Returns
+      mismatch list; commander marks TL FAILED if any.
 """
 
 from __future__ import annotations
@@ -144,6 +152,224 @@ def check_c2_affected_files_exist(
     return True, ""
 
 
+def check_c4_grounding_satisfied(
+    *,
+    draft_steps: list[dict] | None,
+    files_read_this_turn: set[str],
+) -> tuple[bool, str]:
+    """Every step that modifies a file must reference a file TL has read
+    this turn. Catches TL emitting `replace`/`insert`/`delete_lines`
+    against files it hasn't actually loaded — the source class of patch
+    hallucination flagged in ChatGPT's prompt review.
+    """
+    if not draft_steps:
+        return True, ""  # No steps yet — nothing to ground
+
+    for step in draft_steps:
+        if not isinstance(step, dict):
+            continue
+        action = step.get("action")
+        if action not in {"replace", "insert", "delete_lines"}:
+            continue
+        file_path = step.get("file")
+        if not file_path or not isinstance(file_path, str):
+            return False, f"step (action={action!r}) missing file"
+        if file_path not in files_read_this_turn:
+            return False, (
+                f"step modifies {file_path!r} but read_file({file_path!r}) "
+                f"was not called this turn (read these so far: "
+                f"{sorted(files_read_this_turn)})"
+            )
+    return True, ""
+
+
+def check_c5_step_preconditions_satisfied(
+    *,
+    draft_steps: list[dict] | None,
+    workspace_path: str | Path,
+) -> tuple[bool, str]:
+    """For every `replace` step, the `old` substring must actually be
+    present in the target file's current content. Catches stale OLD
+    text (e.g., TL read the file but the prompt-eng iterator changed
+    something between read and emit) and typos in OLD that would make
+    the engineer's apply step fail with step_precondition_violated.
+    """
+    if not draft_steps:
+        return True, ""
+
+    workspace = Path(workspace_path).resolve()
+    for step in draft_steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("action") != "replace":
+            continue
+        file_path = step.get("file")
+        old = step.get("old")
+        if not file_path or not isinstance(file_path, str):
+            return False, "replace step missing file"
+        if not isinstance(old, str) or not old:
+            return False, f"replace step on {file_path!r} has empty/missing 'old'"
+
+        target = (workspace / file_path).resolve()
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            return False, f"replace step references file outside workspace: {file_path!r}"
+        if not target.is_file():
+            return False, f"replace step references missing file: {file_path!r}"
+        try:
+            content = target.read_text(errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not read {file_path!r}: {exc}"
+        if old not in content:
+            preview = old[:60] + ("..." if len(old) > 60 else "")
+            return False, (
+                f"replace step's 'old' substring not in {file_path!r} "
+                f"(old preview: {preview!r})"
+            )
+    return True, ""
+
+
+def check_c7_error_line_quoted_from_log(
+    *,
+    draft_error_line_quote: str | None,
+    ci_log_text: str,
+) -> tuple[bool, str]:
+    """error_line_quote must be a verbatim substring of ci_log_text,
+    length 20-200 chars. Forces TL to anchor its diagnosis to a real
+    line from the failure log instead of paraphrasing.
+    """
+    if not draft_error_line_quote:
+        return False, "error_line_quote is empty/missing"
+    if not isinstance(draft_error_line_quote, str):
+        return False, "error_line_quote must be a string"
+    quote = draft_error_line_quote.strip()
+    if len(quote) < 20:
+        return False, (
+            f"error_line_quote too short ({len(quote)} < 20 chars); "
+            f"pick a more specific line from ci_log"
+        )
+    if len(quote) > 240:
+        return False, (
+            f"error_line_quote too long ({len(quote)} > 240 chars); "
+            f"pick a single failure line, not a paragraph"
+        )
+    if quote not in (ci_log_text or ""):
+        return False, (
+            f"error_line_quote not found verbatim in ci_log_text; "
+            f"quote={quote[:80]!r}..."
+        )
+    return True, ""
+
+
+def check_c11_environmental_control(
+    *,
+    draft_root_cause: str,
+    draft_open_questions: list[str] | None,
+    env_drift_hits: list,  # list[GitCommitHit] but kept untyped to avoid import cycle
+) -> tuple[bool, str]:
+    """If recent infra commits exist (env_drift_hits non-empty) AND TL's
+    diagnosis doesn't mention env / drift / infra concerns, raise.
+
+    Catches the trap: "code is fine but CI broke because mamba 2.6.0
+    shipped" — TL diagnoses the visible Python error and misses the
+    actual cause (an infra commit from yesterday).
+    """
+    if not env_drift_hits:
+        return True, ""  # no drift detected — nothing to flag
+
+    haystack = (draft_root_cause or "").lower()
+    haystack += " " + " ".join(str(q) for q in (draft_open_questions or [])).lower()
+    env_keywords = {
+        "infra", "infrastructure", "env", "environment", "sandbox",
+        "runner", "image", "drift", "github action", "workflow",
+        "dockerfile", "dependency", "dependencies", "package", "version",
+        "release", "deploy",
+    }
+    if any(kw in haystack for kw in env_keywords):
+        return True, ""  # TL acknowledged env-side cause
+
+    return False, (
+        f"{len(env_drift_hits)} recent infra commit(s) detected but "
+        f"root_cause + open_questions don't reference env/infra causes. "
+        f"Top recent infra commits: "
+        + ", ".join(f"{h.sha} ({', '.join(h.files[:2])})"
+                    for h in env_drift_hits[:3])
+        + ". If failure first appeared after one of these, the fix may be "
+        f"reverting/adjusting the infra change, NOT patching code."
+    )
+
+
+def check_c12_isolation_test_advisable(
+    *,
+    draft_root_cause: str,
+    draft_failing_command: str,
+    draft_open_questions: list[str] | None,
+) -> tuple[bool, str]:
+    """If root_cause names a SINGLE specific test (e.g. via pytest selector
+    `tests/foo.py::test_bar` in failing_command) AND TL didn't acknowledge
+    test-pollution as a possibility, raise.
+
+    Catches the trap: failing test is a victim of state another test
+    leaked (autouse fixture, sys.modules, np.random). The fix lives in
+    the polluter, not the failing test — but TL diagnoses the failing
+    test's source.
+    """
+    cmd = (draft_failing_command or "").lower()
+    # Single-test selector heuristic: pytest `path::test_name` or `-k name`
+    is_single_test_selector = (
+        "::" in cmd
+        or " -k " in cmd
+        or cmd.endswith("-k")
+    )
+    if not is_single_test_selector:
+        return True, ""  # multi-test verify — pollution unlikely to mislead
+
+    haystack = (draft_root_cause or "").lower()
+    haystack += " " + " ".join(str(q) for q in (draft_open_questions or [])).lower()
+    pollution_keywords = {
+        "isolation", "isolated", "pollution", "polluted",
+        "leak", "leaks", "leaked", "leakage", "shared state",
+        "autouse", "fixture", "monkeypatch", "sys.modules", "global",
+        "side effect", "side-effect", "ordering", "test order",
+    }
+    if any(kw in haystack for kw in pollution_keywords):
+        return True, ""  # TL acknowledged test-pollution possibility
+
+    return False, (
+        f"failing_command targets a single test selector "
+        f"({draft_failing_command!r}) — confirm the failure isn't "
+        f"caused by another test polluting shared state (autouse fixtures, "
+        f"sys.modules mutation, np.random seed leak, env vars). "
+        f"Run the test in isolation: `pytest <selector> -p no:randomly`. "
+        f"If it passes alone, the bug is in the POLLUTER, not the named test."
+    )
+
+
+def files_read_from_messages(messages: list[dict]) -> set[str]:
+    """Extract every file path passed to read_file across the message
+    history. Used by c4 to audit grounding.
+    """
+    files: set[str] = set()
+    for msg in messages or []:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            # Provider-translated tool_use blocks; both Anthropic + OpenAI
+            # shapes flow through here as {"type": "tool_use", "name": ..., "input": ...}
+            if block.get("type") == "tool_use" and block.get("name") == "read_file":
+                input_dict = block.get("input") or {}
+                for key in ("path", "file_path", "file"):
+                    val = input_dict.get(key)
+                    if isinstance(val, str) and val:
+                        files.add(val)
+                        break
+    return files
+
+
 async def check_c3_verify_command_resolvable(
     *,
     draft_verify_command: str,
@@ -195,12 +421,14 @@ VALIDATE_SELF_CRITIQUE_SCHEMA = ToolSchema(
     description=(
         "REQUIRED before emit_fix_spec. Returns the AUTHORITATIVE self_critique "
         "booleans for your draft fix_spec. Use the returned values verbatim — "
-        "do NOT overwrite. The booleans are computed deterministically from the "
-        "CI log you fetched, the workspace file system, and the sandbox. If any "
-        "boolean is false, INVESTIGATE FURTHER before emitting (re-read the log, "
-        "re-glob files, etc.) and call this tool again. After 2 iterations max, "
-        "if you still cannot achieve all-true, emit fix_spec with confidence ≤ 0.5 "
-        "and the failing booleans documented in open_questions."
+        "do NOT overwrite. v1.6 booleans (c1/c2/c3) check root_cause/files/verify; "
+        "v1.7 adds c4 (grounding — every step's file must have been read this "
+        "turn), c5 (step preconditions — every replace step's `old` must exist "
+        "in the target file), c7 (error_line_quote must be verbatim from ci_log). "
+        "If any boolean is false, INVESTIGATE FURTHER before emitting (re-read the "
+        "log, re-glob files, fix the OLD text, pick a real error line) and call "
+        "this tool again. After 2 iterations max, emit fix_spec with confidence "
+        "≤ 0.5 and failing booleans documented in open_questions."
     ),
     input_schema={
         "type": "object",
@@ -225,7 +453,27 @@ VALIDATE_SELF_CRITIQUE_SCHEMA = ToolSchema(
                 "type": "string",
                 "description": (
                     "Verbatim text from your earlier fetch_ci_log call. Required "
-                    "for c1 — paste enough context to verify root_cause overlap."
+                    "for c1 + c7 — paste enough context to verify root_cause "
+                    "overlap and contain the error_line_quote."
+                ),
+            },
+            "draft_steps": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "v1.7 NEW. The flat list of step dicts across ALL engineer "
+                    "tasks in your draft task_plan. Used by c4 (file grounding) "
+                    "and c5 (replace `old` precondition). Pass [] if your plan "
+                    "has no engineer steps yet (e.g., ESCALATE shape)."
+                ),
+            },
+            "draft_error_line_quote": {
+                "type": "string",
+                "description": (
+                    "v1.7 NEW. Verbatim line from ci_log_text that captures the "
+                    "actual failure — e.g., the line containing 'AssertionError', "
+                    "'ImportError', 'E501', 'exit 127'. 20-240 chars. Used by c7 "
+                    "to confirm your diagnosis is anchored in real evidence."
                 ),
             },
         },
@@ -242,11 +490,15 @@ VALIDATE_SELF_CRITIQUE_SCHEMA = ToolSchema(
 async def _handle_validate_self_critique(
     ctx: AgentContext, tool_input: dict[str, Any]
 ) -> ToolResult:
-    """Run the three deterministic checks and return authoritative booleans."""
+    """Run all available deterministic checks (c1/c2/c3 v1.6, c4/c5/c7 v1.7)
+    and return authoritative booleans.
+    """
     draft_rc = tool_input.get("draft_root_cause") or ""
     draft_files = tool_input.get("draft_affected_files") or []
     draft_vc = tool_input.get("draft_verify_command") or ""
     ci_log = tool_input.get("ci_log_text") or ""
+    draft_steps = tool_input.get("draft_steps")
+    draft_error_line = tool_input.get("draft_error_line_quote")
 
     if not isinstance(draft_files, list):
         return ToolResult(
@@ -277,6 +529,31 @@ async def _handle_validate_self_critique(
         exec_in_sandbox=exec_in_sandbox,
     )
 
+    # v1.7 — c4 grounding: audit ctx.messages for read_file calls.
+    files_read = files_read_from_messages(ctx.messages or [])
+    c4_ok, c4_reason = check_c4_grounding_satisfied(
+        draft_steps=draft_steps if isinstance(draft_steps, list) else None,
+        files_read_this_turn=files_read,
+    )
+
+    # v1.7 — c5 step preconditions: grep `old` against the live workspace.
+    c5_ok, c5_reason = check_c5_step_preconditions_satisfied(
+        draft_steps=draft_steps if isinstance(draft_steps, list) else None,
+        workspace_path=ctx.repo_workspace_path,
+    )
+
+    # v1.7 — c7 error_line_quote: verbatim substring of ci_log_text.
+    if draft_error_line is not None:
+        c7_ok, c7_reason = check_c7_error_line_quoted_from_log(
+            draft_error_line_quote=draft_error_line,
+            ci_log_text=ci_log,
+        )
+    else:
+        # Soft-skip when caller didn't pass it (older v1.6 path callers).
+        # The COMMANDER gate (`commander_verify_fix_spec_self_critique`) is
+        # authoritative on whether c7 was required.
+        c7_ok, c7_reason = True, "skipped_no_input"
+
     mismatches: list[dict[str, str]] = []
     if not c1_ok:
         mismatches.append({"check": "ci_log_addresses_root_cause", "reason": c1_reason})
@@ -284,12 +561,21 @@ async def _handle_validate_self_critique(
         mismatches.append({"check": "affected_files_exist_in_repo", "reason": c2_reason})
     if not c3_ok:
         mismatches.append({"check": "verify_command_will_distinguish_success", "reason": c3_reason})
+    if not c4_ok:
+        mismatches.append({"check": "grounding_satisfied", "reason": c4_reason})
+    if not c5_ok:
+        mismatches.append({"check": "step_preconditions_satisfied", "reason": c5_reason})
+    if not c7_ok:
+        mismatches.append({"check": "error_line_quoted_from_log", "reason": c7_reason})
 
     log.info(
         "v3.tl.self_critique.validated",
         c1=c1_ok,
         c2=c2_ok,
         c3=c3_ok,
+        c4=c4_ok,
+        c5=c5_ok,
+        c7=c7_ok,
         mismatches_count=len(mismatches),
     )
 
@@ -300,9 +586,12 @@ async def _handle_validate_self_critique(
                 "ci_log_addresses_root_cause": c1_ok,
                 "affected_files_exist_in_repo": c2_ok,
                 "verify_command_will_distinguish_success": c3_ok,
+                "grounding_satisfied": c4_ok,
+                "step_preconditions_satisfied": c5_ok,
+                "error_line_quoted_from_log": c7_ok,
             },
             "mismatches": mismatches,
-            "all_true": c1_ok and c2_ok and c3_ok,
+            "all_true": all([c1_ok, c2_ok, c3_ok, c4_ok, c5_ok, c7_ok]),
         },
     )
 

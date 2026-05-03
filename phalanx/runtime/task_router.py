@@ -41,8 +41,15 @@ _ROLE_TO_QUEUE: dict[str, str] = {
     # CI Fixer v3 (multi-agent DAG — coexists with v2 under ci_integrations.cifixer_version)
     "cifix_commander": "cifix_commander",
     "cifix_techlead": "cifix_techlead",
+    "cifix_challenger": "cifix_challenger",  # v1.7 — adversarial reviewer (shadow mode)
     "cifix_engineer": "cifix_engineer",
     "cifix_sre": "cifix_sre",
+    # v1.7 — split sre role names (matches TL's task_plan agent registry).
+    # Both alias onto the existing cifix_sre Celery task + queue; the agent
+    # dispatches setup vs verify internally via ci_context["sre_mode"].
+    # Adding new role names (not new module) preserves v1.6 testbed runs.
+    "cifix_sre_setup": "cifix_sre",
+    "cifix_sre_verify": "cifix_sre",
 }
 
 _DEFAULT_QUEUE = "default"
@@ -62,8 +69,14 @@ _ROLE_TO_TASK: dict[str, str] = {
     # CI Fixer v3 — commander orchestrates, techlead/engineer/sre are per-task agents
     "cifix_commander": "phalanx.agents.cifix_commander.execute_run",
     "cifix_techlead": "phalanx.agents.cifix_techlead.execute_task",
+    "cifix_challenger": "phalanx.agents.cifix_challenger.execute_task",  # v1.7 reviewer
     "cifix_engineer": "phalanx.agents.cifix_engineer.execute_task",
     "cifix_sre": "phalanx.agents.cifix_sre.execute_task",
+    # v1.7 — both new role names dispatch to the same Celery task; the
+    # cifix_sre module's execute() reads ci_context["sre_mode"] and routes
+    # internally. Plan validator (V17_AGENT_REGISTRY) accepts these names.
+    "cifix_sre_setup": "phalanx.agents.cifix_sre.execute_task",
+    "cifix_sre_verify": "phalanx.agents.cifix_sre.execute_task",
 }
 
 
