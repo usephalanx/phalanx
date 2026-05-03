@@ -35,7 +35,7 @@ import structlog
 from sqlalchemy import select
 
 from phalanx.agents.base import AgentResult, BaseAgent, mark_run_failed
-from phalanx.db.models import Run, Task, WorkOrder
+from phalanx.db.models import CIIntegration, Run, Task, WorkOrder
 from phalanx.db.session import get_db
 from phalanx.queue.celery_app import celery_app
 
@@ -262,7 +262,103 @@ class CIFixCommanderAgent(BaseAgent):
                         },
                         error="untrusted_green_sha_mismatch",
                     )
-                return await self._finalize_shipped(ci_context, verify_output)
+
+                # v1.7.2.4 — full-CI re-confirm gate. SRE Verify ran TL's
+                # narrow verify_command and reported all_green, but TL may
+                # have targeted the wrong failing job (coverage cell shape)
+                # OR engineer's edit may have broken a previously-green
+                # check (flake cell shape). Poll GitHub's check-runs on
+                # the engineer head sha, compare to base, refuse to ship
+                # if the full CI surface isn't actually green.
+                gate_verdict = await self._run_check_gate(
+                    ci_context=ci_context, head_sha=eng_sha
+                )
+                if gate_verdict is None:
+                    # No integration / no token — gate cannot run. Fall
+                    # through to ship per legacy v1.7.2.3 behavior. Logged
+                    # so prod operator notices the missing config.
+                    self._log.warning(
+                        "cifix_commander.check_gate_skipped_no_integration",
+                        run_id=self.run_id,
+                    )
+                    return await self._finalize_shipped(ci_context, verify_output)
+                self._log.info(
+                    "cifix_commander.check_gate_verdict",
+                    run_id=self.run_id,
+                    decision=gate_verdict.decision,
+                    fixed=gate_verdict.fixed,
+                    regressed=gate_verdict.regressed,
+                    still_failing=gate_verdict.still_failing,
+                    pending=gate_verdict.pending,
+                    poll_seconds=gate_verdict.poll_seconds,
+                )
+                if gate_verdict.decision == "TRUE_GREEN":
+                    enriched_output = dict(verify_output or {})
+                    enriched_output["check_gate"] = gate_verdict.to_dict()
+                    return await self._finalize_shipped(ci_context, enriched_output)
+
+                # NOT_FIXED → REPLAN if we still have headroom (SRE Verify
+                # told us "fixed" but GitHub disagrees; another iteration
+                # might pick the right failing job).
+                if gate_verdict.decision == "NOT_FIXED":
+                    if iterations_done < _MAX_ITERATIONS:
+                        # Synthesize a SRE-failure-equivalent payload so the
+                        # existing iteration logic picks it up. TL on the
+                        # next iter will see prior_sre_failures with the
+                        # GitHub check details — strong replan signal.
+                        synthesized = self._gate_failures_as_sre_failures(gate_verdict)
+                        verdict = "new_failures"
+                        verify_output = dict(verify_output or {})
+                        verify_output["new_failures"] = synthesized
+                        verify_output["check_gate"] = gate_verdict.to_dict()
+                        # Fall through to the standard iteration path below.
+                    else:
+                        await self._transition_run(
+                            "VERIFYING",
+                            "FAILED",
+                            error_message=(
+                                f"check_gate_not_fixed_after_{iterations_done}_iters: "
+                                f"{gate_verdict.notes}"
+                            ),
+                        )
+                        escalation = await self._build_and_persist_escalation(
+                            final_reason="check_gate_not_fixed"
+                        )
+                        return AgentResult(
+                            success=False,
+                            output={
+                                "verdict": "check_gate_not_fixed",
+                                "iterations_used": iterations_done,
+                                "check_gate": gate_verdict.to_dict(),
+                                "escalation_record": escalation,
+                            },
+                            error="check_gate_not_fixed",
+                        )
+
+                # REGRESSION / PENDING_TIMEOUT / MISSING_DATA → ESCALATE.
+                # Engineer broke something previously-green (regression),
+                # or GitHub never settled (timeout), or no checks reported
+                # (missing). Don't loop; surface to a human.
+                if gate_verdict.decision in ("REGRESSION", "PENDING_TIMEOUT", "MISSING_DATA"):
+                    final_reason = f"check_gate_{gate_verdict.decision.lower()}"
+                    await self._transition_run(
+                        "VERIFYING",
+                        "FAILED",
+                        error_message=f"{final_reason}: {gate_verdict.notes}",
+                    )
+                    escalation = await self._build_and_persist_escalation(
+                        final_reason=final_reason
+                    )
+                    return AgentResult(
+                        success=False,
+                        output={
+                            "verdict": final_reason,
+                            "iterations_used": iterations_done,
+                            "check_gate": gate_verdict.to_dict(),
+                            "escalation_record": escalation,
+                        },
+                        error=final_reason,
+                    )
 
             # v1.7.2.3 — runtime cap. Stop pathological runs that bounce
             # between states for too long. _MAX_WAIT_SECONDS caps each
@@ -703,6 +799,83 @@ class CIFixCommanderAgent(BaseAgent):
                 if isinstance(output, dict) and output.get("mode") == "verify":
                     return (output.get("verdict"), output)
         return (None, None)
+
+    async def _load_integration_for_repo(
+        self, repo: str | None
+    ) -> "CIIntegration | None":
+        """v1.7.2.4 — fetch the CIIntegration row for the gate's GitHub API
+        access. Returns None if no row (gate then falls back to legacy
+        ship-on-narrow-verify behavior with a warning log)."""
+        if not repo:
+            return None
+        async with get_db() as session:
+            result = await session.execute(
+                select(CIIntegration).where(CIIntegration.repo_full_name == repo)
+            )
+            return result.scalar_one_or_none()
+
+    async def _run_check_gate(
+        self, *, ci_context: dict, head_sha: str | None
+    ):  # returns CheckGateVerdict | None
+        """v1.7.2.4 — full-CI re-confirm gate. Polls GitHub's check-runs on
+        head_sha and compares to ci_context.sha (the failing-CI sha at run
+        start). Returns the CheckGateVerdict, or None if the gate cannot run
+        (no integration, no token, no head_sha)."""
+        if not head_sha:
+            return None
+        repo = ci_context.get("repo")
+        base_sha = ci_context.get("sha")
+        if not (repo and base_sha):
+            return None
+        integration = await self._load_integration_for_repo(repo)
+        if integration is None or not integration.github_token:
+            return None
+
+        from phalanx.agents._github_check_gate import evaluate_check_gate  # noqa: PLC0415
+        from phalanx.config.settings import get_settings  # noqa: PLC0415
+
+        settings = get_settings()
+        # Caps: poll_timeout 5 min, interval 15s. Tunable later if humanize
+        # or other slow-CI repos need longer.
+        try:
+            return await evaluate_check_gate(
+                repo=repo,
+                github_token=integration.github_token,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                poll_timeout_s=int(getattr(settings, "ci_fixer_check_gate_timeout_s", 300)),
+                poll_interval_s=int(getattr(settings, "ci_fixer_check_gate_interval_s", 15)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning(
+                "cifix_commander.check_gate_exception",
+                run_id=self.run_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+
+    @staticmethod
+    def _gate_failures_as_sre_failures(gate_verdict) -> list[dict]:
+        """v1.7.2.4 — flatten the gate's failure detail into the same shape
+        SRE Verify produces in `new_failures`, so the existing iteration
+        path (which appends prior_sre_failures into TL's next ci_context)
+        picks them up unchanged."""
+        out: list[dict] = []
+        for name in (gate_verdict.regressed or []) + (gate_verdict.still_failing or []):
+            cs = gate_verdict.post_checks.get(name)
+            if cs is None:
+                continue
+            out.append({
+                "name": name,
+                "cmd": f"github_check_run:{name}",  # synthetic — TL reads as text
+                "exit_code": 1,
+                "stderr_tail": "",
+                "stdout_tail": cs.summary or "",
+                "html_url": cs.html_url,
+                "conclusion": cs.conclusion,
+                "source": "check_gate",
+            })
+        return out
 
     async def _build_and_persist_escalation(self, *, final_reason: str) -> dict:
         """v1.7.2.3 — build the structured escalation record from this run's
