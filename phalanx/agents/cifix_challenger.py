@@ -253,6 +253,15 @@ class CIFixChallengerAgent(BaseAgent):
         )
         # In shadow mode: log verdict prominently but always succeed so
         # advance_run dispatches the engineer regardless.
+        #
+        # TODO(post-Phase-2-and-humanize): flip the gate. Once we've shipped
+        # 4/4 testbed cells AND humanize Path 1 green, switch this from
+        # shadow to gating: BLOCK verdicts with at least one P0 objection
+        # short-circuit the run to ESCALATED. WARN verdicts continue but
+        # surface in the PR comment. ACCEPT verdicts pass through silently.
+        # Implementation: change `success=True` below to gate on
+        # `verdict["verdict"] != "block"` and write an escalation record
+        # via _build_and_persist_escalation('challenger_blocked').
         self._log.info(
             "cifix_challenger.verdict",
             run_id=self.run_id,
