@@ -149,7 +149,7 @@ services:
     command: >
       celery -A phalanx.queue.celery_app worker
       --loglevel=warning
-      --queues=ci_fixer,cifix_commander,cifix_techlead,cifix_engineer,cifix_sre
+      --queues=ci_fixer,cifix_commander,cifix_techlead,cifix_engineer,cifix_sre,cifix_challenger
       --concurrency=2
       --max-tasks-per-child=10
     user: root
