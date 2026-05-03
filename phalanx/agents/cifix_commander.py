@@ -65,6 +65,12 @@ _MAX_ITERATIONS = 3
 _COST_PER_TOKEN_USD: float = 20e-6  # blended; conservative (real avg ~$10/1M)
 _MAX_RUN_COST_USD: float = 30.00    # hard abort above this
 
+# v1.7.2.3 — wall-clock cap. The polling loop already has _MAX_WAIT_SECONDS
+# (45 min) per advance_run wait, but a pathological run that bounces between
+# VERIFYING and EXECUTING can chew clock without a per-task hang. This caps
+# total run wall-clock from the first commander tick.
+_MAX_RUN_RUNTIME_SECONDS: int = 1800  # 30 min
+
 # Chain of ceremonial transitions from VERIFYING to SHIPPED. We don't invoke
 # approval gates for CI fixes (they're auto-commit), but we respect the state
 # machine edges — same pattern build-flow Commander uses.
@@ -118,8 +124,15 @@ class CIFixCommanderAgent(BaseAgent):
         super().__init__(run_id=run_id, agent_id=agent_id)
         self.work_order_id = work_order_id
         self.project_id = project_id
+        # v1.7.2.3 — wall-clock anchor for the runtime cap. Set on first
+        # tick of execute() so retries (where execute() may be called
+        # again) reset the clock.
+        self._run_started_monotonic: float | None = None
 
     async def execute(self) -> AgentResult:
+        import time  # noqa: PLC0415
+
+        self._run_started_monotonic = time.monotonic()
         self._log.info("cifix_commander.execute.start")
 
         # ── Phase 1: load WorkOrder + create Run + persist Task DAG ──────────
@@ -215,7 +228,113 @@ class CIFixCommanderAgent(BaseAgent):
             )
 
             if verdict == "all_green":
+                # v1.7.2.3 — sha-mismatch gate. SRE verify reports a green,
+                # but if the verified_commit_sha doesn't match what engineer
+                # pushed, we may have verified the wrong code. Reject as
+                # untrusted-green and treat as a verification failure.
+                eng_sha = (verify_output or {}).get("engineer_commit_sha")
+                ver_sha = (verify_output or {}).get("verified_commit_sha")
+                if eng_sha and ver_sha and eng_sha != ver_sha:
+                    self._log.warning(
+                        "cifix_commander.green_rejected_sha_mismatch",
+                        run_id=self.run_id,
+                        engineer_commit_sha=eng_sha,
+                        verified_commit_sha=ver_sha,
+                    )
+                    await self._transition_run(
+                        "VERIFYING",
+                        "FAILED",
+                        error_message=(
+                            f"untrusted_green: verified_commit_sha {ver_sha[:12]} "
+                            f"!= engineer_commit_sha {eng_sha[:12]}"
+                        ),
+                    )
+                    escalation = await self._build_and_persist_escalation(
+                        final_reason="untrusted_green_sha_mismatch"
+                    )
+                    return AgentResult(
+                        success=False,
+                        output={
+                            "verdict": "untrusted_green_sha_mismatch",
+                            "engineer_commit_sha": eng_sha,
+                            "verified_commit_sha": ver_sha,
+                            "escalation_record": escalation,
+                        },
+                        error="untrusted_green_sha_mismatch",
+                    )
                 return await self._finalize_shipped(ci_context, verify_output)
+
+            # v1.7.2.3 — runtime cap. Stop pathological runs that bounce
+            # between states for too long. _MAX_WAIT_SECONDS caps each
+            # poll cycle; this caps the whole run.
+            if self._run_started_monotonic is not None:
+                import time  # noqa: PLC0415
+
+                elapsed_s = time.monotonic() - self._run_started_monotonic
+                if elapsed_s > _MAX_RUN_RUNTIME_SECONDS:
+                    self._log.warning(
+                        "cifix_commander.runtime_cap_exceeded",
+                        run_id=self.run_id,
+                        elapsed_s=int(elapsed_s),
+                        cap_s=_MAX_RUN_RUNTIME_SECONDS,
+                    )
+                    await self._transition_run(
+                        "VERIFYING",
+                        "FAILED",
+                        error_message=(
+                            f"runtime_cap_exceeded: {int(elapsed_s)}s > "
+                            f"{_MAX_RUN_RUNTIME_SECONDS}s"
+                        ),
+                    )
+                    escalation = await self._build_and_persist_escalation(
+                        final_reason="runtime_cap_exceeded"
+                    )
+                    return AgentResult(
+                        success=False,
+                        output={
+                            "verdict": "runtime_cap_exceeded",
+                            "iterations_used": iterations_done,
+                            "elapsed_s": int(elapsed_s),
+                            "escalation_record": escalation,
+                        },
+                        error="runtime_cap_exceeded",
+                    )
+
+            # v1.7.2.3 — no-progress gate. If the last two verify failures
+            # have the SAME fingerprint (same command, same exit, same
+            # normalized output), the engineer's patches aren't moving
+            # the needle. Stop iterating instead of burning more tokens.
+            fps = await self._collect_verify_fingerprints()
+            from phalanx.agents._failure_fingerprint import is_repeated  # noqa: PLC0415
+
+            if is_repeated(fps):
+                self._log.warning(
+                    "cifix_commander.no_progress_detected",
+                    run_id=self.run_id,
+                    fingerprints=fps[-3:],
+                )
+                await self._transition_run(
+                    "VERIFYING",
+                    "FAILED",
+                    error_message=(
+                        f"no_progress_detected: fingerprint {fps[-1]} "
+                        f"repeated across iterations"
+                    ),
+                )
+                escalation = await self._build_and_persist_escalation(
+                    final_reason="no_progress_detected"
+                )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "verdict": "no_progress_detected",
+                        "iterations_used": iterations_done,
+                        "fingerprint_history": fps,
+                        "last_verify_output": verify_output,
+                        "escalation_record": escalation,
+                    },
+                    error="no_progress_detected",
+                )
 
             # v1.6 Phase 2 — per-run cost cap. Check BEFORE deciding to
             # dispatch another iteration. The MAX_ITERATIONS guard caps
@@ -237,6 +356,9 @@ class CIFixCommanderAgent(BaseAgent):
                         f"({total_tokens} tokens)"
                     ),
                 )
+                escalation = await self._build_and_persist_escalation(
+                    final_reason="cost_cap_exceeded"
+                )
                 return AgentResult(
                     success=False,
                     output={
@@ -244,6 +366,7 @@ class CIFixCommanderAgent(BaseAgent):
                         "iterations_used": iterations_done,
                         "tokens_used": total_tokens,
                         "estimated_cost_usd": round(estimate, 3),
+                        "escalation_record": escalation,
                     },
                     error=f"cost_cap_exceeded: ~${estimate:.2f} > ${_MAX_RUN_COST_USD}",
                 )
@@ -260,12 +383,16 @@ class CIFixCommanderAgent(BaseAgent):
                         f"all-green CI verify"
                     ),
                 )
+                escalation = await self._build_and_persist_escalation(
+                    final_reason="iterations_exhausted"
+                )
                 return AgentResult(
                     success=False,
                     output={
                         "verdict": "iterations_exhausted",
                         "iterations_used": iterations_done,
                         "last_verify_output": verify_output,
+                        "escalation_record": escalation,
                     },
                     error=f"exhausted {_MAX_ITERATIONS} iterations",
                 )
@@ -576,6 +703,79 @@ class CIFixCommanderAgent(BaseAgent):
                 if isinstance(output, dict) and output.get("mode") == "verify":
                     return (output.get("verdict"), output)
         return (None, None)
+
+    async def _build_and_persist_escalation(self, *, final_reason: str) -> dict:
+        """v1.7.2.3 — build the structured escalation record from this run's
+        tasks, persist to `runs.error_context`, return it for inclusion in
+        the AgentResult.output. Idempotent (safe to call multiple times
+        on the same run; last write wins).
+        """
+        from phalanx.agents._escalation_record import build_escalation_record  # noqa: PLC0415
+        from sqlalchemy import update  # noqa: PLC0415
+
+        async with get_db() as session:
+            result = await session.execute(
+                select(
+                    Task.sequence_num, Task.agent_role, Task.status,
+                    Task.output, Task.error,
+                )
+                .where(Task.run_id == self.run_id)
+                .order_by(Task.sequence_num.asc())
+            )
+            rows = [
+                {
+                    "sequence_num": r[0],
+                    "agent_role": r[1],
+                    "status": r[2],
+                    "output": r[3],
+                    "error": r[4],
+                }
+                for r in result.all()
+            ]
+            record = build_escalation_record(final_reason=final_reason, tasks=rows)
+
+            try:
+                await session.execute(
+                    update(Run)
+                    .where(Run.id == self.run_id)
+                    .values(error_context=record)
+                )
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(
+                    "cifix_commander.escalation_persist_failed", error=str(exc)
+                )
+            return record
+
+    async def _collect_verify_fingerprints(self) -> list[str]:
+        """v1.7.2.3 — sequence of `fingerprint` values from each completed
+        sre_verify task in this run, ordered by sequence_num.
+
+        Used by the no-progress gate. Empty/missing fingerprints are
+        skipped (safe — no false-positive repeats).
+        """
+        async with get_db() as session:
+            result = await session.execute(
+                select(Task.output)
+                .where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role.in_(
+                        ["cifix_sre", "cifix_sre_setup", "cifix_sre_verify"]
+                    ),
+                    Task.status == "COMPLETED",
+                )
+                .order_by(Task.sequence_num.asc())
+            )
+            fps: list[str] = []
+            for (output,) in result.all():
+                if not isinstance(output, dict):
+                    continue
+                if output.get("mode") != "verify":
+                    continue
+                fp = output.get("fingerprint")
+                if isinstance(fp, str) and fp:
+                    fps.append(fp)
+            return fps
 
     async def _count_completed_sre_verifies(self) -> int:
         """How many sre_verify tasks have finished in this run. One per iteration."""
