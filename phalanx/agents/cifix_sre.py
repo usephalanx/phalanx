@@ -31,6 +31,7 @@ import structlog
 import yaml
 from sqlalchemy import select
 
+from phalanx.agents._failure_fingerprint import compute_fingerprint
 from phalanx.agents.base import AgentResult, BaseAgent
 from phalanx.ci_fixer_v3.env_detector import EnvSpec, detect_env
 from phalanx.ci_fixer_v3.provisioner import (
@@ -342,6 +343,7 @@ class CIFixSREAgent(BaseAgent):
         async with get_db() as session:
             setup = await self._load_upstream_sre_setup(session)
             tl_fix_spec = await self._load_upstream_tl_fix_spec(session)
+            engineer_commit_sha = await self._load_upstream_engineer_commit_sha(session)
         if not setup or not setup.get("container_id"):
             return AgentResult(
                 success=False,
@@ -364,6 +366,8 @@ class CIFixSREAgent(BaseAgent):
                 workspace_path=workspace_path,
                 verify_command=tl_verify_command.strip(),
                 verify_success=tl_verify_success if isinstance(tl_verify_success, dict) else {},
+                engineer_commit_sha=engineer_commit_sha,
+                ci_context=ci_context,
             )
 
         # Fallback: legacy broad enumeration (used when no TL fix_spec or
@@ -410,6 +414,7 @@ class CIFixSREAgent(BaseAgent):
                     "cmd": cmd,
                     "exit_code": exec_result.exit_code,
                     "stderr_tail": (exec_result.stderr_tail or "")[-500:],
+                    "stdout_tail": (exec_result.stdout_tail or "")[-2000:],
                 }
             )
             self._log.info(
@@ -447,11 +452,26 @@ class CIFixSREAgent(BaseAgent):
         workspace_path: str,
         verify_command: str,
         verify_success: dict,
+        engineer_commit_sha: str | None = None,
+        ci_context: dict | None = None,
     ) -> AgentResult:
         """v1.7.2.2: run TL's narrow verify_command and apply its
         verify_success matcher. Single command, single verdict — no broad
         workflow enumeration that risks finding unrelated lint elsewhere.
+
+        v1.7.2.3: BEFORE running verify_command, sync the sandbox to the
+        EXACT engineer commit_sha. The provisioner's docker-cp snapshot is
+        frozen at SRE-setup time; engineer's edits land on the host but
+        don't propagate. Resetting to the exact pushed sha makes git the
+        source of truth (NOT branch HEAD — branch can move during the run).
         """
+        sync_info = await self._sync_sandbox_to_commit(
+            container_id=container_id,
+            target_sha=engineer_commit_sha,
+            branch=(ci_context or {}).get("branch") or "",
+        )
+        verified_commit_sha = sync_info.get("verified_commit_sha")
+
         exec_result = await _exec_in_container(
             container_id=container_id,
             cmd=verify_command,
@@ -478,11 +498,27 @@ class CIFixSREAgent(BaseAgent):
                 break
 
         passed = exit_ok and excluded_hit is None
+        # v1.7.2.3: capture stdout_tail too — ruff, pytest, mypy and most
+        # linters write the *actual violation text* to stdout, not stderr.
+        # Without this, TL replan iterations see "exit=1, stderr=''" and
+        # have no signal to diagnose against.
+        stdout_tail = (exec_result.stdout_tail or "")[-2000:]
+        # v1.7.2.3: compute failure fingerprint for commander's no-progress gate.
+        # Same fingerprint twice in a row → same failure → engineer's patches
+        # aren't moving the needle → stop iterating.
+        fingerprint = compute_fingerprint(
+            cmd=verify_command,
+            exit_code=exec_result.exit_code,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+        )
         job = {
             "name": "tl_verify_command",
             "cmd": verify_command,
             "exit_code": exec_result.exit_code,
             "stderr_tail": stderr_tail,
+            "stdout_tail": stdout_tail,
+            "fingerprint": fingerprint,
         }
         new_failures = [] if passed else [job]
         verdict = "all_green" if passed else "new_failures"
@@ -511,6 +547,13 @@ class CIFixSREAgent(BaseAgent):
                     "exit_codes": exit_codes,
                     "stderr_excludes": stderr_excludes,
                 },
+                # v1.7.2.3: source-of-truth provenance for the commander
+                # to enforce verified_commit_sha == engineer_commit_sha.
+                "engineer_commit_sha": engineer_commit_sha,
+                "verified_commit_sha": verified_commit_sha,
+                "sandbox_sync": sync_info,
+                # v1.7.2.3: failure fingerprint for no-progress gate.
+                "fingerprint": fingerprint,
             },
         )
 
@@ -570,6 +613,115 @@ class CIFixSREAgent(BaseAgent):
             return None
         output = row[0]
         return output if isinstance(output, dict) else None
+
+    async def _load_upstream_engineer_commit_sha(self, session) -> str | None:
+        """v1.7.2.3: latest COMPLETED cifix_engineer.commit_sha.
+
+        Used to sync the sandbox to the EXACT pushed commit before running
+        verify. Branch HEAD can move (concurrent push, force-push); the
+        commit_sha is the only stable reference.
+        """
+        result = await session.execute(
+            select(Task.output)
+            .where(
+                Task.run_id == self.run_id,
+                Task.agent_role == "cifix_engineer",
+                Task.status == "COMPLETED",
+            )
+            .order_by(Task.sequence_num.desc())
+            .limit(1)
+        )
+        row = result.one_or_none()
+        if row is None or row[0] is None:
+            return None
+        output = row[0]
+        if not isinstance(output, dict):
+            return None
+        sha = output.get("commit_sha")
+        return sha if isinstance(sha, str) and sha.strip() else None
+
+    async def _sync_sandbox_to_commit(
+        self,
+        *,
+        container_id: str,
+        target_sha: str | None,
+        branch: str,
+    ) -> dict:
+        """Reset the sandbox workspace to the EXACT engineer commit.
+
+        Returns a dict with keys: ok, target_sha, verified_commit_sha,
+        method, error_tail. Always returns — never raises. The verify
+        flow continues even on sync failure so the matcher can surface
+        the broken state instead of silently masking it.
+        """
+        info: dict = {
+            "ok": False,
+            "target_sha": target_sha,
+            "verified_commit_sha": None,
+            "method": None,
+            "error_tail": None,
+        }
+        if not target_sha:
+            info["method"] = "skipped_no_target_sha"
+            # Still record HEAD so commander can see what was actually verified
+            head = await _exec_in_container(
+                container_id=container_id,
+                cmd="git rev-parse HEAD",
+                as_root=True,
+                workdir="/workspace",
+                timeout_s=15,
+            )
+            if head.ok and head.stdout_tail:
+                info["verified_commit_sha"] = head.stdout_tail.strip().split()[0]
+            return info
+
+        # Mark workspace as a safe.directory (provisioner already does this,
+        # but we re-apply defensively in case the container was restarted).
+        # Then fetch + reset to the exact sha. We try fetching the sha
+        # directly first (GitHub allows it); fall back to fetching the
+        # branch and resetting if the direct fetch is rejected.
+        sync_cmd = (
+            "git config --global --add safe.directory /workspace && "
+            f"(git fetch origin {target_sha} --depth=1 || "
+            f"git fetch origin {branch} --depth=20) && "
+            f"git reset --hard {target_sha} && "
+            "git rev-parse HEAD"
+        )
+        sync = await _exec_in_container(
+            container_id=container_id,
+            cmd=sync_cmd,
+            as_root=True,
+            workdir="/workspace",
+            timeout_s=120,
+        )
+        if not sync.ok:
+            info["method"] = "fetch_reset_failed"
+            info["error_tail"] = (sync.stderr_tail or sync.stdout_tail or "")[-500:]
+            self._log.warning(
+                "cifix_sre.verify.sync_failed",
+                target_sha=target_sha,
+                exit_code=sync.exit_code,
+                error=info["error_tail"],
+            )
+            return info
+
+        head_line = (sync.stdout_tail or "").strip().splitlines()[-1] if sync.stdout_tail else ""
+        verified = head_line.split()[0] if head_line else None
+        info["verified_commit_sha"] = verified
+        info["method"] = "git_fetch_reset_hard"
+        info["ok"] = bool(verified) and verified == target_sha
+        if not info["ok"]:
+            self._log.warning(
+                "cifix_sre.verify.sha_mismatch_after_sync",
+                target_sha=target_sha,
+                verified=verified,
+            )
+        else:
+            self._log.info(
+                "cifix_sre.verify.synced_to_commit",
+                sha=target_sha,
+            )
+        return info
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -378,6 +378,7 @@ class ExecResult:
     ok: bool  # True iff exit_code == 0 and no timeout
     exit_code: int  # -1 for timeout / spawn failure
     stderr_tail: str | None = None
+    stdout_tail: str | None = None  # v1.7.2.3 — many tools (ruff, pytest) report on stdout
 
 
 async def _exec_in_container(
@@ -418,18 +419,31 @@ async def _exec_in_container(
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         rc = proc.returncode if proc.returncode is not None else -1
+        # Capture both streams. 2KB tail is enough for ruff/pytest violation
+        # output; bigger logs (full pytest -v) shouldn't bloat task.output rows.
+        stdout_tail = (
+            stdout.decode(errors="replace").strip()[-2000:] if stdout else None
+        )
+        stderr_tail = (
+            stderr.decode(errors="replace").strip()[-2000:] if stderr else None
+        )
         if rc != 0:
-            tail = stderr.decode(errors="replace").strip()[-500:]
             log.log(
                 logging.WARNING,
                 "v3.provisioner.exec_failed",
                 container_id=container_id,
                 cmd=cmd[:120],
                 exit_code=rc,
-                stderr_tail=tail,
+                stderr_tail=stderr_tail,
+                stdout_tail=stdout_tail,
             )
-            return ExecResult(ok=False, exit_code=rc, stderr_tail=tail)
-        return ExecResult(ok=True, exit_code=0)
+            return ExecResult(
+                ok=False,
+                exit_code=rc,
+                stderr_tail=stderr_tail,
+                stdout_tail=stdout_tail,
+            )
+        return ExecResult(ok=True, exit_code=0, stdout_tail=stdout_tail)
     except TimeoutError:
         return ExecResult(ok=False, exit_code=-1, stderr_tail="timeout")
     except Exception as exc:  # noqa: BLE001

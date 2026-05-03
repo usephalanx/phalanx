@@ -101,21 +101,48 @@ def _fake_session_cm() -> MagicMock:
 
 
 async def _run_inspector(
-    db: SimulatedDB, *, exec_exit_code: int = 0
+    db: SimulatedDB, *, exec_exit_code: int = 0, ci_context: dict | None = None
 ) -> tuple[Any, list[dict]]:
     """Drive `_execute_verify` end-to-end against the SimulatedDB.
 
     Returns (AgentResult, captured exec calls). All upstream loaders are
     patched to read from `db`. _exec_in_container is patched to record
     every command run + return the stub exit code.
+
+    v1.7.2.3: filters out the sync-step exec from `captured` so existing
+    "exactly one verify command" assertions remain valid. The sync step
+    is itself tested in dedicated tests.
     """
     agent = CIFixSREAgent(
         run_id=db.run_id, agent_id="cifix_sre_verify", task_id="task-verify"
     )
     captured: list[dict] = []
 
+    # Read engineer commit_sha from the simulated DB so the sync logic
+    # has something to target (or returns the skipped path if none).
+    engineer_out = db.latest(["cifix_engineer"])
+    engineer_sha = (engineer_out or {}).get("commit_sha")
+
     async def _capture(*args, **kwargs):
-        captured.append({"cmd": kwargs.get("cmd", ""), "kwargs": kwargs})
+        cmd = kwargs.get("cmd", "")
+        # Sync-step commands (git fetch/reset/rev-parse) are bookkeeping —
+        # don't count them in the verify-command captures the assertions
+        # are asserting on. Verified separately.
+        is_sync = (
+            "git fetch" in cmd
+            or "git reset --hard" in cmd
+            or cmd.strip().startswith("git rev-parse")
+            or "safe.directory" in cmd
+        )
+        if is_sync:
+            # Return a successful sync that reports the engineer's sha
+            # in stdout so verified_commit_sha resolves correctly.
+            return ExecResult(
+                ok=True,
+                exit_code=0,
+                stdout_tail=(engineer_sha or "abc1234") + "\n",
+            )
+        captured.append({"cmd": cmd, "kwargs": kwargs})
         return ExecResult(ok=(exec_exit_code == 0), exit_code=exec_exit_code)
 
     with (
@@ -127,11 +154,15 @@ async def _run_inspector(
             agent, "_load_upstream_tl_fix_spec",
             AsyncMock(return_value=db.latest(["cifix_techlead"])),
         ),
+        patch.object(
+            agent, "_load_upstream_engineer_commit_sha",
+            AsyncMock(return_value=engineer_sha),
+        ),
         patch("phalanx.agents.cifix_sre._exec_in_container", side_effect=_capture),
         patch("phalanx.agents.cifix_sre.get_db", return_value=_fake_session_cm()),
     ):
         result = await agent._execute_verify(
-            ci_context={"failing_command": "ruff check ."}
+            ci_context=ci_context or {"failing_command": "ruff check ."}
         )
     return result, captured
 
