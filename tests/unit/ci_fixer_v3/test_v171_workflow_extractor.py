@@ -97,12 +97,16 @@ class TestPytestWithUv:
             workspace_path=workspace, failing_job_name="test"
         )
         assert recipe is not None
-        # Expected: uv install command, python version note, sync, test
+        # Expected: uv install command, python version note, sync.
+        # The test runner ("uv run pytest tests/") is EXCLUDED — SRE
+        # setup must not execute the test during provisioning (v1.7.1.1
+        # fix; testbed lint cell broke when ruff was emitted as install).
         joined = "\n".join(recipe.commands)
         assert "astral.sh/uv/install.sh" in joined
         assert "uv sync --extra dev" in recipe.commands
-        assert "uv run pytest tests/" in recipe.commands
         assert "3.12" in joined  # python version note
+        # Test runner explicitly NOT in commands
+        assert not any("pytest" in c for c in recipe.commands)
 
     def test_finds_job_by_dictionary_key_when_name_field_absent(self, workspace):
         _write_workflow(workspace, "test.yml", """\
@@ -127,7 +131,7 @@ class TestPytestWithUv:
 class TestPytestWithPip:
     """testbed-style workflow: setup-python + pip install + pytest."""
 
-    def test_renders_install_and_test(self, workspace):
+    def test_renders_install_and_skips_test_runner(self, workspace):
         _write_workflow(workspace, "test.yml", """\
             on: push
             jobs:
@@ -146,7 +150,9 @@ class TestPytestWithPip:
         )
         assert recipe is not None
         assert "pip install -e .[dev]" in recipe.commands
-        assert "pytest --cov=src/calc --cov-fail-under=80" in recipe.commands
+        # v1.7.1.1: test runner step (`pytest ...`) is excluded from
+        # setup commands. SRE verify runs the failing_command separately.
+        assert not any("pytest" in c for c in recipe.commands)
 
 
 class TestPreCommitOnly:
@@ -294,6 +300,71 @@ class TestBailsToTier1:
 # ─── Run-step list form ──────────────────────────────────────────────────────
 
 
+class TestTestRunnerFilter:
+    """v1.7.1.1: test-runner steps are excluded from Tier 0's setup
+    commands so SRE setup doesn't accidentally execute the failing test."""
+
+    def test_ruff_check_excluded(self, workspace):
+        _write_workflow(workspace, "lint.yml", """\
+            on: push
+            jobs:
+              lint:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: pip install ruff
+                  - run: ruff check .
+        """)
+        recipe = extract_recipe(workspace_path=workspace, failing_job_name="lint")
+        assert recipe is not None
+        assert "pip install ruff" in recipe.commands
+        assert not any("ruff check" in c for c in recipe.commands)
+
+    def test_pytest_excluded_but_install_kept(self, workspace):
+        _write_workflow(workspace, "test.yml", """\
+            on: push
+            jobs:
+              test:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: pip install -e .[dev]
+                  - run: pytest tests/
+        """)
+        recipe = extract_recipe(workspace_path=workspace, failing_job_name="test")
+        assert recipe is not None
+        assert "pip install -e .[dev]" in recipe.commands
+        assert not any("pytest" in c for c in recipe.commands)
+
+    def test_mypy_excluded(self, workspace):
+        _write_workflow(workspace, "type.yml", """\
+            on: push
+            jobs:
+              type-check:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: pip install mypy
+                  - run: mypy src/
+        """)
+        recipe = extract_recipe(workspace_path=workspace, failing_job_name="type-check")
+        assert recipe is not None
+        assert "pip install mypy" in recipe.commands
+        assert not any(c.startswith("mypy") for c in recipe.commands)
+
+    def test_go_test_excluded(self, workspace):
+        _write_workflow(workspace, "go.yml", """\
+            on: push
+            jobs:
+              test:
+                runs-on: ubuntu-latest
+                steps:
+                  - run: go mod download
+                  - run: go test ./...
+        """)
+        recipe = extract_recipe(workspace_path=workspace, failing_job_name="test")
+        assert recipe is not None
+        assert "go mod download" in recipe.commands
+        assert not any(c.startswith("go test") for c in recipe.commands)
+
+
 class TestRunStepListForm:
     def test_run_as_list_is_joined(self, workspace):
         # YAML allows `run:` to be a literal block (`|`), folded (`>`), or list
@@ -322,12 +393,16 @@ class TestRunStepListForm:
 
 class TestMultiWorkflowRepo:
     def test_picks_workflow_with_matching_job(self, workspace):
+        # v1.7.1.1: workflow with ONLY a test runner step yields a recipe
+        # with only the setup-derived commands (here: just the install
+        # for the matching job).
         _write_workflow(workspace, "lint.yml", """\
             on: push
             jobs:
               lint:
                 runs-on: ubuntu-latest
                 steps:
+                  - run: pip install ruff
                   - run: ruff check .
         """)
         _write_workflow(workspace, "test.yml", """\
@@ -336,15 +411,19 @@ class TestMultiWorkflowRepo:
               test:
                 runs-on: ubuntu-latest
                 steps:
+                  - run: pip install pytest
                   - run: pytest
         """)
-        # Failing job is "test" — extractor should pick test.yml, not lint.yml
+        # Failing job is "test" — extractor should pick test.yml's install
         recipe = extract_recipe(
             workspace_path=workspace, failing_job_name="test"
         )
         assert recipe is not None
-        assert "pytest" in recipe.commands
-        assert "ruff check ." not in recipe.commands
+        assert "pip install pytest" in recipe.commands
+        # Test runner filtered out (v1.7.1.1)
+        assert not any("pytest" == c for c in recipe.commands)
+        # Other-workflow content not present
+        assert not any("ruff" in c for c in recipe.commands)
 
     def test_picks_lint_workflow_when_lint_job_fails(self, workspace):
         _write_workflow(workspace, "lint.yml", """\
@@ -353,6 +432,7 @@ class TestMultiWorkflowRepo:
               lint:
                 runs-on: ubuntu-latest
                 steps:
+                  - run: pip install ruff
                   - run: ruff check .
         """)
         _write_workflow(workspace, "test.yml", """\
@@ -361,13 +441,16 @@ class TestMultiWorkflowRepo:
               test:
                 runs-on: ubuntu-latest
                 steps:
+                  - run: pip install pytest
                   - run: pytest
         """)
         recipe = extract_recipe(
             workspace_path=workspace, failing_job_name="lint"
         )
         assert recipe is not None
-        assert "ruff check ." in recipe.commands
+        assert "pip install ruff" in recipe.commands
+        # Test runner filtered (v1.7.1.1)
+        assert not any("ruff check" in c for c in recipe.commands)
 
 
 # ─── Recipe shape sanity ─────────────────────────────────────────────────────
@@ -375,6 +458,8 @@ class TestMultiWorkflowRepo:
 
 class TestRecipeShape:
     def test_recipe_carries_metadata(self, workspace):
+        # v1.7.1.1: workflow needs at least one non-test step to yield
+        # a recipe (otherwise the filter strips everything → None).
         _write_workflow(workspace, "test.yml", """\
             on: push
             jobs:
@@ -382,6 +467,7 @@ class TestRecipeShape:
                 name: My Test Suite
                 runs-on: ubuntu-22.04
                 steps:
+                  - run: pip install pytest
                   - run: pytest
         """)
         recipe = extract_recipe(
@@ -400,6 +486,7 @@ class TestRecipeShape:
               test:
                 runs-on: ubuntu-latest
                 steps:
+                  - run: pip install pytest
                   - run: pytest
         """)
         recipe = extract_recipe(

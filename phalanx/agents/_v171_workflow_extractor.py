@@ -159,10 +159,109 @@ def _classify_uses(action_ref: str) -> tuple[str, str]:
 
 _TEMPLATE_LITERAL_RE = re.compile(r"\$\{\{[^}]*\}\}")
 
+# Known test-runner first tokens. A `run:` step starting with one of
+# these is the CI's TEST command, not a setup command — SRE setup must
+# NOT execute it during provisioning (the test is supposed to be
+# failing on the broken state; running it during setup makes the
+# provisioner think "install failed").
+#
+# This is the v1.7.1.1 fix to the Tier 0 extractor — without this list,
+# `pip install -e .[dev]` followed by `ruff check .` both got emitted
+# as install commands; ruff failed because the lint bug is what we're
+# trying to fix; setup reported install_command_failed.
+# Single-token test runners (first token alone identifies as test).
+_TEST_RUNNER_TOKENS: frozenset[str] = frozenset({
+    "pytest", "py.test", "unittest",
+    "ruff", "flake8", "pylint", "mypy", "black", "isort",
+    "tox", "nox", "hatch",
+    "jest", "vitest", "mocha",
+    "eslint", "prettier",
+    "rspec", "rubocop",
+    "pre-commit",
+    "rustc",
+    "mvn", "gradle", "gradlew",
+})
+
+# Two-token compound runners: (first, second) pairs that identify as test.
+# `go test` is a runner; `go mod download` is install. `cargo test` is a
+# runner; `cargo build` is install.
+_TEST_RUNNER_COMPOUNDS: frozenset[tuple[str, str]] = frozenset({
+    ("go", "test"),
+    ("go", "vet"),
+    ("cargo", "test"),
+    ("cargo", "clippy"),
+    ("dotnet", "test"),
+})
+
+# Wrapper tokens — strip then re-classify the underlying command.
+# `uv run pytest tests/` → after stripping `uv run` the first token is
+# `pytest`, which IS a test runner. `npm run lint` → `npm run` strips to
+# `lint` which isn't in our list, so consider checking if `npm run X`
+# where X looks like a test command. For v1.7.1.1 we keep this simple
+# and document the limitation.
+_WRAPPER_PREFIXES: tuple[tuple[str, ...], ...] = (
+    ("uv", "run"),
+    ("uv", "tool", "run"),
+    ("python", "-m"),
+    ("python3", "-m"),
+    ("poetry", "run"),
+    ("pdm", "run"),
+)
+
+
+def _is_test_runner_command(cmd: str) -> bool:
+    """True iff the first non-shell-prefix token of `cmd` is a known
+    test runner — including:
+      - bare runners (pytest, ruff, ...)
+      - compound runners (go test, cargo test)
+      - wrapped runners (uv run pytest, python -m pytest)
+
+    Multi-line scripts checked on the first non-empty line.
+    """
+    if not cmd:
+        return False
+    first_line = next(
+        (line.strip() for line in cmd.splitlines() if line.strip()),
+        "",
+    )
+    if not first_line:
+        return False
+    tokens = first_line.split()
+    # Strip leading shell helpers
+    while tokens and tokens[0] in {"sudo", "env", "time"}:
+        tokens = tokens[1:]
+    if not tokens:
+        return False
+
+    # Strip path component on token 0: /usr/bin/pytest → pytest
+    tokens[0] = tokens[0].rsplit("/", 1)[-1]
+
+    # Check wrapper prefixes — peel layers, retry classification
+    for wrapper in _WRAPPER_PREFIXES:
+        if len(tokens) > len(wrapper) and tuple(tokens[: len(wrapper)]) == wrapper:
+            tokens = tokens[len(wrapper) :]
+            tokens[0] = tokens[0].rsplit("/", 1)[-1]
+            break
+
+    if not tokens:
+        return False
+
+    first = tokens[0]
+
+    # Compound runner check (go test, cargo test, ...)
+    if len(tokens) >= 2:
+        if (first, tokens[1]) in _TEST_RUNNER_COMPOUNDS:
+            return True
+
+    # Single-token check
+    return first in _TEST_RUNNER_TOKENS
+
 
 def _render_run_step(run_value: str | list, env: dict | None = None) -> str | None:
     """Render a `run:` step's shell. Returns None if the step contains
-    unresolved template literals we can't expand (e.g., `${{ matrix.x }}`).
+    unresolved template literals we can't expand (e.g., `${{ matrix.x }}`)
+    OR if the step is a test-runner command (we don't want to execute
+    those during setup).
 
     YAML's `run:` can be a string or list-of-strings. We join lists with newlines.
     """
@@ -174,7 +273,12 @@ def _render_run_step(run_value: str | list, env: dict | None = None) -> str | No
         # Some templates we COULD resolve (env.X, github.repo) but we don't
         # have that context here. Bail to Tier 1.
         return None
-    return run_value.strip()
+    rendered = run_value.strip()
+    if _is_test_runner_command(rendered):
+        # Test runner — exclude from setup commands. SRE will run the
+        # actual failing_command during VERIFY, not during SETUP.
+        return ""
+    return rendered
 
 
 # ─── Top-level extraction ────────────────────────────────────────────────────
@@ -295,6 +399,10 @@ def extract_recipe_from_workflow(
                     f"step[{i}]: run contains unresolved template literal"
                 )
                 return None
+            if not rendered:
+                # Empty rendered = test runner that we explicitly skipped
+                # (setup recipe never runs the failing test command itself).
+                continue
             commands.append(rendered)
 
     if not commands:
