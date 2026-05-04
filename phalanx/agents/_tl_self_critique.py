@@ -262,6 +262,153 @@ def check_c7_error_line_quoted_from_log(
     return True, ""
 
 
+# ─────────────────────────────────────────────────────────────────────
+# c8 — test_behavior_preserved (v1.7.2.5)
+#
+# Catches the 2026-05-04 soak's flake-cell anti-pattern: TL choosing
+# "delete the flaky test" instead of "fix the timing source." Three of
+# four flake failures hit this exact strategy.
+#
+# c8 looks at draft_steps + draft_root_cause + ci_log and rejects plans
+# that REMOVE/SKIP/DISABLE test code on flake/timing failures. The right
+# fix on a flaky test is to make it deterministic — seed randomness,
+# remove sleeps, loosen timing assertions while preserving behavioral
+# coverage — NOT to delete the test.
+# ─────────────────────────────────────────────────────────────────────
+
+
+# Failure-shape signals that mean "this is a flake / timing failure" —
+# triggers the stricter c8 rejection.
+_FLAKE_SIGNALS_RE = re.compile(
+    r"\b(flake|flaky|timeout|timing|race|nondeterm|intermittent|"
+    r"sleep|random|jitter)",
+    re.IGNORECASE,
+)
+
+# Patterns in step content that indicate test removal / skip / disable.
+_SKIP_DIRECTIVE_RE = re.compile(
+    r"@(?:pytest\.mark\.(?:skip|skipif|xfail)|unittest\.(?:skip|skipIf|expectedFailure))\b"
+    r"|\bpytest\.(?:skip|xfail)\("
+    r"|^\s*pytestmark\s*=\s*pytest\.mark\.skip",
+    re.MULTILINE,
+)
+
+
+def _is_test_path(path: str) -> bool:
+    """Same heuristic as patch_safety._is_test_path — duplicated here so
+    self-critique stays self-contained (no upward import)."""
+    if not path:
+        return False
+    if path.startswith("test_") or path.endswith("_test.py"):
+        return True
+    parts = path.split("/")
+    if "tests" in parts or "test" in parts:
+        return True
+    return any(p.startswith("test_") for p in parts)
+
+
+def check_c8_test_behavior_preserved(
+    *,
+    draft_steps: list[dict] | None,
+    draft_root_cause: str,
+    ci_log_text: str,
+) -> tuple[bool, str]:
+    """v1.7.2.5 — preserve behavioral intent on flake/timing failures.
+
+    Rejects plans whose engineer steps would:
+      - delete a test file (action='delete_lines' on a tests/ path)
+      - inject a skip directive (@pytest.mark.skip, pytestmark=skip,
+        @unittest.skip, etc.) into a test file
+      - apply_diff removing test functions
+
+    Rule: when the failure shape is flake/timing/random/sleep/timeout/
+    nondeterministic (matched in root_cause OR ci_log), TL must NOT
+    delete or skip tests. The right fix is to make the test deterministic.
+
+    For non-flake failures (e.g., "AssertionError: expected 5"), test
+    edits are allowed — the user might legitimately need to fix a wrong
+    test. c8 only fires on flake-shape signals.
+
+    If TL genuinely can't find a deterministic fix, it should ESCALATE
+    (review_decision='ESCALATE', confidence=0.0, affected_files=[])
+    rather than ship a deletion.
+    """
+    if not draft_steps:
+        return True, ""
+
+    # Detect flake-shape signal in root_cause OR ci_log
+    rc = draft_root_cause or ""
+    log_text = ci_log_text or ""
+    flake_signal = bool(
+        _FLAKE_SIGNALS_RE.search(rc) or _FLAKE_SIGNALS_RE.search(log_text)
+    )
+    if not flake_signal:
+        return True, ""  # not a flake failure; behavior-preservation isn't c8's concern
+
+    # Walk steps looking for test-removal / skip-injection
+    for step in draft_steps:
+        if not isinstance(step, dict):
+            continue
+        action = step.get("action") or ""
+        path = step.get("file") or step.get("path") or ""
+
+        # Direct test-file deletion
+        if action == "delete_lines" and _is_test_path(path):
+            return False, (
+                f"flake/timing failure detected — but step deletes from test "
+                f"file {path!r}. The right fix is to make the test deterministic "
+                f"(seed randomness, remove sleeps, loosen timing). Deleting "
+                f"the test removes coverage and hides behavior. If no "
+                f"deterministic fix is possible, ESCALATE instead."
+            )
+
+        # Skip-directive injection in new content
+        new_content = step.get("new") or step.get("content") or ""
+        if isinstance(new_content, str) and _SKIP_DIRECTIVE_RE.search(new_content):
+            return False, (
+                f"flake/timing failure detected — but step injects a skip "
+                f"directive (@pytest.mark.skip / pytestmark / etc.) into "
+                f"{path or 'a file'!r}. Skipping a test is hiding the bug. "
+                f"Either fix the timing source deterministically or ESCALATE."
+            )
+
+        # apply_diff: scan ADDED lines for skip directives, REMOVED lines
+        # for test-function deletions
+        if action == "apply_diff":
+            diff = step.get("diff") or ""
+            if not isinstance(diff, str):
+                continue
+            added = "\n".join(
+                ln[1:] for ln in diff.splitlines()
+                if ln.startswith("+") and not ln.startswith("+++")
+            )
+            removed = "\n".join(
+                ln[1:] for ln in diff.splitlines()
+                if ln.startswith("-") and not ln.startswith("---")
+            )
+            if _SKIP_DIRECTIVE_RE.search(added):
+                return False, (
+                    f"flake/timing failure detected — apply_diff adds a skip "
+                    f"directive to test code. Skipping is not a fix. "
+                    f"Make the test deterministic, or ESCALATE."
+                )
+            # Heuristic: removing a `def test_<name>(` line whose function
+            # is the "flaky" subject of the diagnosis is a test-deletion.
+            for line in removed.splitlines():
+                stripped = line.lstrip()
+                if stripped.startswith("def test_") and (
+                    "flaky" in rc.lower() or "flake" in rc.lower() or
+                    "jitter" in stripped.lower() or "random" in stripped.lower()
+                ):
+                    return False, (
+                        f"flake/timing failure detected — apply_diff removes "
+                        f"`{stripped[:60].rstrip()}`. Deleting the flaky test "
+                        f"removes coverage. Fix the timing source or ESCALATE."
+                    )
+
+    return True, ""
+
+
 def check_c11_environmental_control(
     *,
     draft_root_cause: str,
@@ -554,6 +701,14 @@ async def _handle_validate_self_critique(
         # authoritative on whether c7 was required.
         c7_ok, c7_reason = True, "skipped_no_input"
 
+    # v1.7.2.5 — c8 test_behavior_preserved: catches flake-strategy
+    # anti-pattern ("delete the flaky test"). Surfaced by 2026-05-04 soak.
+    c8_ok, c8_reason = check_c8_test_behavior_preserved(
+        draft_steps=draft_steps if isinstance(draft_steps, list) else None,
+        draft_root_cause=draft_rc,
+        ci_log_text=ci_log,
+    )
+
     mismatches: list[dict[str, str]] = []
     if not c1_ok:
         mismatches.append({"check": "ci_log_addresses_root_cause", "reason": c1_reason})
@@ -567,6 +722,8 @@ async def _handle_validate_self_critique(
         mismatches.append({"check": "step_preconditions_satisfied", "reason": c5_reason})
     if not c7_ok:
         mismatches.append({"check": "error_line_quoted_from_log", "reason": c7_reason})
+    if not c8_ok:
+        mismatches.append({"check": "test_behavior_preserved", "reason": c8_reason})
 
     log.info(
         "v3.tl.self_critique.validated",
@@ -576,6 +733,7 @@ async def _handle_validate_self_critique(
         c4=c4_ok,
         c5=c5_ok,
         c7=c7_ok,
+        c8=c8_ok,
         mismatches_count=len(mismatches),
     )
 
@@ -589,9 +747,10 @@ async def _handle_validate_self_critique(
                 "grounding_satisfied": c4_ok,
                 "step_preconditions_satisfied": c5_ok,
                 "error_line_quoted_from_log": c7_ok,
+                "test_behavior_preserved": c8_ok,
             },
             "mismatches": mismatches,
-            "all_true": all([c1_ok, c2_ok, c3_ok, c4_ok, c5_ok, c7_ok]),
+            "all_true": all([c1_ok, c2_ok, c3_ok, c4_ok, c5_ok, c7_ok, c8_ok]),
         },
     )
 

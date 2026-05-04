@@ -206,6 +206,11 @@ How to fill `self_critique` — tool-validated, not declared.
         verbatim substring of ci_log_text, length 20-240 chars.
         Forces diagnosis to anchor in real log evidence, not paraphrase.
 
+    c8 test_behavior_preserved (v1.7.2.5): for flake/timing/random/sleep
+        /timeout/nondeterministic failures, plan must NOT delete tests,
+        skip tests, or remove coverage. The right fix is to make the
+        test deterministic. See "FLAKE / TIMING FAILURES" section below.
+
   If ANY validator boolean is false:
     - Fix the underlying issue (read the file you missed; grep the
       actual `old` text; pick a real error line; re-token root_cause).
@@ -305,6 +310,48 @@ env_requirements (top-level AND mirrored in cifix_sre_setup task):
   services            — subset of {"postgres", "redis", "mysql"}
   reproduce_command   — REQUIRED. Command SRE runs to confirm env reproduces failure
   reproduce_expected  — REQUIRED. Human-readable expected outcome BEFORE fix
+
+FLAKE / TIMING FAILURES — preserve behavioral intent, do NOT delete:
+
+  Triggered by signals in root_cause OR ci_log: flake, flaky, timeout,
+  timing, race, nondeterministic, intermittent, sleep, random, jitter.
+
+  DO:
+    - Fix the source of nondeterminism (the test was right, the
+      environment is the problem).
+    - Seed randomness deterministically: random.seed(42), numpy seed,
+      pytest-randomly seed, faker seed.
+    - Remove unnecessary sleeps; use deterministic synchronization
+      primitives (events, locks, mocks, freezegun).
+    - Loosen a timing assertion ONLY when the behavioral coverage is
+      preserved — e.g. assert duration < 5.0 instead of < 0.1 if the
+      test still demonstrates "operation completes in bounded time."
+    - Replace time.time() / datetime.now() with frozen-time fixtures.
+    - Mock the source of variance (e.g. patch `time.sleep`, `random.random`).
+
+  DO NOT:
+    - Delete the test (`delete_lines` on a tests/ path).
+    - Skip the test (@pytest.mark.skip, @pytest.mark.skipif,
+      @pytest.mark.xfail, @unittest.skip, pytestmark=pytest.mark.skip,
+      `pytest.skip(...)` inline).
+    - Remove the test function in apply_diff (lines starting with `-def
+      test_...` in the diff body).
+    - Bump the timeout to dodge it (--timeout=999).
+    - Reduce coverage thresholds to avoid the failure.
+
+  If after investigation you cannot identify a SAFE deterministic fix,
+  ESCALATE rather than ship a deletion or skip:
+    review_decision = "ESCALATE"
+    confidence = 0.0
+    affected_files = []
+    open_questions = ["this test is flaky because <root cause>; we
+      could not find a deterministic fix without changing behavioral
+      coverage. Suggest <human action>."]
+
+  c8 self-critique enforces this. The plan validator and engineer's
+  patch_safety guards will both refuse a deletion-shaped fix anyway —
+  ESCALATING up front is faster than burning iterations getting
+  bounced.
 
 ESCALATE path (env-mismatch — sandbox lacks tooling, NOT a code bug):
   When you determine the failure is environmental (sandbox lacks `uv`,
@@ -542,10 +589,12 @@ class CIFixTechLeadAgent(BaseAgent):
                 ),
             }
             # v1.7 keys: only check when present (backwards compat with v1.6 emits)
+            # v1.7.2.5: + test_behavior_preserved (c8) — flake-strategy guard
             for v17_key in (
                 "grounding_satisfied",
                 "step_preconditions_satisfied",
                 "error_line_quoted_from_log",
+                "test_behavior_preserved",
             ):
                 if v17_key in sc:
                     booleans[v17_key] = sc.get(v17_key)

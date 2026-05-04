@@ -404,3 +404,358 @@ def test_milestone_zero_false_negatives_summary():
         "affected_files_exist_in_repo",
         "verify_command_will_distinguish_success",
     }, "corpus must cover all 3 check classes"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# c8 — test_behavior_preserved (v1.7.2.5)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The 2026-05-04 soak surfaced 3 flake-cell failures all driven by TL
+# choosing "delete the flaky test" instead of "fix the timing source."
+# c8 catches that anti-pattern at TL emit time.
+
+from phalanx.agents._tl_self_critique import (  # noqa: E402
+    check_c8_test_behavior_preserved,
+)
+
+
+_CI_LOG_FLAKE_TIMEOUT = """\
+============================= test session starts ==============================
+collected 6 items
+tests/test_math_ops.py::test_multiply_with_jitter
++++++++++++++++++++++ Timeout +++++++++++++++++++++
+~~~~ Stack of MainThread ~~~~
+File "tests/test_math_ops.py", line 14, in test_multiply_with_jitter
+    time.sleep(random.uniform(0, 3))
+Failed: Timeout >2.0s
+"""
+
+
+_HONEST_DETERMINISTIC_FIX_STEPS = [
+    {
+        "id": 1, "action": "replace",
+        "file": "tests/test_math_ops.py",
+        "old": "time.sleep(random.uniform(0, 3))",
+        "new": "# (deterministic — no sleep needed for behavioral coverage)",
+    },
+    {"id": 2, "action": "commit", "message": "test: remove flaky sleep"},
+    {"id": 3, "action": "push"},
+]
+
+_DELETE_FLAKY_TEST_STEPS = [
+    {
+        "id": 1, "action": "delete_lines",
+        "file": "tests/test_math_ops.py",
+        "line": 12, "end_line": 18,
+    },
+    {"id": 2, "action": "commit", "message": "remove flaky test"},
+    {"id": 3, "action": "push"},
+]
+
+_SKIP_DECORATOR_STEPS = [
+    {
+        "id": 1, "action": "replace",
+        "file": "tests/test_math_ops.py",
+        "old": "def test_multiply_with_jitter():",
+        "new": "@pytest.mark.skip(reason='flaky')\ndef test_multiply_with_jitter():",
+    },
+    {"id": 2, "action": "commit", "message": "skip flaky test"},
+    {"id": 3, "action": "push"},
+]
+
+_PYTESTMARK_SKIP_STEPS = [
+    {
+        "id": 1, "action": "insert",
+        "file": "tests/test_math_ops.py",
+        "after_line": 1,
+        "content": "pytestmark = pytest.mark.skip(reason='broken on CI')",
+    },
+    {"id": 2, "action": "commit", "message": "module-skip flaky test"},
+    {"id": 3, "action": "push"},
+]
+
+_APPLY_DIFF_REMOVE_TEST = [
+    {
+        "id": 1, "action": "apply_diff",
+        "diff": (
+            "--- a/tests/test_math_ops.py\n"
+            "+++ b/tests/test_math_ops.py\n"
+            "@@ -10,8 +10,2 @@\n"
+            " import pytest\n"
+            " \n"
+            "-def test_multiply_with_jitter():\n"
+            "-    time.sleep(random.uniform(0, 3))\n"
+            "-    assert multiply(2, 3) == 6\n"
+            "-\n"
+            " def test_subtract():\n"
+            "     assert subtract(5, 3) == 2\n"
+        ),
+    },
+    {"id": 2, "action": "commit", "message": "remove flaky test"},
+    {"id": 3, "action": "push"},
+]
+
+
+# ── Acceptance cases ──────────────────────────────────────────────────
+
+
+def test_c8_passes_when_no_steps():
+    """No engineer steps yet — nothing to evaluate."""
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=None,
+        draft_root_cause="flaky test_multiply_with_jitter times out",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is True
+    assert reason == ""
+
+
+def test_c8_passes_for_non_flake_failure_even_with_test_deletion():
+    """c8 only fires on flake/timing signals. A genuine 'remove an
+    obsolete test' deletion on a non-flake failure should pass."""
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=_DELETE_FLAKY_TEST_STEPS,
+        draft_root_cause="The test was renamed in the PR; remove the old reference.",
+        ci_log_text="ImportError: cannot import test_renamed_thing",
+    )
+    assert ok is True
+
+
+def test_c8_passes_for_deterministic_fix_on_flake():
+    """The RIGHT shape: TL replaces the random sleep with a comment
+    explaining why the timing wasn't actually needed. Behavior preserved."""
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=_HONEST_DETERMINISTIC_FIX_STEPS,
+        draft_root_cause="Test test_multiply_with_jitter times out due to random sleep",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is True
+
+
+def test_c8_passes_for_seed_randomness_on_flake():
+    """Seeding randomness is the canonical deterministic fix — must
+    pass even though the diff touches the test file."""
+    seed_steps = [
+        {
+            "id": 1, "action": "insert",
+            "file": "tests/test_math_ops.py",
+            "after_line": 5,
+            "content": "import random\nrandom.seed(42)",
+        },
+        {"id": 2, "action": "commit", "message": "test: seed random"},
+    ]
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=seed_steps,
+        draft_root_cause="flaky test due to random.uniform sleep",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is True
+
+
+def test_c8_passes_when_root_cause_mentions_flake_but_steps_fix_source():
+    """TL is fixing a flake by editing the SOURCE under test (not the
+    test). That's preserving behavioral intent — pass."""
+    src_fix_steps = [
+        {
+            "id": 1, "action": "replace",
+            "file": "src/calc/math_ops.py",
+            "old": "time.sleep(random.uniform(0, 3))",
+            "new": "# removed nondeterministic sleep",
+        },
+        {"id": 2, "action": "commit", "message": "fix: remove flaky sleep in math_ops"},
+    ]
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=src_fix_steps,
+        draft_root_cause="flaky test_multiply due to random sleep in math_ops",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is True
+
+
+# ── Rejection cases ───────────────────────────────────────────────────
+
+
+def test_c8_fails_on_test_deletion_for_flake():
+    """The exact 2026-05-04 soak failure: TL emits delete_lines on
+    a tests/ path on a flake-shape failure. c8 rejects."""
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=_DELETE_FLAKY_TEST_STEPS,
+        draft_root_cause="Remove the flaky test_multiply_with_jitter from tests",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "deletes from test" in reason
+    assert "deterministic" in reason or "timing" in reason
+
+
+def test_c8_fails_on_pytest_skip_decorator():
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=_SKIP_DECORATOR_STEPS,
+        draft_root_cause="test_multiply_with_jitter is flaky; skip it",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "skip directive" in reason
+
+
+def test_c8_fails_on_pytestmark_module_skip():
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=_PYTESTMARK_SKIP_STEPS,
+        draft_root_cause="flaky tests timing out",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "skip directive" in reason
+
+
+def test_c8_fails_on_apply_diff_removing_flaky_test_function():
+    """apply_diff with `-def test_<flaky>...` lines. c8 inspects the
+    diff body for removed test-function definitions."""
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=_APPLY_DIFF_REMOVE_TEST,
+        draft_root_cause="Remove flaky test_multiply_with_jitter",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "removes" in reason or "deleting" in reason.lower()
+
+
+def test_c8_fails_on_xfail_decorator_for_flake():
+    """Marking a flaky test as xfail is also hiding behavior."""
+    xfail_steps = [
+        {
+            "id": 1, "action": "replace",
+            "file": "tests/test_math_ops.py",
+            "old": "def test_multiply_with_jitter():",
+            "new": "@pytest.mark.xfail(reason='flaky')\ndef test_multiply_with_jitter():",
+        },
+        {"id": 2, "action": "commit", "message": "xfail flaky"},
+    ]
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=xfail_steps,
+        draft_root_cause="flaky test timing out",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "skip directive" in reason
+
+
+def test_c8_fails_on_inline_pytest_skip_call():
+    inline_skip_steps = [
+        {
+            "id": 1, "action": "insert",
+            "file": "tests/test_math_ops.py",
+            "after_line": 13,
+            "content": "    pytest.skip('flaky timing')",
+        },
+        {"id": 2, "action": "commit", "message": "skip flaky body"},
+    ]
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=inline_skip_steps,
+        draft_root_cause="random sleep makes test flaky",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+
+
+def test_c8_fails_when_only_ci_log_signals_flake():
+    """c8 should fire on flake signals in EITHER root_cause OR ci_log.
+    Catches TL trying to launder the diagnosis ("just a slow test")
+    when the log clearly says timeout."""
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=_DELETE_FLAKY_TEST_STEPS,
+        draft_root_cause="The test takes too long and should be removed",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,  # contains "Timeout" + "Failed: Timeout"
+    )
+    assert ok is False
+
+
+def test_c8_fails_when_only_root_cause_signals_flake():
+    """Mirror: ci_log might be opaque, but root_cause names flake."""
+    opaque_log = "exit code 1\n"
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=_DELETE_FLAKY_TEST_STEPS,
+        draft_root_cause="test_multiply_with_jitter is intermittent / flaky",
+        ci_log_text=opaque_log,
+    )
+    assert ok is False
+
+
+# ── Soak failure replays ──────────────────────────────────────────────
+
+
+def test_c8_rejects_2026_05_04_soak_run_ee5fd137():
+    """The flake-cell run that actually shipped a regression yesterday.
+    With c8, this plan would have been rejected at TL emit time, never
+    reaching the engineer + the gate."""
+    soak_root_cause = (
+        "PR added intentionally flaky test_multiply_with_jitter that "
+        "sleeps for up to 3 seconds while CI runs pytest with --timeout=2."
+    )
+    soak_steps = [
+        {
+            "id": 1, "action": "delete_lines",
+            "file": "tests/test_math_ops.py",
+            "line": 14, "end_line": 21,
+        },
+        {
+            "id": 2, "action": "replace",
+            "file": "tests/test_math_ops.py",
+            "old": "import random\nimport time\n",
+            "new": "",
+        },
+        {"id": 3, "action": "commit", "message": "remove flaky test_multiply_with_jitter"},
+        {"id": 4, "action": "push"},
+    ]
+    ok, reason = check_c8_test_behavior_preserved(
+        draft_steps=soak_steps,
+        draft_root_cause=soak_root_cause,
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is False
+    assert "test" in reason.lower()
+
+
+def test_c8_passes_for_soak_run_with_correct_seeded_alternative():
+    """The shape TL SHOULD emit instead — modify the test to remove
+    the random sleep but preserve the behavioral assertion."""
+    correct_steps = [
+        {
+            "id": 1, "action": "replace",
+            "file": "tests/test_math_ops.py",
+            "old": "    time.sleep(random.uniform(0, 3))",
+            "new": "    # behavioral coverage preserved without timing variance",
+        },
+        {
+            "id": 2, "action": "replace",
+            "file": "tests/test_math_ops.py",
+            "old": "import random\nimport time\n",
+            "new": "",
+        },
+        {"id": 3, "action": "commit", "message": "test: deterministic test_multiply_with_jitter"},
+        {"id": 4, "action": "push"},
+    ]
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=correct_steps,
+        draft_root_cause="random sleep makes test_multiply_with_jitter flaky",
+        ci_log_text=_CI_LOG_FLAKE_TIMEOUT,
+    )
+    assert ok is True
+
+
+# ── Tool-handler integration ──────────────────────────────────────────
+
+
+def test_c8_appears_in_validated_dict():
+    """The validate_self_critique tool must surface c8 in its output
+    so TL can read it and adjust before emit."""
+    from phalanx.agents._tl_self_critique import (  # noqa: PLC0415
+        check_c8_test_behavior_preserved,
+    )
+    # Just spot-check the function exists with the expected signature
+    ok, _ = check_c8_test_behavior_preserved(
+        draft_steps=[],
+        draft_root_cause="",
+        ci_log_text="",
+    )
+    assert ok is True  # empty inputs default to pass
