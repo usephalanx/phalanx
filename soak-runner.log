@@ -1,0 +1,54 @@
+[soak] start cadence=900s out=soak-runs.jsonl resume_idx=1 max_runs=None
+[soak] iter=0 idx=1 cell=test_fail ts_start=2026-05-04T00:10:33+00:00
+[soak] iter=0 cell=test_fail verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=254s run_id=69938253-9061-4614-ae3d-2d0c825a81c7
+[soak] sleeping 644s until next iter
+[soak] iter=1 idx=2 cell=flake ts_start=2026-05-04T00:25:33+00:00
+[soak] iter=1 cell=flake verdict=FAILED iters=1 gate=REGRESSION sha_match=True duration=261s run_id=ee5fd137-3a31-4eb6-a5bc-1cae37440a1d
+[soak] sleeping 637s until next iter
+[soak] iter=2 idx=3 cell=coverage ts_start=2026-05-04T02:04:09+00:00
+[soak] iter=2 cell=coverage verdict=SHIPPED iters=2 gate=TRUE_GREEN sha_match=True duration=1218s run_id=5412fe0f-43cd-482e-b939-d99994e3e27c
+[soak] cell took 1221s ≥ cadence 900s; starting next iter immediately
+[soak] iter=3 idx=4 cell=lint ts_start=2026-05-04T02:24:31+00:00
+[soak] iter=3 cell=lint verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=214s run_id=59aeb11c-0efc-4367-886f-b5290aa5ba62
+[soak] sleeping 684s until next iter
+[soak] iter=4 idx=5 cell=test_fail ts_start=2026-05-04T02:39:31+00:00
+[soak] iter=4 cell=test_fail verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=197s run_id=baf9c0d3-2355-4341-9cba-b8e6924030db
+[soak] sleeping 700s until next iter
+[soak] iter=5 idx=6 cell=flake ts_start=2026-05-04T02:54:32+00:00
+[soak] iter=5 cell=flake verdict=None iters=None gate=None sha_match=None duration=196s run_id=None
+[soak] sleeping 704s until next iter
+[soak] iter=6 idx=7 cell=coverage ts_start=2026-05-04T03:09:33+00:00
+[soak] iter=6 cell=coverage verdict=FAILED iters=1 gate=NOT_FIXED sha_match=True duration=272s run_id=5d3976b6-2c47-4d8e-bf6e-643f27085e74
+[soak] sleeping 626s until next iter
+[soak] iter=7 idx=8 cell=lint ts_start=2026-05-04T03:24:34+00:00
+[soak] iter=7 cell=lint verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=208s run_id=af65113c-9c4a-43cc-9264-ab02ff88cf73
+[soak] sleeping 690s until next iter
+[soak] iter=8 idx=9 cell=test_fail ts_start=2026-05-04T03:39:34+00:00
+[soak] iter=8 cell=test_fail verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=240s run_id=b13ef7a5-b353-4f64-b075-e01071e86d7c
+[soak] sleeping 657s until next iter
+[soak] iter=9 idx=10 cell=flake ts_start=2026-05-04T03:54:35+00:00
+[soak] iter=9 cell=flake verdict=FAILED iters=0 gate=None sha_match=False duration=343s run_id=df827eb2-d96b-4292-be1c-8066edb58df2
+[soak] sleeping 556s until next iter
+[soak] iter=10 idx=11 cell=coverage ts_start=2026-05-04T04:09:36+00:00
+[soak] iter=10 cell=coverage verdict=FAILED iters=1 gate=NOT_FIXED sha_match=True duration=341s run_id=4e7f2ca7-2b4c-45e8-8c4e-73fec619336a
+[soak] sleeping 557s until next iter
+[soak] iter=11 idx=12 cell=lint ts_start=2026-05-04T04:24:36+00:00
+[soak] iter=11 cell=lint verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=216s run_id=903e39d7-572f-4097-8a3f-83b4b1953193
+[soak] sleeping 682s until next iter
+[soak] iter=12 idx=13 cell=test_fail ts_start=2026-05-04T04:39:37+00:00
+[soak] iter=12 cell=test_fail verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=217s run_id=6f679b5c-2d1e-4bdd-9c67-95219ab69464
+[soak] sleeping 681s until next iter
+[soak] iter=13 idx=14 cell=flake ts_start=2026-05-04T04:54:38+00:00
+[soak] iter=13 cell=flake verdict=FAILED iters=1 gate=None sha_match=True duration=440s run_id=d53b74b9-8ae1-43a2-acbd-dda2f490643c
+[soak] sleeping 458s until next iter
+[soak] iter=14 idx=15 cell=coverage ts_start=2026-05-04T05:09:38+00:00
+[soak] iter=14 cell=coverage verdict=FAILED iters=0 gate=None sha_match=False duration=216s run_id=158f499c-edea-4f5a-83ed-f54f36895864
+[soak] sleeping 682s until next iter
+[soak] iter=15 idx=16 cell=lint ts_start=2026-05-04T05:24:38+00:00
+[soak] iter=15 cell=lint verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=207s run_id=d199d7f1-a632-415f-8514-530f31f44b66
+[soak] sleeping 691s until next iter
+[soak] iter=16 idx=17 cell=test_fail ts_start=2026-05-04T05:39:39+00:00
+[soak] iter=16 cell=test_fail verdict=SHIPPED iters=1 gate=TRUE_GREEN sha_match=True duration=228s run_id=b0d37e91-a7ed-46f9-8419-6928c11d608b
+[soak] sleeping 670s until next iter
+[soak] /tmp/soak-stop present — exiting cleanly
+[soak] exited cleanly after 17 runs
