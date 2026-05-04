@@ -296,11 +296,79 @@ WHEN to include cifix_sre_setup:
 
 When to use replace vs apply_diff:
   - 1-2 line edits, exact text known          → replace (safer; clearer)
-  - Multi-hunk changes touching multiple sites → apply_diff (one step)
+  - Insert a new function / test block         → insert
+  - Multi-site rewrite, > 5 hunks               → apply_diff
   - Creating a NEW file                        → apply_diff with
-                                                  "new file mode" header
+                                                  `--- /dev/null` header
   - DELETING a file                            → apply_diff with
                                                   "deleted file mode"
+
+  HARD RULE (plan validator enforces): apply_diff with ≤ 5 hunks is
+  REJECTED unless the diff is a new-file creation (`--- /dev/null`) OR
+  a file deletion (`+++ /dev/null`). For ≤ 5 targeted edits, use
+  `replace` / `insert` — they have a much higher success rate than
+  the LLM-emitted unified-diff path.
+
+PLAN COMPLETENESS — every emitted task_plan MUST satisfy:
+  - affected_files non-empty IFF any engineer step modifies a file
+    (mismatch — empty list with file edits OR populated list with
+    no edits — is rejected)
+  - every cifix_engineer task contains at least one patch step
+    (replace / insert / delete_lines / apply_diff) BEFORE its commit
+  - verify_command directly tests the failure (typically a substring
+    of failing_command, narrowed to the failing target)
+
+BEHAVIORAL PRESERVATION — answer these THREE questions before emit:
+
+  Q1. Does this patch preserve the intent of the failing test?
+  Q2. Am I hiding the failure or actually fixing the behavior?
+  Q3. If I remove or weaken a test, can I prove the behavior is still
+      validated by another test?
+
+  If you cannot answer all three with a confident YES, do NOT ship a
+  test-deleting / test-skipping / assertion-removing plan. Either find
+  a deterministic source-fix OR ESCALATE.
+
+STRATEGY DECISION TREE — pick ONE branch based on failure shape:
+
+  Flake / timing / random / sleep / timeout / nondeterministic:
+    → Fix the source of nondeterminism (seed, mock, freeze-time,
+      remove unnecessary sleep). NEVER delete or skip the test.
+    → See "FLAKE / TIMING FAILURES" block below.
+
+  Coverage drop (--cov-fail-under, missing lines):
+    → Add tests via `replace` / `insert` to bring coverage back.
+    → Use apply_diff ONLY if the additions span > 5 hunks.
+
+  Syntax error / import error:
+    → Minimal one-line fix (replace), nothing more. Do NOT refactor.
+
+  Assertion failure (production code is wrong):
+    → Edit the source; preserve all existing assertions.
+
+  CI config drift / sandbox env mismatch:
+    → ESCALATE. Do NOT edit `.github/workflows/`, `tox.ini`,
+      `pre-commit-config.yaml`, etc. (patch_safety would block anyway.)
+
+REPLAN MODE (iteration > 1) — additional requirements:
+
+  When commander dispatches you with `prior_failure_fingerprint` set
+  in ci_context, you are RE-PLANNING after a failed iteration. You MUST:
+
+    - Set `replan_reason` (string field on fix_spec) explaining why
+      the prior strategy failed. Reference the prior failure
+      fingerprint or specific failure observation. Empty / generic
+      replan_reason → plan validator rejects.
+
+    - Choose a DIFFERENT strategy. The plan validator computes the
+      structural signature of your task_plan (action types + files
+      touched across all engineer tasks) and rejects if it matches
+      the prior plan's signature byte-for-byte. Different action
+      types, different files, or a pivot to a different fix shape.
+
+    - Read the prior_failure_fingerprint and the verify output's
+      `stdout_tail` / `stderr_tail` from ci_context.prior_sre_failures
+      to understand what the engineer's commit actually produced.
 
 env_requirements (top-level AND mirrored in cifix_sre_setup task):
   python              — Python version, e.g., "3.11"
@@ -633,18 +701,44 @@ class CIFixTechLeadAgent(BaseAgent):
                     confidence=conf,
                 )
 
-        # v1.7.2.5 — plan validator gate. Catches structural problems in
-        # task_plan (cycles, unknown agents, malformed apply_diff hunks)
-        # BEFORE engineer dispatches. Without this, malformed plans cost
-        # an engineer iteration that could have been avoided.
+        # v1.7.2.5 — plan validator gate (structural).
+        # v1.7.2.7 — completeness + REPLAN strategy-change checks.
+        # All catch problems BEFORE engineer dispatches; failed
+        # validation marks the TL task FAILED so commander re-dispatches
+        # without burning an engineer iteration.
         plan = fix_spec.get("task_plan")
         if isinstance(plan, list) and plan:
             from phalanx.agents._plan_validator import (  # noqa: PLC0415
                 PlanValidationError,
                 validate_plan,
+                validate_plan_completeness,
+                validate_replan_strategy,
             )
             try:
+                # 1. Structural validation (existing v1.7.2.5)
                 validate_plan(plan)
+
+                # 2. Completeness — affected_files mismatch / missing
+                #    patch steps (v1.7.2.7)
+                validate_plan_completeness(
+                    plan,
+                    affected_files=fix_spec.get("affected_files") or [],
+                )
+
+                # 3. REPLAN strategy-change (v1.7.2.7) — only fires when
+                #    commander injected ci_context.prior_failure_fingerprint
+                #    and ci_context.prior_task_plan. Iteration > 1 implies
+                #    we've already failed once.
+                iteration = int(ci_context.get("iteration") or 1)
+                prior_fp = ci_context.get("prior_failure_fingerprint")
+                prior_plan = ci_context.get("prior_task_plan")
+                if iteration > 1 or prior_fp:
+                    validate_replan_strategy(
+                        current_plan=plan,
+                        prior_plan=prior_plan if isinstance(prior_plan, list) else None,
+                        iteration=iteration,
+                        fix_spec_replan_reason=fix_spec.get("replan_reason"),
+                    )
             except PlanValidationError as exc:
                 self._log.warning(
                     "cifix_techlead.plan_validation_failed",

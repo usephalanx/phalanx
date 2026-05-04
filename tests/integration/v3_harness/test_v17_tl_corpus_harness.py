@@ -301,47 +301,48 @@ def _good_output_03_humanize_tz_cascading() -> dict:
                 "depends_on": ["T2"],
                 "purpose": (
                     "fix tz-aware reference date in BOTH naturalday + "
-                    "naturaldate (cascade)"
+                    "naturaldate (cascade); add _today_for helper"
                 ),
+                # v1.7.2.7: 3 small hunks — use replace + insert per the
+                # apply_diff > 5 threshold (apply_diff would be rejected
+                # for this size).
                 "steps": [
                     {
                         "id": 1,
-                        "action": "apply_diff",
-                        "diff": (
-                            "--- a/src/humanize/time.py\n"
-                            "+++ b/src/humanize/time.py\n"
-                            "@@ -16,7 +16,7 @@ def naturalday(value, format_str=\"%b %d\"):\n"
-                            "         value = dt.date(value.year, value.month, value.day)\n"
-                            "     except AttributeError:\n"
-                            "         return str(value)\n"
-                            "-    today = dt.date.today()\n"
-                            "+    today = _today_for(value)\n"
-                            "     delta = value - today\n"
-                            "@@ -34,7 +34,7 @@ def naturaldate(value):\n"
-                            "         value = dt.date(value.year, value.month, value.day)\n"
-                            "     except AttributeError:\n"
-                            "         return str(value)\n"
-                            "-    today = dt.date.today()\n"
-                            "+    today = _today_for(value)\n"
-                            "     delta = value - today\n"
-                            "@@ -50,0 +50,7 @@\n"
-                            "+\n"
-                            "+def _today_for(value):\n"
-                            "+    \"\"\"Compute today's date in value's timezone if tz-aware.\"\"\"\n"
-                            "+    tzinfo = getattr(value, 'tzinfo', None)\n"
-                            "+    if tzinfo is not None:\n"
-                            "+        return dt.datetime.now(tzinfo).date()\n"
-                            "+    return dt.date.today()\n"
+                        "action": "replace",
+                        "file": "src/humanize/time.py",
+                        "old": (
+                            "    today = dt.date.today()\n"
+                            "    delta = value - today\n"
+                        ),
+                        "new": (
+                            "    today = _today_for(value)\n"
+                            "    delta = value - today\n"
                         ),
                     },
                     {
                         "id": 2,
+                        "action": "insert",
+                        "file": "src/humanize/time.py",
+                        "after_line": 50,
+                        "content": (
+                            "\n"
+                            "def _today_for(value):\n"
+                            "    \"\"\"Compute today's date in value's timezone if tz-aware.\"\"\"\n"
+                            "    tzinfo = getattr(value, 'tzinfo', None)\n"
+                            "    if tzinfo is not None:\n"
+                            "        return dt.datetime.now(tzinfo).date()\n"
+                            "    return dt.date.today()\n"
+                        ),
+                    },
+                    {
+                        "id": 3,
                         "action": "commit",
                         "message": (
                             "fix: tz-aware reference date in naturalday/naturaldate"
                         ),
                     },
-                    {"id": 3, "action": "push"},
+                    {"id": 4, "action": "push"},
                 ],
             },
             {
