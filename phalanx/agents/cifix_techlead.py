@@ -134,9 +134,23 @@ When you have enough evidence, end your turn with a single markdown fenced
     "step_preconditions_satisfied": true,
     "error_line_quoted_from_log": true,
     "notes": "one-sentence senior-engineer-style sanity check"
-  }
+  },
+  "replan_reason": null
 }
 ```
+
+`replan_reason`: REQUIRED on iter ≥ 2 (when ci_context.iteration > 1
+OR ci_context.prior_failure_fingerprint is set). Plan validator rejects
+empty/missing values on REPLAN dispatches. On iter-1 emits, set to
+null. Example values:
+  "iter-1's narrow ruff check passed but Test+Coverage was still red
+   on GitHub; pivoting from lint-format to test-addition."
+  "iter-1's replace.old text was stale (file changed between read and
+   emit); re-read the file and emitted insert + replace with current
+   content."
+  "fingerprint deadbeef12345678 repeated; iter-1 fix didn't address
+   root cause; pivoting from src/foo.py to src/bar.py per traceback
+   line 42."
 
 `failing_command` is what was failing in CI. `verify_command` is what the
 engineer runs after the patch. Pick both NARROW: the smallest command
@@ -485,6 +499,35 @@ NEW DEP FIX (sre_setup + engineer + verify):
      "purpose":"add dep to pyproject","steps":[...]},
     {"task_id":"T4","agent":"cifix_sre_verify","depends_on":["T3"],
      "purpose":"verify","steps":[...]}
+  ]
+}
+
+REPLAN (iter ≥ 2 — DIFFERENT shape from prior_task_plan + replan_reason):
+{
+  "root_cause": "iter-1 fixed the lint format issue but did NOT address the coverage gap; new percentage()/average() functions still have no tests so --cov-fail-under=80 still fails.",
+  "fix_spec": "Add focused tests for percentage() and average() in tests/test_math_ops.py to bring coverage above 80%.",
+  "affected_files":["tests/test_math_ops.py"],
+  "verify_command":"pytest --cov=src/calc --cov-fail-under=80 --timeout=2",
+  "verify_success":{"exit_codes":[0]},
+  "confidence":0.9,
+  "open_questions":[],
+  "replan_reason":"iter-1 ran ruff format on src/calc/math_ops.py and shipped it. Gate verdict was NOT_FIXED (Test+Coverage still red, fingerprint eefeb1366b818d13). Pivoting from lint scope to test-addition scope on a different file.",
+  "task_plan":[
+    {"task_id":"T6","agent":"cifix_engineer","depends_on":[],
+     "purpose":"add coverage for new functions",
+     "steps":[
+       {"id":1,"action":"read","file":"tests/test_math_ops.py"},
+       {"id":2,"action":"insert","file":"tests/test_math_ops.py","after_line":40,
+        "content":"\\ndef test_percentage():\\n    assert percentage(1, 4) == 25.0\\n"},
+       {"id":3,"action":"replace","file":"tests/test_math_ops.py",
+        "old":"from calc.math_ops import add, divide, multiply, subtract",
+        "new":"from calc.math_ops import add, average, divide, multiply, percentage, subtract"},
+       {"id":4,"action":"commit","message":"test: cover percentage/average"},
+       {"id":5,"action":"push"}
+     ]},
+    {"task_id":"T7","agent":"cifix_sre_verify","depends_on":["T6"],
+     "purpose":"verify coverage",
+     "steps":[{"id":1,"action":"run","command":"pytest --cov=src/calc --cov-fail-under=80 --timeout=2","expect_exit":0}]}
   ]
 }
 
