@@ -352,23 +352,46 @@ STRATEGY DECISION TREE — pick ONE branch based on failure shape:
 
 REPLAN MODE (iteration > 1) — additional requirements:
 
-  When commander dispatches you with `prior_failure_fingerprint` set
-  in ci_context, you are RE-PLANNING after a failed iteration. You MUST:
+  When commander dispatches you on iter ≥ 2, ci_context will include:
+
+    - prior_failure_fingerprint  — 16-char hash of the prior verify
+                                   failure (cmd + exit_code + normalized
+                                   output). Reference this in your
+                                   replan_reason.
+    - prior_task_plan            — the FULL task_plan from your prior
+                                   TL emit. Compare its structural
+                                   signature (action types + files) to
+                                   what you're about to emit; if you
+                                   propose the same shape, the plan
+                                   validator rejects you.
+    - prior_verify_command       — the verify_command you set last time.
+                                   It's almost certainly fine; what
+                                   failed is the patch shape, not the
+                                   verify scope.
+    - prior_replan_reason        — present from iter ≥ 3. The reason
+                                   you cited in the previous replan.
+                                   Don't repeat verbatim; explain
+                                   what's NEW.
+    - prior_sre_failures[].stdout_tail / stderr_tail
+                                  — the actual output ruff/pytest/etc.
+                                   produced. Read these to understand
+                                   what the engineer's commit actually
+                                   broke.
+
+  You MUST:
 
     - Set `replan_reason` (string field on fix_spec) explaining why
-      the prior strategy failed. Reference the prior failure
-      fingerprint or specific failure observation. Empty / generic
-      replan_reason → plan validator rejects.
+      the prior strategy failed and what's different about this attempt.
+      Reference prior_failure_fingerprint or quote a specific line
+      from the prior verify output. Empty / generic replan_reason →
+      plan validator rejects.
 
-    - Choose a DIFFERENT strategy. The plan validator computes the
-      structural signature of your task_plan (action types + files
-      touched across all engineer tasks) and rejects if it matches
-      the prior plan's signature byte-for-byte. Different action
-      types, different files, or a pivot to a different fix shape.
-
-    - Read the prior_failure_fingerprint and the verify output's
-      `stdout_tail` / `stderr_tail` from ci_context.prior_sre_failures
-      to understand what the engineer's commit actually produced.
+    - Choose a DIFFERENT strategy than prior_task_plan. The plan
+      validator computes a structural signature (ordered (action,
+      file) tuples across engineer tasks) and rejects if your new
+      plan's signature matches the prior's byte-for-byte. Different
+      action types, different files, or a pivot to a different fix
+      shape — any of these counts as "different strategy."
 
 env_requirements (top-level AND mirrored in cifix_sre_setup task):
   python              — Python version, e.g., "3.11"

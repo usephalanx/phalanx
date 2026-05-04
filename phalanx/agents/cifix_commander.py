@@ -503,6 +503,19 @@ class CIFixCommanderAgent(BaseAgent):
             iter_ci_context = dict(ci_context)
             if verify_output and verify_output.get("new_failures"):
                 iter_ci_context["prior_sre_failures"] = verify_output["new_failures"]
+            # v1.7.2.7 — inject priors so TL's validate_replan_strategy
+            # can compare current vs prior plan, require replan_reason,
+            # and reject same-strategy repeats.
+            priors = await self._build_replan_priors(verify_output=verify_output)
+            iter_ci_context.update(priors)
+            self._log.info(
+                "cifix_commander.iter_priors_injected",
+                iteration=iterations_done + 1,
+                has_fingerprint="prior_failure_fingerprint" in priors,
+                has_task_plan="prior_task_plan" in priors,
+                has_verify_command="prior_verify_command" in priors,
+                has_replan_reason="prior_replan_reason" in priors,
+            )
             async with get_db() as session:
                 await self._append_iteration_and_transition(
                     session=session,
@@ -876,6 +889,69 @@ class CIFixCommanderAgent(BaseAgent):
                 "source": "check_gate",
             })
         return out
+
+    async def _load_prior_tl_output(self) -> dict | None:
+        """v1.7.2.7 — fetch the most recent COMPLETED cifix_techlead
+        Task.output for this run. Used to inject `prior_task_plan`,
+        `prior_verify_command`, and `prior_replan_reason` into the next
+        iteration's TL ci_context so validate_replan_strategy can fire.
+
+        Returns None if no TL task has completed yet (shouldn't happen
+        when called during iteration > 1 — guard for safety).
+        """
+        async with get_db() as session:
+            result = await session.execute(
+                select(Task.output)
+                .where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role == "cifix_techlead",
+                    Task.status == "COMPLETED",
+                )
+                .order_by(Task.sequence_num.desc())
+                .limit(1)
+            )
+            row = result.one_or_none()
+            if row is None or row[0] is None:
+                return None
+            output = row[0]
+            return output if isinstance(output, dict) else None
+
+    async def _build_replan_priors(
+        self, *, verify_output: dict | None
+    ) -> dict[str, object]:
+        """v1.7.2.7 — assemble the four `prior_*` fields validate_replan_strategy
+        consumes. Returns a dict ready to merge into iter_ci_context.
+
+        Sources:
+          - prior_failure_fingerprint: verify_output.fingerprint (written
+            by SRE Verify in v1.7.2.3)
+          - prior_task_plan: latest cifix_techlead.output.task_plan
+          - prior_verify_command: latest cifix_techlead.output.verify_command
+          - prior_replan_reason: latest cifix_techlead.output.replan_reason
+            (only present in iter ≥ 3 — TL sets it when replanning)
+
+        Each field is included only when actually available; downstream
+        readers (TL post-emit gate) handle None/missing gracefully.
+        """
+        priors: dict[str, object] = {}
+        if isinstance(verify_output, dict):
+            fp = verify_output.get("fingerprint")
+            if isinstance(fp, str) and fp:
+                priors["prior_failure_fingerprint"] = fp
+
+        prior_tl = await self._load_prior_tl_output()
+        if isinstance(prior_tl, dict):
+            plan = prior_tl.get("task_plan")
+            if isinstance(plan, list) and plan:
+                priors["prior_task_plan"] = plan
+            vc = prior_tl.get("verify_command")
+            if isinstance(vc, str) and vc.strip():
+                priors["prior_verify_command"] = vc.strip()
+            rr = prior_tl.get("replan_reason")
+            if isinstance(rr, str) and rr.strip():
+                priors["prior_replan_reason"] = rr.strip()
+
+        return priors
 
     async def _build_and_persist_escalation(self, *, final_reason: str) -> dict:
         """v1.7.2.3 — build the structured escalation record from this run's
