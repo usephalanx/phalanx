@@ -204,6 +204,60 @@ def _query_run_metrics(
     }
 
 
+def _query_recent_run_id_fallback(
+    *,
+    start_ts: datetime,
+    cell: str,
+    ssh_key: str,
+    ssh_host: str,
+    pg_container: str,
+    repo: str = "usephalanx/phalanx-ci-fixer-testbed",
+) -> str | None:
+    """Fallback when stdout-line parsing fails.
+
+    The regression script normally prints a `cell|verdict|run_id|...`
+    summary on its last stdout line. Occasionally that line doesn't make
+    it (script crash before final echo, runner regex mismatch, ANSI noise
+    interleaved). When _parse_result_line returns None, this helper
+    queries prod for the most recent run created after `start_ts` on the
+    testbed for the given cell.
+
+    Match strategy:
+      - join runs ↔ work_orders to read the v3-rerun branch from
+        work_orders.raw_command (JSON; the dispatch path stored
+        ci_context there)
+      - filter by `created_at > start_ts` AND raw_command's branch
+        starts with `v3-rerun/<cell>-`
+      - ORDER BY created_at DESC, take 1
+
+    Returns the run UUID, or None if nothing found / SSH failed.
+    """
+    # Postgres timestamp format the prod psql can compare against
+    ts_str = start_ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00")
+    branch_prefix = f"v3-rerun/{cell}-"
+    sql = (
+        "SELECT r.id::text "
+        "FROM runs r "
+        "JOIN work_orders w ON w.id = r.work_order_id "
+        f"WHERE r.created_at > '{ts_str}' "
+        "AND w.work_order_type = 'ci_fix' "
+        f"AND (w.raw_command::jsonb->>'repo') = '{repo}' "
+        f"AND (w.raw_command::jsonb->>'branch') LIKE '{branch_prefix}%' "
+        "ORDER BY r.created_at DESC LIMIT 1"
+    )
+    remote = (
+        f"docker exec {pg_container} psql -tA -U forge -d forge "
+        f"-c \"{sql}\""
+    )
+    out = _ssh(ssh_key, ssh_host, remote, timeout=30).strip()
+    if not out:
+        return None
+    candidate = out.splitlines()[-1].strip()
+    if _UUID_RE.match(candidate):
+        return candidate
+    return None
+
+
 def _fetch_gate_decision(
     run_id: str, ssh_key: str, ssh_host: str, worker_container: str
 ) -> str | None:
@@ -357,6 +411,7 @@ def main() -> int:
             "final_reason": None,
             "run_status": None,
             "gate_decision": None,
+            "run_id_source": None,  # "stdout_line" | "db_fallback" | None
             "trigger_exit_code": getattr(proc, "returncode", None) if proc else None,
             "trigger_stderr_tail": _strip_ansi(
                 (getattr(proc, "stderr", "") or "")[-500:]
@@ -370,34 +425,63 @@ def main() -> int:
             record["run_id"] = parsed["run_id"]
             record["intro_sha"] = parsed["intro_sha"]
             record["head_sha"] = parsed["head_sha"]
+            if parsed["run_id"]:
+                record["run_id_source"] = "stdout_line"
+        else:
+            # Fallback: parser couldn't extract a run_id from the script's
+            # last line (script crash before final echo, ANSI noise,
+            # regex drift). Look up the most recent run in the DB filtered
+            # by cell branch + ts > ts_start. This restores observability
+            # for a class of soak rows that would otherwise be `null`.
+            if proc is not None:
+                fallback_run_id = _query_recent_run_id_fallback(
+                    start_ts=ts_start,
+                    cell=cell,
+                    ssh_key=args.ssh_key,
+                    ssh_host=args.ssh_host,
+                    pg_container=args.pg_container,
+                )
+                if fallback_run_id:
+                    print(
+                        f"[soak] iter={iter_count} stdout-parse failed; "
+                        f"fallback found run_id={fallback_run_id}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    record["run_id"] = fallback_run_id
+                    record["run_id_source"] = "db_fallback"
 
-            run_id = parsed["run_id"] or ""
-            if run_id:
-                metrics = _query_run_metrics(
-                    run_id, args.ssh_key, args.ssh_host, args.pg_container
-                )
-                record.update(
-                    {
-                        k: v
-                        for k, v in metrics.items()
-                        if k
-                        in {
-                            "iterations",
-                            "engineer_commit_sha",
-                            "verified_commit_sha",
-                            "last_fingerprint",
-                            "final_reason",
-                            "run_status",
-                        }
+        run_id = record["run_id"] or ""
+        if run_id:
+            metrics = _query_run_metrics(
+                run_id, args.ssh_key, args.ssh_host, args.pg_container
+            )
+            record.update(
+                {
+                    k: v
+                    for k, v in metrics.items()
+                    if k
+                    in {
+                        "iterations",
+                        "engineer_commit_sha",
+                        "verified_commit_sha",
+                        "last_fingerprint",
+                        "final_reason",
+                        "run_status",
                     }
-                )
-                record["sha_match"] = bool(
-                    record["engineer_commit_sha"]
-                    and record["engineer_commit_sha"] == record["verified_commit_sha"]
-                )
-                record["gate_decision"] = _fetch_gate_decision(
-                    run_id, args.ssh_key, args.ssh_host, args.worker_container
-                )
+                }
+            )
+            # If verdict is still None (fallback path didn't get one from
+            # the stdout line), use run_status as the best available signal.
+            if record["verdict"] is None and record["run_status"]:
+                record["verdict"] = record["run_status"]
+            record["sha_match"] = bool(
+                record["engineer_commit_sha"]
+                and record["engineer_commit_sha"] == record["verified_commit_sha"]
+            )
+            record["gate_decision"] = _fetch_gate_decision(
+                run_id, args.ssh_key, args.ssh_host, args.worker_container
+            )
 
         try:
             with args.out.open("a") as f:
