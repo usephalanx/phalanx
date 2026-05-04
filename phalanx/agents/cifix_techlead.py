@@ -242,6 +242,15 @@ Step actions:
   insert         — {"action":"insert","file":"<path>","after_line":<int>,"content":"<text>"}
   delete_lines   — {"action":"delete_lines","file":"<path>","line":<int>,"end_line":<int>}
   apply_diff     — {"action":"apply_diff","diff":"<unified diff text>"}
+                   CRITICAL: diff text MUST be valid input to `git apply`.
+                   Hunk headers MUST be `@@ -<start>[,<count>] +<start>[,<count>] @@`
+                   with explicit line numbers. Empty `@@` markers are NOT
+                   accepted. Each diff MUST also have `--- a/<path>` and
+                   `+++ b/<path>` file headers above its first hunk.
+                   PREFER `replace`/`insert` over `apply_diff` when adding
+                   ≤5 hunks; reserve `apply_diff` for new-file creation
+                   or large-scale rewrites. The plan validator rejects
+                   malformed diffs and forces re-plan.
   run            — {"action":"run","command":"<shell>","expect_exit":<int>,"expect_stdout_contains":"<str>"}
   commit         — {"action":"commit","message":"<commit msg>"}
   push           — {"action":"push"}
@@ -573,6 +582,35 @@ class CIFixTechLeadAgent(BaseAgent):
                     "cifix_techlead.self_critique_low_confidence_skip",
                     failing_checks=failing,
                     confidence=conf,
+                )
+
+        # v1.7.2.5 — plan validator gate. Catches structural problems in
+        # task_plan (cycles, unknown agents, malformed apply_diff hunks)
+        # BEFORE engineer dispatches. Without this, malformed plans cost
+        # an engineer iteration that could have been avoided.
+        plan = fix_spec.get("task_plan")
+        if isinstance(plan, list) and plan:
+            from phalanx.agents._plan_validator import (  # noqa: PLC0415
+                PlanValidationError,
+                validate_plan,
+            )
+            try:
+                validate_plan(plan)
+            except PlanValidationError as exc:
+                self._log.warning(
+                    "cifix_techlead.plan_validation_failed",
+                    error=str(exc),
+                    confidence=fix_spec.get("confidence"),
+                )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "error_class": "plan_validation_failed",
+                        "validation_error": str(exc),
+                        **fix_spec,
+                    },
+                    error=f"plan_validation_failed: {exc}",
+                    tokens_used=_tokens_used_from_ctx(ctx),
                 )
 
         self._log.info(

@@ -14,6 +14,7 @@ See docs/v17-tl-as-planner.md §7.2 for the canonical reference.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -21,6 +22,51 @@ from phalanx.agents._v17_types import (
     V17_AGENT_REGISTRY,
     PlanValidationError,
     TaskSpec,
+)
+
+
+# v1.7.2.5 — apply_diff hunk header validation.
+#
+# `git apply` requires unified-diff hunk headers in the form
+#   @@ -<start>[,<count>] +<start>[,<count>] @@ [optional context]
+#
+# GPT-5.4 has been observed under repetition (2026-05-04 soak) emitting
+# "fuzzy" hunks: bare `@@` markers with no line numbers. Those are valid
+# in informal/human-readable patches but `git apply` rejects them with
+#   error: No valid patches in input (allow with "--allow-empty")
+#
+# The plan validator catches these BEFORE engineer dispatch so commander
+# rejects the TL output and forces a re-plan instead of letting the
+# engineer fail mid-step (which costs an iteration and clouds the soak
+# signal).
+#
+# A valid hunk header MUST:
+#   1. Start with `@@ -`
+#   2. Have at least <start> after the minus
+#   3. Have a `+` section after the from-range
+#   4. Close with ` @@` (or `@@\n` with optional trailing context)
+#
+# Pattern accepts:   @@ -12,5 +12,7 @@
+#                    @@ -12 +12 @@
+#                    @@ -12,5 +12,7 @@ def foo():
+#                    @@ -0,0 +1,42 @@        (new file)
+# Pattern rejects:   @@
+#                    @@\n
+#                    @@ -, +, @@
+_HUNK_HEADER_RE = re.compile(
+    r"^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@.*$",
+    re.MULTILINE,
+)
+
+# A line that starts with `@@` but isn't a valid hunk header.
+_FUZZY_HUNK_RE = re.compile(r"^@@\s*$", re.MULTILINE)
+
+# A diff body MUST contain at least one valid hunk header (or be a pure
+# new-file/delete-file mode, which we don't currently support — TL would
+# need to send a `replace` for empty-file creation).
+_DIFF_HAS_FILE_HEADERS_RE = re.compile(
+    r"^---\s+\S.*\n\+\+\+\s+\S",
+    re.MULTILINE,
 )
 
 # Per-action required fields. We don't check semantic validity (e.g.,
@@ -159,6 +205,65 @@ def _validate_executor_shape(ts: TaskSpec) -> None:
                     f"task {ts['task_id']!r}.steps[{j}] (action={action!r}): "
                     f"missing required field {field!r}"
                 )
+
+        # v1.7.2.5 — apply_diff specifically: the diff text must be valid
+        # `git apply` input. Fuzzy hunks (bare `@@`) are rejected here so
+        # commander forces TL to re-plan with `replace`/`insert` (or a
+        # properly-formed unified diff) before engineer ever runs.
+        if action == "apply_diff":
+            _validate_apply_diff_step(ts["task_id"], j, step.get("diff") or "")
+
+
+def _validate_apply_diff_step(task_id: str, step_idx: int, diff_text: str) -> None:
+    """Reject apply_diff steps whose diff body isn't valid `git apply` input.
+
+    Forces TL to either:
+      - emit a unified diff with proper hunk headers
+        (`@@ -<start>[,<count>] +<start>[,<count>] @@`)
+      - switch to `replace`/`insert` for small targeted edits
+
+    Failure modes from the 2026-05-04 soak:
+      - `@@\\n` placeholders (no line numbers)
+      - missing --- / +++ file headers
+      - completely empty diff body
+    """
+    text = diff_text or ""
+    where = f"task {task_id!r}.steps[{step_idx}] (action='apply_diff')"
+
+    # Empty / whitespace-only
+    if not text.strip():
+        raise PlanValidationError(
+            f"{where}: diff body is empty. "
+            f"Either emit a proper unified diff or use replace/insert."
+        )
+
+    # Must contain --- / +++ file headers somewhere (the file-pair the
+    # diff applies to). Without these, `git apply` can't bind the diff
+    # to a path.
+    if not _DIFF_HAS_FILE_HEADERS_RE.search(text):
+        raise PlanValidationError(
+            f"{where}: diff missing `--- a/<path>` and `+++ b/<path>` "
+            f"file headers. `git apply` requires file headers."
+        )
+
+    # Reject fuzzy `@@` hunk markers (no line numbers).
+    fuzzy_matches = _FUZZY_HUNK_RE.findall(text)
+    if fuzzy_matches:
+        raise PlanValidationError(
+            f"{where}: diff contains {len(fuzzy_matches)} fuzzy hunk header(s) "
+            f"(`@@` with no line numbers). `git apply` rejects these. "
+            f"Use `@@ -<start>[,<count>] +<start>[,<count>] @@` form, "
+            f"OR switch to replace/insert steps for targeted edits."
+        )
+
+    # Must contain at least one well-formed hunk header. (Reject diffs
+    # that have file headers but no hunks at all — useless to git apply.)
+    if not _HUNK_HEADER_RE.search(text):
+        raise PlanValidationError(
+            f"{where}: diff has no valid hunk headers. "
+            f"Each hunk MUST start with "
+            f"`@@ -<start>[,<count>] +<start>[,<count>] @@`."
+        )
 
 
 def _topological_sort_or_raise(plan: list[TaskSpec]) -> list[str]:
