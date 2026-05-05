@@ -41,13 +41,31 @@ log = structlog.get_logger(__name__)
 # read via grep/glob or a line-range slice rather than a full read.
 _MAX_READ_BYTES: int = 256 * 1024
 
+# v1.7.2.8 — bounded-read efficiency rules. Large source files (e.g.
+# inflect's __init__.py at ~2500 lines) used to be read whole; that
+# burned half the TL tool-call budget on a single call. These thresholds
+# force the LLM to use find_symbol + bounded reads instead.
+_FULL_READ_LINE_LIMIT: int = 500
+"""Files at or below this line count may be read fully without a range."""
+_FULL_READ_OVERRIDE_LIMIT: int = 1000
+"""With reason='need_full_file', files up to this line count may be read fully."""
+_FULL_READ_HARD_CEILING: int = 2000
+"""Even with reason='need_full_file', files above this line count are
+NEVER fully readable. TL must use find_symbol + around_line."""
+_AROUND_LINE_DEFAULT_CONTEXT: int = 40
+
 READ_FILE_SCHEMA = ToolSchema(
     name="read_file",
     description=(
-        "Read a file from the repository workspace, optionally limited to a "
-        "line range. Paths are resolved relative to the workspace root; "
-        "attempts to read files outside the workspace are rejected. Files "
-        "larger than 256 KiB must be read with a line range."
+        "Read a file from the repository workspace. THREE modes:\n"
+        "  (a) line_start/line_end — inclusive range slice.\n"
+        "  (b) around_line + context — read context lines on each side of a "
+        "target line (default context=40). Use this after find_symbol.\n"
+        "  (c) no range — full read; ALLOWED ONLY for files <= 500 lines, "
+        "OR <= 1000 lines if reason='need_full_file' is set. NEVER allowed "
+        "for files > 2000 lines.\n"
+        "Paths are resolved relative to workspace root; traversal is rejected. "
+        "Files > 256 KiB must always use a range or around_line."
     ),
     input_schema={
         "type": "object",
@@ -67,6 +85,31 @@ READ_FILE_SCHEMA = ToolSchema(
                     "Optional 1-indexed inclusive end line. Must be >= line_start."
                 ),
                 "minimum": 1,
+            },
+            "around_line": {
+                "type": "integer",
+                "description": (
+                    "1-indexed target line. Returns lines "
+                    "[around_line - context, around_line + context]. "
+                    "Mutually exclusive with line_start/line_end (around_line wins)."
+                ),
+                "minimum": 1,
+            },
+            "context": {
+                "type": "integer",
+                "description": (
+                    "Lines of context on each side of around_line "
+                    f"(default {_AROUND_LINE_DEFAULT_CONTEXT}, max 200)."
+                ),
+                "minimum": 1,
+                "maximum": 200,
+            },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Set to 'need_full_file' to allow a full read of files "
+                    "501-1000 lines. Required justification for the override."
+                ),
             },
         },
         "required": ["path"],
@@ -105,8 +148,20 @@ async def _handle_read_file(
 
     line_start = tool_input.get("line_start")
     line_end = tool_input.get("line_end")
+    around_line = tool_input.get("around_line")
+    context_lines = tool_input.get("context")
+    reason = tool_input.get("reason")
+
     if line_start is not None and line_end is not None and line_end < line_start:
         return ToolResult(ok=False, error="line_end must be >= line_start")
+    if around_line is not None and (
+        not isinstance(around_line, int) or around_line < 1
+    ):
+        return ToolResult(ok=False, error="around_line must be a positive int")
+    if context_lines is not None and (
+        not isinstance(context_lines, int) or context_lines < 1 or context_lines > 200
+    ):
+        return ToolResult(ok=False, error="context must be int in [1, 200]")
 
     resolved = _resolve_in_workspace(ctx.repo_workspace_path, path_input)
     if resolved is None:
@@ -119,16 +174,6 @@ async def _handle_read_file(
     if not resolved.is_file():
         return ToolResult(ok=False, error=f"not_a_file: {path_input!r}")
 
-    size = resolved.stat().st_size
-    if size > _MAX_READ_BYTES and line_start is None:
-        return ToolResult(
-            ok=False,
-            error=(
-                f"file_too_large: {size} bytes > {_MAX_READ_BYTES}. "
-                "Pass line_start/line_end to read a slice."
-            ),
-        )
-
     try:
         with resolved.open("r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
@@ -136,29 +181,87 @@ async def _handle_read_file(
         return ToolResult(ok=False, error=f"read_failed: {exc}")
 
     total_lines = len(all_lines)
-    if line_start is not None:
+    size = resolved.stat().st_size
+
+    # v1.7.2.8 — large-file guard. Around_line / line_start make this a
+    # bounded read; otherwise enforce the size ceiling.
+    is_bounded = around_line is not None or line_start is not None
+    if not is_bounded:
+        if size > _MAX_READ_BYTES:
+            return ToolResult(
+                ok=False,
+                error=(
+                    f"file_too_large: {size} bytes > {_MAX_READ_BYTES}. "
+                    "Pass line_start/line_end or around_line to read a slice."
+                ),
+            )
+        if total_lines > _FULL_READ_HARD_CEILING:
+            return ToolResult(
+                ok=False,
+                error=(
+                    f"full_read_blocked: {total_lines} lines > "
+                    f"{_FULL_READ_HARD_CEILING} hard ceiling. Use find_symbol "
+                    "to locate the relevant symbol, then call read_file with "
+                    "around_line=<line>."
+                ),
+            )
+        if total_lines > _FULL_READ_LINE_LIMIT:
+            if reason != "need_full_file":
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        f"full_read_blocked: {total_lines} lines > "
+                        f"{_FULL_READ_LINE_LIMIT}. Use find_symbol + "
+                        "around_line, OR pass reason='need_full_file' to "
+                        f"override (allowed up to {_FULL_READ_OVERRIDE_LIMIT} "
+                        "lines)."
+                    ),
+                )
+            if total_lines > _FULL_READ_OVERRIDE_LIMIT:
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        f"full_read_blocked: {total_lines} lines > "
+                        f"{_FULL_READ_OVERRIDE_LIMIT} (override ceiling). Use "
+                        "find_symbol + around_line."
+                    ),
+                )
+
+    # Mode (b): around_line + context — wins over line_start/line_end.
+    if around_line is not None:
+        ctx_n = (
+            context_lines if context_lines is not None else _AROUND_LINE_DEFAULT_CONTEXT
+        )
+        slice_start_1 = max(1, around_line - ctx_n)
+        slice_end_1 = min(total_lines, around_line + ctx_n)
+        start_idx = slice_start_1 - 1
+        end_idx = slice_end_1
+        selected = all_lines[start_idx:end_idx]
+        effective_start = slice_start_1
+        effective_end = slice_end_1
+    elif line_start is not None:
         end = line_end if line_end is not None else total_lines
-        # Convert to 0-indexed slice, clamp to bounds.
         start_idx = max(0, min(line_start - 1, total_lines))
         end_idx = max(start_idx, min(end, total_lines))
         selected = all_lines[start_idx:end_idx]
+        effective_start = line_start
+        effective_end = (
+            line_end
+            if line_end is not None
+            else min(line_start - 1 + len(selected), total_lines)
+        )
     else:
         selected = all_lines
+        effective_start = 1
+        effective_end = total_lines
 
-    content = "".join(selected)
     return ToolResult(
         ok=True,
         data={
-            "content": content,
+            "content": "".join(selected),
             "line_count": total_lines,
-            "line_start": line_start if line_start is not None else 1,
-            "line_end": (
-                line_end
-                if line_end is not None
-                else total_lines
-                if line_start is None
-                else min(line_start - 1 + len(selected), total_lines)
-            ),
+            "line_start": effective_start,
+            "line_end": effective_end,
         },
     )
 
@@ -428,3 +531,212 @@ class _GlobTool:
 
 _glob_tool = _GlobTool()
 register(_glob_tool)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# find_symbol  (v1.7.2.8 — TL efficiency on large files)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import ast as _ast  # noqa: E402
+
+_FIND_SYMBOL_MAX_HITS: int = 20
+_FIND_SYMBOL_MAX_FILE_BYTES: int = 1 * 1024 * 1024  # skip files > 1 MiB
+_PY_DEF_RE = _re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_PY_CLASS_RE = _re.compile(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[\(:]")
+
+FIND_SYMBOL_SCHEMA = ToolSchema(
+    name="find_symbol",
+    description=(
+        "Locate the definition of a function or class by name. Use this "
+        "BEFORE read_file when the file is large — it returns the line "
+        "range so you can read just the relevant snippet via "
+        "read_file(path, around_line=<line>). For Python files uses AST; "
+        "for other languages uses a tight regex on `def NAME` / `class "
+        "NAME`. Returns up to 20 matches as "
+        "{file, line_start, line_end, kind, signature}."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Exact symbol name (function or class).",
+            },
+            "file": {
+                "type": "string",
+                "description": (
+                    "Optional file path relative to workspace root. "
+                    "If omitted, searches all files under workspace."
+                ),
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["function", "class", "any"],
+                "description": "Filter by symbol kind (default 'any').",
+            },
+        },
+        "required": ["name"],
+    },
+)
+
+
+def _ast_find_symbol(
+    source: str, name: str, kind: str
+) -> list[dict[str, Any]]:
+    """Return matches via Python AST. Empty list on parse failure."""
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return []
+    hits: list[dict[str, Any]] = []
+    for node in _ast.walk(tree):
+        node_kind: str | None = None
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            node_kind = "function"
+        elif isinstance(node, _ast.ClassDef):
+            node_kind = "class"
+        else:
+            continue
+        if node.name != name:
+            continue
+        if kind != "any" and kind != node_kind:
+            continue
+        line_start = node.lineno
+        line_end = getattr(node, "end_lineno", line_start) or line_start
+        # Build a signature: first line of source for funcs, "class NAME(...)" for classes
+        sig = ""
+        try:
+            sig = _ast.get_source_segment(source, node) or ""
+            sig = sig.splitlines()[0][:200] if sig else ""
+        except Exception:  # noqa: BLE001
+            sig = ""
+        hits.append(
+            {
+                "line_start": line_start,
+                "line_end": line_end,
+                "kind": node_kind,
+                "signature": sig,
+            }
+        )
+    return hits
+
+
+def _regex_find_symbol(
+    source: str, name: str, kind: str
+) -> list[dict[str, Any]]:
+    """Fallback locator for non-Python files / parse failures."""
+    hits: list[dict[str, Any]] = []
+    lines = source.splitlines()
+    for i, line in enumerate(lines, start=1):
+        node_kind: str | None = None
+        if kind in ("function", "any"):
+            m = _PY_DEF_RE.match(line)
+            if m and m.group(1) == name:
+                node_kind = "function"
+        if node_kind is None and kind in ("class", "any"):
+            m = _PY_CLASS_RE.match(line)
+            if m and m.group(1) == name:
+                node_kind = "class"
+        if node_kind is None:
+            continue
+        # Crude end-line: walk forward until a line at the same-or-lower
+        # indentation that's non-blank and not a comment. Bounded scan.
+        base_indent = len(line) - len(line.lstrip())
+        end_line = i
+        for j in range(i, min(len(lines), i + 500)):
+            nxt = lines[j]
+            if not nxt.strip() or nxt.lstrip().startswith("#"):
+                continue
+            nxt_indent = len(nxt) - len(nxt.lstrip())
+            if j > i - 1 and nxt_indent <= base_indent and j != i - 1:
+                end_line = j
+                break
+            end_line = j + 1
+        hits.append(
+            {
+                "line_start": i,
+                "line_end": end_line,
+                "kind": node_kind,
+                "signature": line.strip()[:200],
+            }
+        )
+    return hits
+
+
+async def _handle_find_symbol(
+    ctx: AgentContext, tool_input: dict[str, Any]
+) -> ToolResult:
+    name = tool_input.get("name")
+    if not name or not isinstance(name, str):
+        return ToolResult(ok=False, error="name is required")
+
+    kind = tool_input.get("kind") or "any"
+    if kind not in ("function", "class", "any"):
+        return ToolResult(ok=False, error="kind must be function|class|any")
+
+    file_input = tool_input.get("file")
+
+    workspace_root = Path(ctx.repo_workspace_path).resolve(strict=False)
+
+    candidates: list[Path] = []
+    if file_input:
+        resolved = _resolve_in_workspace(ctx.repo_workspace_path, file_input)
+        if resolved is None:
+            return ToolResult(ok=False, error=f"path_outside_workspace: {file_input!r}")
+        if not resolved.exists() or not resolved.is_file():
+            return ToolResult(ok=False, error=f"file_not_found: {file_input!r}")
+        candidates = [resolved]
+    else:
+        for fpath in _iter_candidate_files(workspace_root, _GREP_DEFAULT_EXCLUDES):
+            try:
+                if fpath.stat().st_size > _FIND_SYMBOL_MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            # Quick filter — only scan source-like files.
+            if fpath.suffix not in {
+                ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
+            }:
+                continue
+            candidates.append(fpath)
+
+    matches: list[dict[str, Any]] = []
+    truncated = False
+    for fpath in candidates:
+        try:
+            source = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        is_py = fpath.suffix in {".py", ".pyi"}
+        hits = _ast_find_symbol(source, name, kind) if is_py else []
+        if not hits:
+            hits = _regex_find_symbol(source, name, kind)
+        try:
+            rel = str(fpath.relative_to(workspace_root))
+        except ValueError:
+            rel = str(fpath)
+        for h in hits:
+            matches.append({"file": rel, **h})
+            if len(matches) >= _FIND_SYMBOL_MAX_HITS:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    return ToolResult(
+        ok=True,
+        data={
+            "matches": matches,
+            "match_count": len(matches),
+            "truncated": truncated,
+        },
+    )
+
+
+class _FindSymbolTool:
+    schema = FIND_SYMBOL_SCHEMA
+    handler = staticmethod(_handle_find_symbol)
+
+
+_find_symbol_tool = _FindSymbolTool()
+register(_find_symbol_tool)

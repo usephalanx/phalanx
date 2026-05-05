@@ -59,6 +59,7 @@ _TECHLEAD_TOOLS: tuple[str, ...] = (
     "git_blame",
     "query_fingerprint",
     "read_file",
+    "find_symbol",  # v1.7.2.8 — locate symbol BEFORE bounded read_file
     "glob",
     "grep",
     "validate_self_critique",  # v1.6.0 Phase 1: REQUIRED before emit_fix_spec
@@ -71,6 +72,7 @@ from phalanx.agents import _tl_self_critique  # noqa: F401, E402
 
 _MAX_TURNS = 8
 _MAX_TOOL_CALLS = 15  # hard upper bound across all turns
+_FORCE_EMIT_AFTER_TURN = 3  # v1.7.2.8 — by turn 3 must emit fix_spec or ESCALATE
 
 _SYSTEM_PROMPT = """You are a Senior Tech Lead investigating a failing CI build.
 
@@ -102,11 +104,52 @@ Workflow you MUST follow:
   1. Read the probe results in your initial message (above).
   2. Call `fetch_ci_log` with the provided job_id to see the actual failure.
   3. Use `get_pr_diff` to see what this PR changed.
-  4. Read the affected file(s) with `read_file` or confirm authorship with
-     `git_blame`. Use `get_ci_history` / `query_fingerprint` only if you
-     suspect a known recurring failure.
-  5. Do NOT loop — each tool should only be called once unless new
-     information requires a follow-up read.
+  4. Read the affected file(s). For files >500 lines, use `find_symbol`
+     FIRST to locate the symbol, then `read_file` with `around_line=<line>`
+     for a bounded snippet — see "READING LARGE FILES" below.
+  5. Use `git_blame` to confirm authorship, `get_ci_history` /
+     `query_fingerprint` only if you suspect a known recurring failure.
+  6. Do NOT loop — each tool should only be called once unless new
+     information requires a follow-up read of a DIFFERENT range.
+
+INVESTIGATION BUDGET (v1.7.2.8 — strict):
+  - 15 tool calls total across all turns.
+  - 8 turns total.
+  - Every tool_result includes a `_tl_budget` block showing
+    tool_calls_used / tool_calls_remaining / turn / max_turns.
+    Read it after EVERY tool call and adjust your plan accordingly.
+  - By turn 3 you MUST emit a fix_spec OR set review_decision="ESCALATE".
+    After turn 3 the runtime injects a force-emit message and rejects all
+    further tool calls. Do NOT count on a 4th investigation turn.
+  - Lower confidence (≤0.5) is preferred over burning budget on an
+    over-confident wrong diagnosis — the engineer guards against shipping
+    low-confidence specs cleanly.
+
+READING LARGE FILES (v1.7.2.8 — strict):
+  - Files ≤ 500 lines: full `read_file(path)` is fine.
+  - Files 501–1000 lines: full read REQUIRES `reason="need_full_file"`.
+    Prefer `find_symbol` + `around_line` first.
+  - Files 1001–2000 lines: full read is BLOCKED. Use `find_symbol`.
+  - Files > 2000 lines: full read is FORBIDDEN under any circumstance.
+  - Repeated reads of the same (path, range) are REJECTED with
+    `repeated_read`. The runtime tracks a per-run read cache. If you need
+    a different part of the same file, vary line_start/line_end or
+    around_line — never re-issue an identical range. Re-state what you
+    learned from the prior read instead.
+
+The pattern that wins on a 2500-line file:
+    1. find_symbol(name="naturaldate")            → line 142
+    2. read_file(path, around_line=142, context=40)  → 80 lines, you have
+                                                        the full function
+    3. emit fix_spec                              → done in 3 tool calls.
+
+The pattern that EXPLODES the budget:
+    1. read_file(path)                            → file_too_large or
+                                                     full_read_blocked
+    2. read_file(path, line_start=1, line_end=500)
+    3. read_file(path, line_start=500, line_end=1000)
+    4. read_file(path, line_start=1000, line_end=1500)
+    5. … you are now out of budget without a diagnosis.
 
 When you have enough evidence, end your turn with a single markdown fenced
 `json` code block containing EXACTLY this shape:
@@ -891,6 +934,62 @@ class _InvestigationError(Exception):
         self.detail = detail
 
 
+def _read_file_cache_key(tool_input: dict) -> tuple[str, str] | None:
+    """Stable identity for a read_file call's range (or None if invalid).
+
+    Two calls collide iff (path, range_key) match. Around_line uses
+    (around, context) so a re-read with a different context window is
+    NOT a duplicate. Full reads collide iff the path is the same.
+    """
+    path = tool_input.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    if "around_line" in tool_input and tool_input.get("around_line") is not None:
+        ctx_n = tool_input.get("context", 40)
+        return (path, f"around:{tool_input['around_line']}:{ctx_n}")
+    if "line_start" in tool_input and tool_input.get("line_start") is not None:
+        line_end = tool_input.get("line_end", "EOF")
+        return (path, f"range:{tool_input['line_start']}:{line_end}")
+    reason = tool_input.get("reason") or ""
+    return (path, f"full:{reason}")
+
+
+def _build_force_emit_message(tool_calls_used: int, max_tool_calls: int) -> str:
+    """Synthetic user message injected once at turn 3 entry."""
+    return (
+        f"INVESTIGATION BUDGET STATUS: you have used {tool_calls_used} of "
+        f"{max_tool_calls} tool calls across 3 turns without emitting a "
+        f"fix_spec.\n\n"
+        f"You MUST now end your turn with one of:\n"
+        f"  (a) the fix_spec JSON block with your CURRENT best diagnosis "
+        f"(lower confidence is fine — the engineer's confidence guard will "
+        f"skip cleanly if confidence ≤ 0.5); OR\n"
+        f"  (b) the fix_spec JSON block with review_decision=\"ESCALATE\", "
+        f"confidence=0.0, affected_files=[], and an open_questions list "
+        f"explaining what evidence was missing.\n\n"
+        f"FURTHER TOOL CALLS WILL BE REJECTED. Emit the JSON block now."
+    )
+
+
+def _append_budget_footer(
+    result_content: dict, *, tool_calls_used: int, max_tool_calls: int, turn: int, max_turns: int
+) -> dict:
+    """Stamp every tool_result with a budget footer the LLM can see.
+
+    Mutates the dict in place AND returns it for chaining.
+    """
+    remaining = max(0, max_tool_calls - tool_calls_used)
+    result_content["_tl_budget"] = {
+        "tool_calls_used": tool_calls_used,
+        "tool_calls_remaining": remaining,
+        "tool_call_cap": max_tool_calls,
+        "turn": turn + 1,
+        "max_turns": max_turns,
+        "force_emit_after_turn": _FORCE_EMIT_AFTER_TURN,
+    }
+    return result_content
+
+
 async def _run_investigation_loop(
     ctx,
     llm_call,
@@ -898,12 +997,38 @@ async def _run_investigation_loop(
     max_tool_calls: int,
     logger,
 ) -> tuple[dict, int, int]:
-    """Core loop: drive the LLM until it emits a fix_spec JSON block."""
+    """Core loop: drive the LLM until it emits a fix_spec JSON block.
+
+    v1.7.2.8 production guards (always on):
+      - read_file duplicate-range rejection (per-run cache)
+      - budget footer attached to every tool_result
+      - emit-or-escalate force injected at turn 3
+    """
     # Lazy imports so the module loads without heavy deps until actually invoked.
     from phalanx.ci_fixer_v2.tools import base as tools_base  # noqa: PLC0415
 
     total_tool_calls = 0
+    seen_reads: dict[tuple[str, str], int] = {}
+    force_emit_injected = False
+
     for turn in range(max_turns):
+        # v1.7.2.8 — at turn 3 entry, inject one synthetic user message
+        # commanding emit-or-escalate. From this turn forward, tool calls
+        # are rejected; only end_turn with a fix_spec is accepted.
+        if turn >= _FORCE_EMIT_AFTER_TURN and not force_emit_injected:
+            ctx.messages.append(
+                {
+                    "role": "user",
+                    "content": _build_force_emit_message(total_tool_calls, max_tool_calls),
+                }
+            )
+            force_emit_injected = True
+            logger.info(
+                "cifix_techlead.force_emit_injected",
+                turn=turn,
+                tool_calls_used=total_tool_calls,
+            )
+
         logger.info("cifix_techlead.turn_start", turn=turn, messages=len(ctx.messages))
         response = await llm_call(ctx.messages)
         logger.info(
@@ -942,6 +1067,38 @@ async def _run_investigation_loop(
         # Dispatch each tool_use; append tool_result messages for the next turn.
         for use in response.tool_uses or []:
             total_tool_calls += 1
+
+            # v1.7.2.8 — after force-emit injected, all tool calls are
+            # rejected. Bookkeeping (count + budget footer) still runs.
+            if force_emit_injected:
+                content = {
+                    "ok": False,
+                    "error": (
+                        "forced_emit_or_escalate: tool calls disabled after "
+                        "turn 3. Emit fix_spec or ESCALATE now."
+                    ),
+                }
+                _append_budget_footer(
+                    content,
+                    tool_calls_used=total_tool_calls,
+                    max_tool_calls=max_tool_calls,
+                    turn=turn,
+                    max_turns=max_turns,
+                )
+                ctx.messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": use.id,
+                                "content": content,
+                            }
+                        ],
+                    }
+                )
+                continue
+
             if total_tool_calls > max_tool_calls:
                 raise _InvestigationError(
                     "tool_call_cap",
@@ -952,6 +1109,51 @@ async def _run_investigation_loop(
                 raise _InvestigationError("forbidden_tool", f"Tech Lead tried to call {use.name!r}")
             if not tools_base.is_registered(use.name):
                 raise _InvestigationError("unregistered_tool", f"Tool {use.name!r} not in registry")
+
+            # v1.7.2.8 — read_file duplicate-range rejection.
+            if use.name == "read_file":
+                key = _read_file_cache_key(use.input or {})
+                if key is not None and key in seen_reads:
+                    prior_turn = seen_reads[key]
+                    result = tools_base.ToolResult(
+                        ok=False,
+                        error=(
+                            f"repeated_read: {key[0]!r} range {key[1]!r} was "
+                            f"already read in turn {prior_turn + 1}. Re-state "
+                            "what you learned, or read a DIFFERENT range / "
+                            "use find_symbol to scope the next read."
+                        ),
+                    )
+                    logger.info(
+                        "cifix_techlead.read_dedup_blocked",
+                        path=key[0],
+                        range_key=key[1],
+                        prior_turn=prior_turn,
+                    )
+                    content = result.to_tool_message_content()
+                    _append_budget_footer(
+                        content,
+                        tool_calls_used=total_tool_calls,
+                        max_tool_calls=max_tool_calls,
+                        turn=turn,
+                        max_turns=max_turns,
+                    )
+                    ctx.messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": use.id,
+                                    "content": content,
+                                }
+                            ],
+                        }
+                    )
+                    continue
+                if key is not None:
+                    seen_reads[key] = turn
+
             tool = tools_base.get(use.name)
             try:
                 result = await tool.handler(ctx, use.input)
@@ -962,7 +1164,26 @@ async def _run_investigation_loop(
                     tool=use.name,
                     error=str(exc),
                 )
-            ctx.messages.append(_tool_result_message(use.id, result))
+            content = result.to_tool_message_content()
+            _append_budget_footer(
+                content,
+                tool_calls_used=total_tool_calls,
+                max_tool_calls=max_tool_calls,
+                turn=turn,
+                max_turns=max_turns,
+            )
+            ctx.messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": use.id,
+                            "content": content,
+                        }
+                    ],
+                }
+            )
 
     raise _InvestigationError(
         "turn_cap_reached",
