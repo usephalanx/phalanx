@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -125,17 +126,53 @@ INVESTIGATION BUDGET (v1.7.2.8 — strict):
     over-confident wrong diagnosis — the engineer guards against shipping
     low-confidence specs cleanly.
 
-READING LARGE FILES (v1.7.2.8 — strict):
+READING LARGE FILES (v1.7.2.9 — ENFORCED):
   - Files ≤ 500 lines: full `read_file(path)` is fine.
-  - Files 501–1000 lines: full read REQUIRES `reason="need_full_file"`.
-    Prefer `find_symbol` + `around_line` first.
-  - Files 1001–2000 lines: full read is BLOCKED. Use `find_symbol`.
+  - Files > 500 lines: `read_file` is BLOCKED until you have called
+    `find_symbol` for that file (or workspace-wide). The dispatcher
+    rejects the read with `find_symbol_required`. This is enforced —
+    not advisory. Calling find_symbol first is part of the contract.
+  - Files 501–1000 lines: full read (after find_symbol) REQUIRES
+    `reason="need_full_file"`.
+  - Files 1001–2000 lines: full read is BLOCKED. Use `around_line`.
   - Files > 2000 lines: full read is FORBIDDEN under any circumstance.
   - Repeated reads of the same (path, range) are REJECTED with
     `repeated_read`. The runtime tracks a per-run read cache. If you need
     a different part of the same file, vary line_start/line_end or
     around_line — never re-issue an identical range. Re-state what you
     learned from the prior read instead.
+
+CONFIDENCE CALIBRATION (v1.7.2.9 — ENFORCED):
+  Calibrate confidence honestly. The plan validator REJECTS hedged
+  confidence on clear-shape fixes. Use these tiers:
+
+  ≥ 0.7  — COMMIT. Required when ALL of:
+            - root_cause matches the CI log error verbatim
+            - fix is localized (≤ 2 affected_files)
+            - your task_plan is concrete (read/replace/commit/run steps)
+            - no flake/timing/race/network keywords in root_cause
+          On this shape, anything < 0.7 will be rejected as
+          `confidence_calibration_failed`. The engineer guard already
+          skips low-confidence emits — your hedge just wastes a run.
+
+  0.0    — ESCALATE. Use when evidence is genuinely missing:
+            - CI log doesn't pinpoint a file/line
+            - probe results conflict
+            - fix would require guessing
+          Set `review_decision="ESCALATE"`, `affected_files=[]`,
+          confidence=0.0, and put the missing evidence in
+          `open_questions`.
+
+  0.3–0.6 — RESERVED for genuinely uncertain shapes:
+            - flake/timing/race/network bugs
+            - multi-file refactors (≥ 3 affected_files)
+            - env_drift (infra commits implicated)
+          NOT for "I have a clear diagnosis but I'm not 100% sure."
+          That's calibration drift; commit at 0.7+ or escalate at 0.0.
+
+  Rule of thumb: if you can name the failing line, name the fix in one
+  sentence, and the fix lives in 1–2 files — emit at 0.7+ and let the
+  engineer ship it. If you can't, ESCALATE.
 
 The pattern that wins on a 2500-line file:
     1. find_symbol(name="naturaldate")            → line 142
@@ -819,6 +856,7 @@ class CIFixTechLeadAgent(BaseAgent):
         if isinstance(plan, list) and plan:
             from phalanx.agents._plan_validator import (  # noqa: PLC0415
                 PlanValidationError,
+                validate_confidence_calibration,
                 validate_plan,
                 validate_plan_completeness,
                 validate_replan_strategy,
@@ -848,6 +886,11 @@ class CIFixTechLeadAgent(BaseAgent):
                         iteration=iteration,
                         fix_spec_replan_reason=fix_spec.get("replan_reason"),
                     )
+
+                # 4. v1.7.2.9 — confidence calibration on localized
+                #    deterministic fixes. Forces commit (≥0.7) or escalate
+                #    (0.0); rejects the hedged middle.
+                validate_confidence_calibration(fix_spec)
             except PlanValidationError as exc:
                 self._log.warning(
                     "cifix_techlead.plan_validation_failed",
@@ -954,6 +997,23 @@ def _read_file_cache_key(tool_input: dict) -> tuple[str, str] | None:
     return (path, f"full:{reason}")
 
 
+def _file_line_count(workspace_path: str, rel_path: str) -> int | None:
+    """Return file line count, or None if not readable. Cheap line scan."""
+    try:
+        full = os.path.join(workspace_path, rel_path)
+        if not os.path.isfile(full):
+            return None
+        with open(full, "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return None
+
+
+# v1.7.2.9 — find_symbol prerequisite for read_file on large files. Files
+# at or below this line count don't require a prior find_symbol call.
+_FIND_SYMBOL_REQUIRED_THRESHOLD = 500
+
+
 def _build_force_emit_message(tool_calls_used: int, max_tool_calls: int) -> str:
     """Synthetic user message injected once at turn 3 entry."""
     return (
@@ -1003,12 +1063,16 @@ async def _run_investigation_loop(
       - read_file duplicate-range rejection (per-run cache)
       - budget footer attached to every tool_result
       - emit-or-escalate force injected at turn 3
+    v1.7.2.9 production guards:
+      - find_symbol REQUIRED before read_file on files > 500 lines
+        (per-file or workspace-wide find_symbol satisfies)
     """
     # Lazy imports so the module loads without heavy deps until actually invoked.
     from phalanx.ci_fixer_v2.tools import base as tools_base  # noqa: PLC0415
 
     total_tool_calls = 0
     seen_reads: dict[tuple[str, str], int] = {}
+    seen_find_symbols: set[str] = set()  # v1.7.2.9 — file paths queried; "*" = workspace-wide
     force_emit_injected = False
 
     for turn in range(max_turns):
@@ -1109,6 +1173,71 @@ async def _run_investigation_loop(
                 raise _InvestigationError("forbidden_tool", f"Tech Lead tried to call {use.name!r}")
             if not tools_base.is_registered(use.name):
                 raise _InvestigationError("unregistered_tool", f"Tool {use.name!r} not in registry")
+
+            # v1.7.2.9 — track find_symbol calls so the enforcement
+            # check below can verify the prerequisite was met.
+            if use.name == "find_symbol":
+                fs_input = use.input or {}
+                fs_file = fs_input.get("file")
+                if isinstance(fs_file, str) and fs_file:
+                    seen_find_symbols.add(fs_file)
+                else:
+                    # No file arg = workspace-wide search; satisfies the
+                    # prerequisite for any subsequent read_file.
+                    seen_find_symbols.add("*")
+
+            # v1.7.2.9 — find_symbol enforcement on read_file for large
+            # files. Block the call if the file is > 500 LOC and no
+            # find_symbol was issued for it (or workspace-wide).
+            if use.name == "read_file":
+                rf_input = use.input or {}
+                rf_path = rf_input.get("path")
+                if isinstance(rf_path, str) and rf_path:
+                    line_count = _file_line_count(ctx.repo_workspace_path, rf_path)
+                    if (
+                        line_count is not None
+                        and line_count > _FIND_SYMBOL_REQUIRED_THRESHOLD
+                        and rf_path not in seen_find_symbols
+                        and "*" not in seen_find_symbols
+                    ):
+                        result = tools_base.ToolResult(
+                            ok=False,
+                            error=(
+                                f"find_symbol_required: {rf_path!r} has "
+                                f"{line_count} lines (> {_FIND_SYMBOL_REQUIRED_THRESHOLD}). "
+                                "Call `find_symbol(name=<symbol>, file="
+                                f"{rf_path!r})` first to locate the relevant "
+                                "function/class, THEN read_file with "
+                                "around_line=<returned_line>. This is enforced "
+                                "by the dispatcher, not advisory."
+                            ),
+                        )
+                        logger.info(
+                            "cifix_techlead.find_symbol_required",
+                            path=rf_path,
+                            line_count=line_count,
+                        )
+                        content = result.to_tool_message_content()
+                        _append_budget_footer(
+                            content,
+                            tool_calls_used=total_tool_calls,
+                            max_tool_calls=max_tool_calls,
+                            turn=turn,
+                            max_turns=max_turns,
+                        )
+                        ctx.messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": use.id,
+                                        "content": content,
+                                    }
+                                ],
+                            }
+                        )
+                        continue
 
             # v1.7.2.8 — read_file duplicate-range rejection.
             if use.name == "read_file":

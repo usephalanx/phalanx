@@ -523,3 +523,83 @@ def validate_replan_strategy(
                 f"to a fundamentally different approach. Repeating the "
                 f"same shape will produce the same failure fingerprint."
             )
+
+
+# v1.7.2.9 — confidence calibration for localized deterministic fixes.
+# Path 3 (inflect) on v1.7.2.8 produced a correct diagnosis at confidence
+# 0.45, which the engineer's 0.5 skip threshold then rejected. The
+# diagnosis was right; the calibration was wrong. This rule forces TL to
+# either commit (≥0.7) or escalate (0.0) on this fix shape, removing the
+# wishy-washy middle ground that costs us shippable runs.
+
+_LOCALIZED_DETERMINISTIC_MIN_CONFIDENCE = 0.7
+_FLAKE_SHAPE_KEYWORDS = (
+    "flak",  # flaky / flake
+    "timing",
+    "race",
+    "intermittent",
+    "non-determin",
+    "non determin",
+    "network",
+    "connection refus",
+    "transient",
+)
+
+
+def _is_localized_deterministic(fix_spec: dict) -> bool:
+    """Heuristic — fix shape that should NOT be hedged.
+
+    True iff:
+      - affected_files length 1 or 2 (small blast radius)
+      - non-empty task_plan (TL has a concrete plan)
+      - root_cause does NOT contain flake-shape keywords
+        (flake/timing/race/intermittent/network are inherently uncertain)
+    """
+    affected = fix_spec.get("affected_files") or []
+    if not isinstance(affected, list) or not (1 <= len(affected) <= 2):
+        return False
+    plan = fix_spec.get("task_plan")
+    if not isinstance(plan, list) or not plan:
+        return False
+    root_cause = (fix_spec.get("root_cause") or "").lower()
+    if any(kw in root_cause for kw in _FLAKE_SHAPE_KEYWORDS):
+        return False
+    return True
+
+
+def validate_confidence_calibration(fix_spec: dict) -> None:
+    """v1.7.2.9 — Reject hedged confidence on localized deterministic fixes.
+
+    Rule: if the fix is "localized deterministic" (≤2 files, has a plan,
+    no flake-shape keywords in root_cause), then `confidence` MUST be
+    either ≥ 0.7 (commit) or 0.0 (escalate). 0.0 is allowed because
+    that's the canonical ESCALATE shape — TL says "I don't know."
+    Anything in (0, 0.7) on this shape is a calibration miss: TL is
+    saying "I have a clear-shape diagnosis but I'm hedging" — exactly
+    what trips the engineer's 0.5 skip and produces correct-diagnosis-
+    no-fix runs (Path 3 v1.7.2.8).
+
+    Multi-file refactors, flake-shape, or no-plan emits are exempt —
+    they have legitimate uncertainty.
+    """
+    if not _is_localized_deterministic(fix_spec):
+        return
+    raw = fix_spec.get("confidence")
+    try:
+        confidence = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        confidence = 0.0
+    # 0.0 is the canonical ESCALATE confidence — pass it through.
+    if confidence == 0.0:
+        return
+    if confidence < _LOCALIZED_DETERMINISTIC_MIN_CONFIDENCE:
+        raise PlanValidationError(
+            f"confidence_calibration_failed: confidence={confidence:.2f} on "
+            f"a localized deterministic fix (≤2 files, has plan, no flake "
+            f"keywords in root_cause). Re-emit with confidence ≥ "
+            f"{_LOCALIZED_DETERMINISTIC_MIN_CONFIDENCE} if you trust your "
+            f"diagnosis, OR set review_decision='ESCALATE' with "
+            f"confidence=0.0 if evidence is insufficient. The hedged middle "
+            f"(0–0.7) is reserved for genuinely uncertain shapes (flakes, "
+            f"timing, multi-file refactors)."
+        )
