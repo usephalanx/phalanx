@@ -177,6 +177,11 @@ class Run(Base):
     paused_by_interrupt_id: Mapped[str | None] = mapped_column(String(100))
     token_count: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    # v1.7.3-ledger MVP — when True, the engineer must NOT push or open a
+    # PR. Instead it returns the proposed unified diff in its task output
+    # so the shadow runner can write it to ShadowLedger. Distinct from
+    # ci_context.shadow_mode used by Challenger (which is per-agent).
+    shadow_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
@@ -1046,3 +1051,52 @@ class OnboardingRun(Base):
     skill_overrides_created: Mapped[int] = mapped_column(Integer, default=0)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+
+
+class ShadowLedger(Base):
+    """v1.7.3-ledger MVP — one row per shadow-mode dispatch.
+
+    Captures Phalanx's verdict on a real CI failure WITHOUT pushing any
+    code. The maintainer's actual fix is recorded later (manually for
+    the first 10 entries; automated scraper is a separate workstream).
+    """
+
+    __tablename__ = "shadow_ledger"
+    __table_args__ = (
+        UniqueConstraint("repo", "workflow_run_id", name="uq_shadow_ledger_repo_wfrun"),
+        Index("idx_shadow_ledger_repo_created", "repo", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    workflow_run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    failing_commit_sha: Mapped[str | None] = mapped_column(String(40))
+    failure_class: Mapped[str | None] = mapped_column(String(40))
+
+    phalanx_run_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("runs.id", ondelete="SET NULL")
+    )
+    phalanx_verdict: Mapped[str | None] = mapped_column(String(40))
+    """SHIPPED_PROPOSED / SAFE_ESCALATE / FAILED / PENDING."""
+    phalanx_confidence: Mapped[float | None] = mapped_column(Float)
+    phalanx_proposed_patch: Mapped[str | None] = mapped_column(Text)
+    phalanx_root_cause: Mapped[str | None] = mapped_column(Text)
+    phalanx_affected_files: Mapped[list | None] = mapped_column(JSONB)
+    phalanx_iterations: Mapped[int | None] = mapped_column(Integer)
+    phalanx_tool_calls: Mapped[int | None] = mapped_column(Integer)
+    phalanx_cost_usd: Mapped[float | None] = mapped_column(Float)
+    phalanx_run_seconds: Mapped[int | None] = mapped_column(Integer)
+
+    ground_truth_status: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False
+    )
+    """pending / fixed / abandoned / still_red — manual for MVP."""
+    maintainer_fix_commit_sha: Mapped[str | None] = mapped_column(String(40))
+    maintainer_actual_patch: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMPTZ, server_default=func.now(), onupdate=func.now()
+    )

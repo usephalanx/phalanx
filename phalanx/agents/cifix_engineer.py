@@ -300,6 +300,35 @@ class CIFixEngineerAgent(BaseAgent):
 
         unified_diff = await _compute_final_diff(ctx.repo_workspace_path)
 
+        # v1.7.3-ledger MVP — shadow-mode short-circuit. The runner CLI
+        # sets `shadow_mode: True` in ci_context (and Run.shadow_mode in
+        # the DB) when it dispatches a shadow run. In that case the
+        # engineer must NOT push or open a PR — return the verified
+        # unified diff in the task output and let the shadow runner
+        # write it to ShadowLedger.
+        if ci_context.get("shadow_mode") is True:
+            self._log.info(
+                "cifix_engineer.shadow_short_circuit",
+                affected_files=affected_files,
+                diff_bytes=len(unified_diff or ""),
+            )
+            return AgentResult(
+                success=True,
+                output={
+                    "committed": False,
+                    "shadow_mode": True,
+                    "shadow_verdict": "SHIPPED_PROPOSED",
+                    "verify": {
+                        "cmd": ci_context["failing_command"],
+                        "exit_code": 0,
+                    },
+                    "files_modified": affected_files,
+                    "diff": unified_diff,
+                    "coder_attempts": coder_result.attempts_used,
+                },
+                tokens_used=tokens_used,
+            )
+
         # Deterministic commit_and_push. NOT an LLM decision.
         from phalanx.ci_fixer_v2.tools.action import (  # noqa: PLC0415
             _handle_commit_and_push,

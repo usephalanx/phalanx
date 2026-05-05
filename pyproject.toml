@@ -90,6 +90,9 @@ dev = [
     "types-redis>=4.6.0",
 ]
 
+[project.scripts]
+phalanx-shadow = "phalanx.shadow.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["phalanx*"]
