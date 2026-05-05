@@ -442,16 +442,22 @@ class CIFixEngineerAgent(BaseAgent):
             execute_task_steps_async,
         )
 
+        # v1.7.3-ledger MVP — shadow mode short-circuits commit/push
+        # handlers inside the interpreter and blocks push-y run commands.
+        shadow_mode = ci_context.get("shadow_mode") is True
         self._log.info(
             "cifix_engineer.v17_path",
             n_steps=len(steps),
             workspace=workspace_path,
             allowed_files=affected_files,
+            shadow_mode=shadow_mode,
         )
         # v1.7.2.3: pass affected_files as the patch-safety allowlist so
         # the engineer can't drift outside what TL declared.
         result = await execute_task_steps_async(
-            steps, workspace_path, allowed_files=affected_files,
+            steps, workspace_path,
+            allowed_files=affected_files,
+            shadow_mode=shadow_mode,
         )
 
         if not result.ok:
@@ -484,6 +490,49 @@ class CIFixEngineerAgent(BaseAgent):
             )
 
         commit_sha = result.commit_sha
+
+        # v1.7.3-ledger MVP — shadow-mode terminal. The interpreter no-
+        # opped commit + push so commit_sha is None; that's expected.
+        # Capture the working-tree diff (apply_diff/replace edits land
+        # in the workspace and stay uncommitted) and return SHIPPED_PROPOSED.
+        if shadow_mode:
+            unified_diff = ""
+            try:
+                from phalanx.ci_fixer_v2.tools.coder import _compute_final_diff  # noqa: PLC0415
+
+                unified_diff = await _compute_final_diff(workspace_path)
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning(
+                    "cifix_engineer.v17_shadow_diff_compute_failed",
+                    error=str(exc),
+                )
+            self._log.info(
+                "cifix_engineer.v17_shadow_short_circuit",
+                affected_files=affected_files,
+                diff_bytes=len(unified_diff or ""),
+                n_steps=len(result.completed_steps),
+            )
+            return AgentResult(
+                success=True,
+                output={
+                    "committed": False,
+                    "shadow_mode": True,
+                    "shadow_verdict": "SHIPPED_PROPOSED",
+                    "v17_path": True,
+                    "files_modified": affected_files,
+                    "diff": unified_diff,
+                    "completed_steps": result.completed_steps,
+                    "verify": {
+                        "cmd": ci_context.get("verify_command")
+                        or ci_context.get("failing_command"),
+                        "exit_code": 0,
+                    },
+                    "model": "deterministic-step-interpreter",
+                    "tokens_used": 0,
+                },
+                tokens_used=0,
+            )
+
         if commit_sha is None:
             # Steps completed but no commit step ran — TL's plan was
             # incomplete (missing commit / push). Surface as failure so

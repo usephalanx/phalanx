@@ -401,11 +401,25 @@ _HANDLERS: dict[str, Any] = {
 }
 
 
+# v1.7.3-ledger MVP — patterns disallowed in `run` step commands when
+# shadow_mode is True. Defense-in-depth on top of the no-op commit/push
+# handlers below: blocks any cleverness like `run: git push origin main`
+# or `run: gh pr create ...`.
+_SHADOW_BLOCKED_RUN_PATTERNS = (
+    "git push",
+    "gh pr create",
+    "gh api repos/",
+    "git commit ",
+    "git commit\t",
+)
+
+
 def execute_step(
     step: dict,
     workspace: str | Path,
     *,
     allowed_files: list[str] | None = None,
+    shadow_mode: bool = False,
 ) -> StepResult:
     """Dispatch one Step. All-sync; no LLM; no async. Tests can call directly.
 
@@ -416,6 +430,13 @@ def execute_step(
       - CI config edits (.github/workflows, codecov, pre-commit)
       - test deletion / @pytest.skip injection
       - paths outside TL's allowed_files allowlist
+
+    v1.7.3-ledger MVP: when shadow_mode is True:
+      - `commit` action is a no-op (returns ok with note='shadow_mode_skip')
+      - `push` action is a no-op (same)
+      - `run` action rejects commands containing git push / gh pr create /
+        gh api / git commit (defense in depth — TL plans should never
+        embed these in run commands, but if they do, we refuse)
     """
     from phalanx.agents._patch_safety import validate_step_safety  # noqa: PLC0415
 
@@ -435,6 +456,39 @@ def execute_step(
             error="bad_workspace",
             detail=f"workspace path is not a directory: {workspace}",
         )
+
+    # v1.7.3-ledger MVP — shadow-mode no-ops + run-step push guard.
+    if shadow_mode:
+        if action == "commit":
+            log.info("v3.engineer.step.shadow_skip", action="commit", step_id=sid)
+            return StepResult(
+                ok=True, step_id=sid, action="commit",
+                output={"commit_sha": None, "note": "shadow_mode_skip"},
+            )
+        if action == "push":
+            log.info("v3.engineer.step.shadow_skip", action="push", step_id=sid)
+            return StepResult(
+                ok=True, step_id=sid, action="push",
+                output={"note": "shadow_mode_skip"},
+            )
+        if action == "run":
+            cmd = (step.get("command") or "").lower()
+            for pat in _SHADOW_BLOCKED_RUN_PATTERNS:
+                if pat in cmd:
+                    log.warning(
+                        "v3.engineer.step.shadow_run_blocked",
+                        step_id=sid,
+                        pattern=pat,
+                    )
+                    return StepResult(
+                        ok=False, step_id=sid, action="run",
+                        error="shadow_mode_blocked_run",
+                        detail=(
+                            f"run command contains blocked pattern {pat!r}; "
+                            "shadow mode forbids any push / PR / commit "
+                            "side effects in `run` steps."
+                        ),
+                    )
 
     # v1.7.2.3 — patch safety gate (blocked paths, test deletion, skip
     # injection, allowlist). Runs before handler dispatch so we never
@@ -480,6 +534,7 @@ def execute_task_steps(
     workspace: str | Path,
     *,
     allowed_files: list[str] | None = None,
+    shadow_mode: bool = False,
 ) -> TaskExecutionResult:
     """Walk all steps in order. Stop at first failure.
 
@@ -489,10 +544,14 @@ def execute_task_steps(
 
     v1.7.2.3: `allowed_files` (from TL's affected_files) is enforced by
     the patch-safety gate inside execute_step.
+    v1.7.3-ledger MVP: `shadow_mode` short-circuits commit/push handlers
+    to no-ops and rejects push-y `run` commands.
     """
     result = TaskExecutionResult(ok=True)
     for step in steps:
-        outcome = execute_step(step, workspace, allowed_files=allowed_files)
+        outcome = execute_step(
+            step, workspace, allowed_files=allowed_files, shadow_mode=shadow_mode,
+        )
         if not outcome.ok:
             result.ok = False
             result.failed_step = outcome
@@ -508,13 +567,17 @@ async def execute_task_steps_async(
     workspace: str | Path,
     *,
     allowed_files: list[str] | None = None,
+    shadow_mode: bool = False,
 ) -> TaskExecutionResult:
     """Async wrapper for the agent's async loop. The interpreter itself is
     sync because subprocess is sync; we just hop to a thread pool to avoid
     blocking the event loop on long `run` steps.
     """
     return await asyncio.to_thread(
-        execute_task_steps, steps, workspace, allowed_files=allowed_files
+        execute_task_steps,
+        steps, workspace,
+        allowed_files=allowed_files,
+        shadow_mode=shadow_mode,
     )
 
 

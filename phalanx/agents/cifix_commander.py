@@ -216,6 +216,26 @@ class CIFixCommanderAgent(BaseAgent):
                 )
 
             # final_status == "VERIFYING": advance_run finished an iteration.
+            # v1.7.3-ledger MVP — shadow-mode finalize. If the run is
+            # shadow_mode and the engineer task carried shadow_verdict=
+            # SHIPPED_PROPOSED, finalize directly from engineer output.
+            # SRE Verify's verdict against the failing commit is
+            # meaningless in shadow mode (nothing was pushed). The
+            # exact-sha sync mechanism still ran (skipped_no_target_sha);
+            # the engineer's TL-emitted run-step in the workspace IS the
+            # validation signal.
+            shadow_verdict = await self._load_shadow_verdict_from_engineer()
+            if shadow_verdict == "SHIPPED_PROPOSED":
+                self._log.info(
+                    "cifix_commander.shadow_finalize",
+                    run_id=self.run_id,
+                    verdict=shadow_verdict,
+                )
+                return await self._finalize_shipped(
+                    ci_context,
+                    {"shadow_mode": True, "shadow_verdict": shadow_verdict},
+                )
+
             # Read the latest sre_verify verdict to decide: ship, iterate, or fail.
             verdict, verify_output = await self._read_last_sre_verify_verdict()
             iterations_done = await self._count_completed_sre_verifies()
@@ -785,6 +805,33 @@ class CIFixCommanderAgent(BaseAgent):
         estimate = total_tokens * _COST_PER_TOKEN_USD
         return (estimate > _MAX_RUN_COST_USD, estimate, total_tokens)
 
+    async def _load_shadow_verdict_from_engineer(self) -> str | None:
+        """v1.7.3-ledger MVP — read engineer task's shadow_verdict if any.
+
+        Returns the engineer's `shadow_verdict` value (e.g. 'SHIPPED_PROPOSED')
+        when the task ran in shadow mode and short-circuited the push.
+        Returns None for normal (non-shadow) runs or when no engineer task
+        has completed yet.
+        """
+        async with get_db() as session:
+            result = await session.execute(
+                select(Task.output)
+                .where(
+                    Task.run_id == self.run_id,
+                    Task.agent_role == "cifix_engineer",
+                    Task.status == "COMPLETED",
+                )
+                .order_by(Task.sequence_num.desc())
+                .limit(1)
+            )
+            row = result.one_or_none()
+        if row is None or row[0] is None or not isinstance(row[0], dict):
+            return None
+        if row[0].get("shadow_mode") is not True:
+            return None
+        verdict = row[0].get("shadow_verdict")
+        return verdict if isinstance(verdict, str) else None
+
     async def _read_last_sre_verify_verdict(
         self,
     ) -> tuple[str | None, dict | None]:
@@ -833,7 +880,21 @@ class CIFixCommanderAgent(BaseAgent):
         """v1.7.2.4 — full-CI re-confirm gate. Polls GitHub's check-runs on
         head_sha and compares to ci_context.sha (the failing-CI sha at run
         start). Returns the CheckGateVerdict, or None if the gate cannot run
-        (no integration, no token, no head_sha)."""
+        (no integration, no token, no head_sha).
+
+        v1.7.3-ledger MVP: short-circuit when ci_context.shadow_mode is
+        True. There is no engineer commit pushed, so head_sha is either
+        None or the failing commit's sha; polling GitHub for either is
+        meaningless. The shadow-finalize path in the main loop already
+        handles SHIPPED_PROPOSED runs upstream of this call, but
+        defense-in-depth ensures the gate is never wrongly invoked.
+        """
+        if ci_context.get("shadow_mode") is True:
+            self._log.info(
+                "cifix_commander.check_gate_skipped_shadow_mode",
+                run_id=self.run_id,
+            )
+            return None
         if not head_sha:
             return None
         repo = ci_context.get("repo")

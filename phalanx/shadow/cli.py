@@ -24,6 +24,35 @@ from phalanx.shadow.runner import (
 # ── Subcommand handlers ──────────────────────────────────────────────────
 
 
+def _print_banner(result: dict) -> None:
+    """Surface ledger_id + run_id + verdict at the top of the output so the
+    operator sees them without scanning the JSON body. Stable shape — the
+    runner CLI is the public entry point for the MVP."""
+    verdict = result.get("phalanx_verdict") or "?"
+    icon = {
+        "SHIPPED_PROPOSED": "✅",
+        "SAFE_ESCALATE": "⚠️ ",
+        "FAILED": "❌",
+        "PENDING": "⏳",
+    }.get(verdict, "•")
+    print("=" * 60)
+    print(f"{icon} Shadow run complete — verdict: {verdict}")
+    print("-" * 60)
+    print(f"  ledger_id : {result.get('id')}")
+    print(f"  run_id    : {result.get('phalanx_run_id')}")
+    print(f"  repo      : {result.get('repo')}")
+    print(f"  workflow  : {result.get('workflow_run_id')}")
+    if result.get("pr_number") is not None:
+        print(f"  pr_number : #{result.get('pr_number')}")
+    if result.get("phalanx_confidence") is not None:
+        print(f"  confidence: {result.get('phalanx_confidence')}")
+    if result.get("phalanx_run_seconds") is not None:
+        print(f"  run_secs  : {result.get('phalanx_run_seconds')}")
+    if result.get("phalanx_cost_usd") is not None:
+        print(f"  cost_usd  : ${result.get('phalanx_cost_usd')}")
+    print("=" * 60)
+
+
 async def _cmd_run(args: argparse.Namespace) -> int:
     try:
         result = await run_shadow_for_workflow(
@@ -35,6 +64,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     except ShadowRunnerError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    _print_banner(result)
     print(json.dumps(result, indent=2, default=str))
     return 0
 
