@@ -250,6 +250,7 @@ class CIFixChallengerAgent(BaseAgent):
             workspace_path=workspace_path or "",
             ci_log_text=ci_log_text,
             run_id=self.run_id,
+            challenger_task_id=self.task_id,
         )
         # In shadow mode: log verdict prominently but always succeed so
         # advance_run dispatches the engineer regardless.
@@ -339,6 +340,7 @@ async def run_challenger_against(
     run_id: str = "challenger-test",
     cache_dir: str | None = None,
     force: bool = False,
+    challenger_task_id: str | None = None,
 ) -> dict:
     """Run the Challenger LLM loop against a TL output and return the
     parsed ChallengerVerdict dict (with _meta block appended).
@@ -368,6 +370,10 @@ async def run_challenger_against(
     # Seed first user message with TL's output + ci_log
     initial_message = _build_initial_message(tl_output, ci_log_text)
     ctx.messages.append({"role": "user", "content": initial_message})
+
+    # v1.7.3 hardening — stash task_id so the review loop can heartbeat.
+    if challenger_task_id is not None:
+        ctx.challenger_task_id = challenger_task_id  # type: ignore[attr-defined]
 
     llm_call = _build_challenger_llm(_CHALLENGER_TOOLS)
 
@@ -479,6 +485,17 @@ async def _run_review_loop(
     total_tool_calls = 0
     for turn in range(max_turns):
         log.info("v3.challenger.turn_start", turn=turn, messages=len(ctx.messages))
+
+        # v1.7.3 runtime hardening — heartbeat per turn.
+        try:
+            from phalanx.runtime.heartbeat import record_heartbeat  # noqa: PLC0415
+
+            ch_task_id = getattr(ctx, "challenger_task_id", None)
+            if ch_task_id:
+                await record_heartbeat(ch_task_id, note=f"challenger_turn_{turn}")
+        except Exception:  # noqa: BLE001
+            pass
+
         response = await llm_call(ctx.messages)
         log.info(
             "v3.challenger.turn_response",

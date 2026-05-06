@@ -568,17 +568,51 @@ async def execute_task_steps_async(
     *,
     allowed_files: list[str] | None = None,
     shadow_mode: bool = False,
+    task_id: str | None = None,
 ) -> TaskExecutionResult:
     """Async wrapper for the agent's async loop. The interpreter itself is
     sync because subprocess is sync; we just hop to a thread pool to avoid
     blocking the event loop on long `run` steps.
+
+    v1.7.3 hardening: when `task_id` is provided, emit a heartbeat
+    after each step completes so the stuck-task detector can tell a
+    long-running test step apart from a hung worker. The wrapper
+    splits steps into per-step async invocations to allow heartbeats
+    between them; long-running steps still complete in their thread.
     """
-    return await asyncio.to_thread(
-        execute_task_steps,
-        steps, workspace,
-        allowed_files=allowed_files,
-        shadow_mode=shadow_mode,
-    )
+    if task_id is None:
+        return await asyncio.to_thread(
+            execute_task_steps,
+            steps, workspace,
+            allowed_files=allowed_files,
+            shadow_mode=shadow_mode,
+        )
+
+    # Per-step path with heartbeats between steps.
+    from phalanx.runtime.heartbeat import record_heartbeat  # noqa: PLC0415
+
+    result = TaskExecutionResult(ok=True)
+    for step in steps:
+        outcome = await asyncio.to_thread(
+            execute_step,
+            step, workspace,
+            allowed_files=allowed_files, shadow_mode=shadow_mode,
+        )
+        if not outcome.ok:
+            result.ok = False
+            result.failed_step = outcome
+            return result
+        result.completed_steps.append(outcome.step_id)
+        if outcome.action == "commit" and outcome.output.get("commit_sha"):
+            result.commit_sha = outcome.output["commit_sha"]
+        # Heartbeat after each step — best-effort, never raises.
+        try:
+            await record_heartbeat(
+                task_id, note=f"step_{outcome.step_id}_{outcome.action}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return result
 
 
 __all__ = [

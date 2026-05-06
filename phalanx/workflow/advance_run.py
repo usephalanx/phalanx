@@ -240,11 +240,32 @@ async def _step(run_id: str, logger, redis_client) -> dict:
             sequence_num=next_task.sequence_num,
         )
 
-        # Mark IN_PROGRESS before dispatch (same pattern as old orchestrator)
+        # Mark IN_PROGRESS before dispatch (same pattern as old orchestrator).
+        # v1.7.3 hardening — also stamp initial heartbeat + TTL so the
+        # stuck-task detector can flag a worker that crashes BEFORE its
+        # first record_heartbeat() call. Without this, a worker dying
+        # between dispatch and execute() would leave the row stuck.
+        from phalanx.runtime.heartbeat import default_ttl_for_role  # noqa: PLC0415
+        from phalanx.observability.runtime_events import task_started as _ev_started  # noqa: PLC0415
+
+        ttl_s = default_ttl_for_role(next_task.agent_role)
         await session.execute(
-            update(Task).where(Task.id == next_task.id).values(status="IN_PROGRESS", started_at=now)
+            update(Task)
+            .where(Task.id == next_task.id)
+            .values(
+                status="IN_PROGRESS",
+                started_at=now,
+                last_heartbeat_at=now,
+                ttl_seconds=ttl_s,
+            )
         )
         await session.commit()
+        _ev_started(
+            task_id=next_task.id,
+            run_id=run_id,
+            agent_role=next_task.agent_role,
+            ttl_seconds=ttl_s,
+        )
 
         # Slack: task started
         try:

@@ -736,6 +736,9 @@ class CIFixTechLeadAgent(BaseAgent):
             workspace_path=workspace_path,
             integration=integration,
         )
+        # v1.7.3 runtime hardening — stash task_id on ctx so the
+        # investigation loop can call record_heartbeat per turn.
+        ctx.tl_task_id = self.task_id  # type: ignore[attr-defined]
 
         # Build GPT-5.4 LLM callable with TL-only tool schemas.
         llm_call = _build_techlead_llm(tool_names=_TECHLEAD_TOOLS)
@@ -1094,6 +1097,19 @@ async def _run_investigation_loop(
             )
 
         logger.info("cifix_techlead.turn_start", turn=turn, messages=len(ctx.messages))
+
+        # v1.7.3 runtime hardening — heartbeat per turn so the stuck-
+        # task detector can tell "still working" from "Celery hung".
+        # Best-effort: never raises, never blocks the LLM call.
+        try:
+            from phalanx.runtime.heartbeat import record_heartbeat  # noqa: PLC0415
+
+            tl_task_id = getattr(ctx, "tl_task_id", None)
+            if tl_task_id:
+                await record_heartbeat(tl_task_id, note=f"tl_turn_{turn}")
+        except Exception:  # noqa: BLE001
+            pass
+
         response = await llm_call(ctx.messages)
         logger.info(
             "cifix_techlead.turn_response",

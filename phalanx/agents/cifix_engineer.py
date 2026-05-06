@@ -458,6 +458,7 @@ class CIFixEngineerAgent(BaseAgent):
             steps, workspace_path,
             allowed_files=affected_files,
             shadow_mode=shadow_mode,
+            task_id=self.task_id,  # v1.7.3 — heartbeat per step
         )
 
         if not result.ok:
