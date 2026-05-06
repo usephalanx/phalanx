@@ -89,6 +89,20 @@ async def _fetch_workflow_run_event(
     prs = wf.get("pull_requests") or []
     if prs:
         pr_number = prs[0].get("number")
+    elif head_branch:
+        # GHA's `pull_requests` field is only populated for same-repo
+        # active PRs; closed/merged PRs and historical workflow runs
+        # often return []. Fall back to listing PRs by head branch and
+        # picking the most recent one.
+        try:
+            pr_list = await _gh_get(
+                f"{base}/pulls?head={repo.split('/')[0]}:{head_branch}&state=all&per_page=5",
+                token,
+            )
+            if isinstance(pr_list, list) and pr_list:
+                pr_number = pr_list[0].get("number")
+        except Exception:  # noqa: BLE001
+            pass
 
     # Failed jobs
     jobs = await _gh_get(
