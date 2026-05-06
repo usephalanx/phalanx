@@ -1,0 +1,11 @@
+[
+  {
+    "scenario": "S4_normal_shipped",
+    "elapsed_s": 184.91,
+    "ledger_id": "839492b5-49c5-4f01-9134-22b86533c17e",
+    "phalanx_run_id": "2605045f-eed7-44c3-b529-ac26291da636",
+    "verdict": "FAILED",
+    "confidence": 0.76,
+    "cost_usd": 0.225
+  }
+]

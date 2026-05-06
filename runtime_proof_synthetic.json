@@ -1,0 +1,98 @@
+[
+  {
+    "scenario": "S1_hung_challenger",
+    "run_id": "cbe9f7a7-33d0-40ca-83a3-e424187a5ab6",
+    "elapsed_s": 0.2,
+    "sweep_result": {
+      "scanned": 10,
+      "timed_out": 1,
+      "ids": [
+        "b21860c8-fdb1-42c8-a7b4-9174b76bbf1a"
+      ]
+    },
+    "run_status": "FAILED",
+    "run_failure_class": "FAILED_INFRA_WORKER_HANG",
+    "run_error_message": "stuck_task_detector: task b21860c8 (cifix_challenger) heartbeat stale 1800s > ttl=60s",
+    "tasks": [
+      {
+        "agent_role": "cifix_sre_setup",
+        "status": "COMPLETED",
+        "error": null
+      },
+      {
+        "agent_role": "cifix_challenger",
+        "status": "TIMED_OUT",
+        "error": "stuck_task_detector: heartbeat stale (1800s > ttl=60s) \u2014 TIMED_OUT"
+      },
+      {
+        "agent_role": "cifix_engineer",
+        "status": "CANCELLED",
+        "error": "parent run terminated by stuck-task detector"
+      }
+    ]
+  },
+  {
+    "scenario": "S2_hung_engineer",
+    "run_id": "aa65c111-ef3b-4ba4-b66a-381193771a2f",
+    "elapsed_s": 0.47,
+    "sweep_result": {
+      "scanned": 10,
+      "timed_out": 1,
+      "ids": [
+        "2428be38-5421-4eef-a59a-06336cb39e4d"
+      ]
+    },
+    "run_status": "FAILED",
+    "run_failure_class": "FAILED_INFRA_WORKER_HANG",
+    "run_error_message": "stuck_task_detector: task 2428be38 (cifix_engineer) heartbeat stale 1800s > ttl=60s",
+    "tasks": [
+      {
+        "agent_role": "cifix_sre_setup",
+        "status": "COMPLETED",
+        "error": null
+      },
+      {
+        "agent_role": "cifix_engineer",
+        "status": "TIMED_OUT",
+        "error": "stuck_task_detector: heartbeat stale (1800s > ttl=60s) \u2014 TIMED_OUT"
+      },
+      {
+        "agent_role": "cifix_sre_verify",
+        "status": "CANCELLED",
+        "error": "parent run terminated by stuck-task detector"
+      }
+    ]
+  },
+  {
+    "scenario": "S3_sandbox_setup_timeout",
+    "run_id": "795c88e1-c915-4230-b305-ca190edcf236",
+    "elapsed_s": 0.31,
+    "sweep_result": {
+      "scanned": 10,
+      "timed_out": 1,
+      "ids": [
+        "e92191fc-ce0b-4b81-8a90-65a432e89216"
+      ]
+    },
+    "run_status": "FAILED",
+    "run_failure_class": "FAILED_INFRA_WORKER_HANG",
+    "run_error_message": "stuck_task_detector: task e92191fc (cifix_sre_setup) heartbeat stale 1800s > ttl=60s",
+    "tasks": [
+      {
+        "agent_role": "cifix_sre_setup",
+        "status": "CANCELLED",
+        "error": null
+      },
+      {
+        "agent_role": "cifix_sre_setup",
+        "status": "TIMED_OUT",
+        "error": "stuck_task_detector: heartbeat stale (1800s > ttl=60s) \u2014 TIMED_OUT"
+      },
+      {
+        "agent_role": "cifix_engineer",
+        "status": "CANCELLED",
+        "error": "parent run terminated by stuck-task detector"
+      }
+    ]
+  }
+]
