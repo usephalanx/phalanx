@@ -89,11 +89,10 @@ async def _fetch_workflow_run_event(
     prs = wf.get("pull_requests") or []
     if prs:
         pr_number = prs[0].get("number")
-    elif head_branch:
-        # GHA's `pull_requests` field is only populated for same-repo
-        # active PRs; closed/merged PRs and historical workflow runs
-        # often return []. Fall back to listing PRs by head branch and
-        # picking the most recent one.
+    if pr_number is None and head_branch:
+        # Fallback 1: GHA's `pull_requests` field is only populated for
+        # same-repo active PRs; closed/merged PRs and historical workflow
+        # runs often return []. List PRs by head branch.
         try:
             pr_list = await _gh_get(
                 f"{base}/pulls?head={repo.split('/')[0]}:{head_branch}&state=all&per_page=5",
@@ -101,6 +100,20 @@ async def _fetch_workflow_run_event(
             )
             if isinstance(pr_list, list) and pr_list:
                 pr_number = pr_list[0].get("number")
+        except Exception:  # noqa: BLE001
+            pass
+    if pr_number is None and head_sha:
+        # Fallback 2: cross-fork PRs (contributor's branch lives on a
+        # different user's repo) won't show up in branch-based search.
+        # Use the search API by commit sha — works regardless of fork.
+        try:
+            search = await _gh_get(
+                f"https://api.github.com/search/issues?q=repo:{repo}+sha:{head_sha}+type:pr",
+                token,
+            )
+            items = (search or {}).get("items") or []
+            if items:
+                pr_number = items[0].get("number")
         except Exception:  # noqa: BLE001
             pass
 
