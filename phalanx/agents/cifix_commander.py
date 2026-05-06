@@ -203,15 +203,80 @@ class CIFixCommanderAgent(BaseAgent):
         for _ in range(_MAX_ITERATIONS):
             final_status, run_error = await self._poll_for_terminal()
 
-            if final_status in ("FAILED", "CANCELLED"):
-                return AgentResult(
-                    success=False, output={}, error=run_error or f"Run {final_status}"
+            if final_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                # v1.7.3 — preserve any failure_class the stuck detector
+                # already wrote; otherwise this is a generic FAILED.
+                from phalanx.observability.runtime_events import run_finalized as _ev_finalized  # noqa: PLC0415
+
+                async with get_db() as session:
+                    fc_result = await session.execute(
+                        select(Run.failure_class).where(Run.id == self.run_id)
+                    )
+                    fc_row = fc_result.one_or_none()
+                    failure_class = fc_row[0] if fc_row else None
+                _ev_finalized(
+                    run_id=self.run_id,
+                    final_status=final_status,
+                    failure_class=failure_class,
+                    reason=run_error,
                 )
-            if final_status == "TIMEOUT":
-                await mark_run_failed(self.run_id, "cifix_commander timeout")
+                await self._cleanup_sandbox_safe(
+                    reason=f"run_{final_status.lower()}"
+                )
                 return AgentResult(
                     success=False,
-                    output={},
+                    output={"failure_class": failure_class} if failure_class else {},
+                    error=run_error or f"Run {final_status}",
+                )
+            if final_status == "TIMEOUT":
+                # Commander itself ran out of poll budget waiting for
+                # advance_run to push the run forward. This is the
+                # FAILED_INFRA_TIMEOUT path — distinct from a single
+                # task TIMED_OUT (which goes through the FAILED branch
+                # above, populated by the stuck-task detector).
+                from sqlalchemy import func, update  # noqa: PLC0415
+
+                from phalanx.observability.runtime_events import run_finalized as _ev_finalized  # noqa: PLC0415
+                from phalanx.runtime.infra_verdicts import FAILED_INFRA_TIMEOUT  # noqa: PLC0415
+
+                async with get_db() as session:
+                    await session.execute(
+                        update(Run)
+                        .where(Run.id == self.run_id)
+                        .values(
+                            status="FAILED",
+                            failure_class=FAILED_INFRA_TIMEOUT,
+                            error_message=(
+                                f"cifix_commander: poll-for-terminal exceeded "
+                                f"{_MAX_WAIT_SECONDS}s without state transition"
+                            ),
+                            completed_at=func.now(),
+                        )
+                    )
+                    # Cancel any sibling tasks still in flight to free
+                    # their Celery slots + trigger sandbox cleanup.
+                    await session.execute(
+                        update(Task)
+                        .where(
+                            Task.run_id == self.run_id,
+                            Task.status.in_(["PENDING", "IN_PROGRESS"]),
+                        )
+                        .values(
+                            status="CANCELLED",
+                            error="cifix_commander: poll timeout",
+                        )
+                    )
+                    await session.commit()
+                _ev_finalized(
+                    run_id=self.run_id,
+                    final_status="TIMED_OUT",
+                    failure_class=FAILED_INFRA_TIMEOUT,
+                    reason="commander_poll_timeout",
+                )
+                await self._cleanup_sandbox_safe(reason="commander_poll_timeout")
+                return AgentResult(
+                    success=False,
+                    output={"failure_class": FAILED_INFRA_TIMEOUT},
                     error="cifix_commander timed out waiting for VERIFYING",
                 )
 
@@ -557,13 +622,18 @@ class CIFixCommanderAgent(BaseAgent):
     async def _finalize_shipped(
         self, ci_context: dict, verify_output: dict | None
     ) -> AgentResult:
-        """All-green path: walk the SHIP chain to SHIPPED and return success."""
+        """All-green path: walk the SHIP chain to SHIPPED and return success.
+
+        v1.7.3 hardening: ALWAYS triggers sandbox cleanup before
+        returning, regardless of the post-verify transition outcome.
+        """
         self._log.info("cifix_commander.verify_chain_start", run_id=self.run_id)
         try:
             for from_s, to_s in _POST_VERIFY_CHAIN:
                 await self._transition_run(from_s, to_s)
             self._log.info("cifix_commander.shipped", run_id=self.run_id)
             summary = await self._build_success_summary()
+            await self._cleanup_sandbox_safe(reason="run_shipped")
             return AgentResult(
                 success=True,
                 output={
@@ -578,10 +648,25 @@ class CIFixCommanderAgent(BaseAgent):
                 "cifix_commander.post_verify_transition_failed", error=str(exc)
             )
             await mark_run_failed(self.run_id, f"post-verify transition: {exc}")
+            await self._cleanup_sandbox_safe(reason="post_verify_transition_failed")
             return AgentResult(
                 success=False,
                 output={},
                 error=f"post-verify transition failed: {exc}",
+            )
+
+    async def _cleanup_sandbox_safe(self, *, reason: str) -> None:
+        """Always-safe wrapper around runtime.sandbox_cleanup."""
+        try:
+            from phalanx.runtime.sandbox_cleanup import cleanup_for_run  # noqa: PLC0415
+
+            await cleanup_for_run(self.run_id, reason=reason)
+        except Exception as exc:  # noqa: BLE001 — never let cleanup cascade
+            self._log.warning(
+                "cifix_commander.sandbox_cleanup_uncaught",
+                run_id=self.run_id,
+                reason=reason,
+                error=str(exc),
             )
 
     # ── DB helpers ────────────────────────────────────────────────────────────
@@ -1107,9 +1192,19 @@ class CIFixCommanderAgent(BaseAgent):
             )
 
     async def _poll_for_terminal(self) -> tuple[str, str | None]:
-        """Poll the Run until VERIFYING / FAILED / CANCELLED or timeout.
+        """Poll the Run until VERIFYING / FAILED / CANCELLED / TIMED_OUT
+        or timeout.
 
-        Returns (final_status, error_message). On timeout returns ("TIMEOUT", None).
+        Returns (final_status, error_message). On timeout returns
+        ("TIMEOUT", None).
+
+        v1.7.3 hardening:
+          - TIMED_OUT (set by stuck-task detector) is treated as
+            terminal; commander returns immediately with the detector's
+            error_message preserved.
+          - Detection of a downstream Task with status='TIMED_OUT' also
+            short-circuits — even if the Run row hasn't been updated
+            yet (rare race window), commander surfaces the worker hang.
         """
         elapsed = 0
         while elapsed < _MAX_WAIT_SECONDS:
@@ -1124,13 +1219,33 @@ class CIFixCommanderAgent(BaseAgent):
                 if row is None:
                     return ("FAILED", f"Run {self.run_id} vanished during poll")
                 status, err = row
-                if status in ("VERIFYING", "FAILED", "CANCELLED"):
+                if status in ("VERIFYING", "FAILED", "CANCELLED", "TIMED_OUT"):
                     self._log.info(
                         "cifix_commander.poll_terminal",
                         status=status,
                         elapsed_s=elapsed,
                     )
                     return (status, err)
+
+                # Race-window guard: detector flips Task → TIMED_OUT and
+                # Run → FAILED in one transaction, but if commander reads
+                # mid-commit it could see Task TIMED_OUT before Run.
+                # Either signal is sufficient to stop polling.
+                child_to = await session.execute(
+                    select(Task.id, Task.agent_role, Task.error)
+                    .where(
+                        Task.run_id == self.run_id,
+                        Task.status == "TIMED_OUT",
+                    )
+                    .limit(1)
+                )
+                child = child_to.one_or_none()
+                if child is not None:
+                    return (
+                        "TIMED_OUT",
+                        f"child task {child[0][:8]} ({child[1]}) TIMED_OUT: "
+                        f"{(child[2] or '')[:200]}",
+                    )
         return ("TIMEOUT", None)
 
     async def _build_success_summary(self) -> dict:
