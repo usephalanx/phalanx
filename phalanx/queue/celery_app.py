@@ -35,6 +35,7 @@ celery_app = Celery(
         "phalanx.agents.cifix_sre",
         "phalanx.workflow.advance_run",
         "phalanx.maintenance.tasks",
+        "phalanx.maintenance.stuck_task_detector",
         "phalanx.memory.tasks",
         "phalanx.skills.ingestion.tasks",
         "phalanx.skills.tasks",
@@ -105,6 +106,10 @@ celery_app.config_from_object(
             "check-blocked-runs": {
                 "task": "phalanx.maintenance.tasks.check_blocked_runs",
                 "schedule": 300,  # every 5 minutes — orphan watchdog
+            },
+            "detect-stuck-tasks": {
+                "task": "phalanx.maintenance.stuck_task_detector.detect_stuck_tasks",
+                "schedule": 120,  # v1.7.3 — heartbeat-aware stuck-task sweep
             },
             "decay-memory-relevance": {
                 "task": "phalanx.memory.tasks.decay_relevance",
