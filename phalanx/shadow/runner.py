@@ -302,9 +302,37 @@ async def _read_terminal_evidence(run_id: str) -> dict[str, Any]:
 
 
 def _classify_verdict(*, run_status: str, tl: dict, eng: dict) -> str:
-    """SHIPPED_PROPOSED / SAFE_ESCALATE / FAILED."""
+    """SHIPPED_PROPOSED / SAFE_ESCALATE / FAILED.
+
+    The classifier maps each terminal run state to one of three outcomes
+    the ledger treats as meaningful:
+
+      - SHIPPED_PROPOSED: engineer ran in shadow mode and emitted a
+        verified proposed_patch.
+      - SAFE_ESCALATE: TL or a validator refused to ship insufficient
+        evidence. Three sub-cases:
+          (a) TL emitted review_decision=\"ESCALATE\" (canonical).
+          (b) TL confidence==0.0 (canonical low-confidence escalate).
+          (c) v1.7.2.9 calibration validator rejected a hedged
+              confidence on a localized deterministic fix. The
+              architecture refused to act, which is the same semantic
+              property as (a) and (b): we declined to ship rather than
+              guessed. Without this branch, calibration_failed runs
+              landed as FAILED, masking the safety-property win.
+      - FAILED: anything else (genuine pipeline failure, sandbox crash,
+        Celery hang, etc.).
+    """
     if eng.get("shadow_mode") is True and eng.get("shadow_verdict") == "SHIPPED_PROPOSED":
         return "SHIPPED_PROPOSED"
+
+    if isinstance(tl, dict):
+        # SAFE_ESCALATE (c) — calibration validator refused to ship a
+        # hedged confidence on a clear-shape fix.
+        error_class = tl.get("error_class")
+        validation_error = tl.get("validation_error") or ""
+        if error_class == "plan_validation_failed" and isinstance(validation_error, str) and "confidence_calibration_failed" in validation_error:
+            return "SAFE_ESCALATE"
+
     confidence = float(tl.get("confidence") or 0.0) if isinstance(tl, dict) else 0.0
     review_decision = tl.get("review_decision") if isinstance(tl, dict) else None
     if review_decision == "ESCALATE" or confidence == 0.0:

@@ -99,6 +99,47 @@ class TestClassifyVerdict:
         tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
         assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
 
+    def test_calibration_failed_classifies_as_safe_escalate(self):
+        """v1.7.2.9 calibration validator rejecting a hedged confidence
+        on a localized deterministic fix is a refusal-to-ship, not a
+        pipeline failure. Map to SAFE_ESCALATE."""
+        eng = {}
+        tl = {
+            "confidence": 0.4,
+            "error_class": "plan_validation_failed",
+            "validation_error": (
+                "confidence_calibration_failed: confidence=0.40 on a "
+                "localized deterministic fix (≤2 files, has plan, no "
+                "flake keywords in root_cause). Re-emit with confidence ≥ 0.7"
+            ),
+        }
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+
+    def test_other_plan_validation_failures_are_still_failed(self):
+        """Non-calibration plan_validation_failed (e.g., empty plan,
+        replan-strategy mismatch) is a real pipeline failure, not a
+        safety-property win. Stays FAILED."""
+        eng = {}
+        tl = {
+            "confidence": 0.8,
+            "error_class": "plan_validation_failed",
+            "validation_error": "plan must be a non-empty list",
+        }
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+
+    def test_calibration_match_requires_correct_error_class(self):
+        """validation_error mentioning calibration without the
+        plan_validation_failed error_class shouldn't trigger the branch
+        (defensive)."""
+        eng = {}
+        tl = {
+            "confidence": 0.4,
+            "validation_error": "confidence_calibration_failed",
+        }
+        # No error_class field → no SAFE_ESCALATE override on this rule.
+        # Confidence 0.4 isn't 0.0, no review_decision=ESCALATE → FAILED.
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+
 
 # ── CLI argparse smoke ─────────────────────────────────────────────────
 
