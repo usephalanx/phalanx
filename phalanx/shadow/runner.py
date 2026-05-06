@@ -145,6 +145,12 @@ async def _create_shadow_run_chain(
     Returns (run_id, work_order_id, ci_fix_run_id, ci_context).
     """
     async with get_db() as session:
+        # Shadow runs intentionally set ci_check_suite_id=None so they
+        # bypass the `ci_fix_runs_repo_check_suite_idem` partial unique
+        # index (which is `WHERE ci_check_suite_id IS NOT NULL`). This
+        # lets us shadow workflows that were previously dispatched via
+        # webhook without UNIQUE conflicts. Dedup for shadow runs lives
+        # on `shadow_ledger UNIQUE (repo, workflow_run_id)` instead.
         ci_run = CIFixRun(
             integration_id=integration_id,
             repo_full_name=repo,
@@ -153,7 +159,7 @@ async def _create_shadow_run_chain(
             commit_sha=event["commit_sha"],
             ci_provider="github_actions",
             ci_build_id=event["build_id"],
-            ci_check_suite_id=event["ci_check_suite_id"],
+            ci_check_suite_id=None,
             build_url=event["build_url"],
             failed_jobs=event["failed_jobs"],
             failure_summary="(shadow mode — manual dispatch)",
