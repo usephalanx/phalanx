@@ -112,13 +112,16 @@ class CIFixSREAgent(BaseAgent):
                     success=False, output={}, error=f"sre_setup: ci_context missing {field!r}"
                 )
 
-        # Step A: clone
+        # Step A: clone. Pass commit_sha so the helper can fall back to
+        # sha-fetch when the branch is gone (shadow mode on historical
+        # workflow runs whose branches have since been deleted).
         try:
             workspace_path = await _clone_workspace(
                 run_id=self.run_id,
                 repo_full_name=ci_context["repo"],
                 branch=ci_context["branch"],
                 github_token=_resolve_github_token(integration),
+                commit_sha=ci_context.get("sha"),
             )
         except Exception as exc:
             self._log.exception("cifix_sre.setup.clone_failed", error=str(exc))
@@ -730,10 +733,21 @@ class CIFixSREAgent(BaseAgent):
 
 
 async def _clone_workspace(
-    run_id: str, repo_full_name: str, branch: str, github_token: str | None
+    run_id: str,
+    repo_full_name: str,
+    branch: str,
+    github_token: str | None,
+    commit_sha: str | None = None,
 ) -> str:
     """Shallow clone at the PR head branch. SRE owns the workspace for the
-    whole run — TL and Engineer read workspace_path from SRE's output."""
+    whole run — TL and Engineer read workspace_path from SRE's output.
+
+    v1.7.3-ledger MVP: if `commit_sha` is supplied AND the branch clone
+    fails (e.g. branch was deleted after the workflow run), fall back to
+    fetching the exact sha and checking it out. GHA workflow run commits
+    persist on GitHub even after their branch is removed, so this lets
+    shadow mode replay historical failures.
+    """
     if not github_token:
         raise RuntimeError("no github token available for clone")
     import git  # noqa: PLC0415
@@ -745,8 +759,29 @@ async def _clone_workspace(
         shutil.rmtree(base)
     base.mkdir(parents=True, exist_ok=True)
     url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}.git"
-    git.Repo.clone_from(url, base, branch=branch, depth=1)
-    return str(base)
+    try:
+        git.Repo.clone_from(url, base, branch=branch, depth=1)
+        return str(base)
+    except Exception as branch_exc:  # noqa: BLE001
+        if not commit_sha:
+            raise
+        # Branch missing — fall back to fetching the exact sha. Recreate
+        # the workspace so we start clean.
+        import shutil  # noqa: PLC0415
+
+        shutil.rmtree(base, ignore_errors=True)
+        base.mkdir(parents=True, exist_ok=True)
+        repo = git.Repo.init(base)
+        repo.create_remote("origin", url)
+        try:
+            repo.git.fetch("origin", commit_sha, depth=1)
+            repo.git.checkout(commit_sha)
+        except Exception as sha_exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"clone_failed_branch_and_sha: branch={branch_exc!s}; "
+                f"sha={sha_exc!s}"
+            ) from sha_exc
+        return str(base)
 
 
 def _resolve_github_token(integration: CIIntegration | None) -> str | None:
