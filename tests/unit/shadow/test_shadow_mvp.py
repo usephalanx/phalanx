@@ -140,6 +140,45 @@ class TestClassifyVerdict:
         # Confidence 0.4 isn't 0.0, no review_decision=ESCALATE → FAILED.
         assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
 
+    def test_self_critique_inconsistent_classifies_as_safe_escalate(self):
+        """v1.6.0 self_critique gate rejecting an emit (e.g., TL flagged
+        grounding_satisfied=False) is the architecture refusing to ship
+        — same semantic property as calibration_failed. Map to
+        SAFE_ESCALATE.
+
+        Surfaced on the v1.7.3 hardening proof S4 run: TL emitted at
+        confidence 0.76 with grounding_satisfied=False; the gate
+        rejected; ledger landed FAILED, masking the safety win."""
+        eng = {}
+        tl = {
+            "confidence": 0.76,
+            "error_class": "self_critique_inconsistent",
+            "failing_checks": ["grounding_satisfied"],
+        }
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+
+    def test_self_critique_inconsistent_takes_precedence_over_high_confidence(self):
+        """Even at 0.95 confidence, a self_critique_inconsistent emit
+        is SAFE_ESCALATE — the gate caught a grounding/coverage gap
+        TL itself admitted to."""
+        eng = {}
+        tl = {
+            "confidence": 0.95,
+            "error_class": "self_critique_inconsistent",
+            "failing_checks": ["affected_files_exist_in_repo"],
+        }
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+
+    def test_other_tl_error_classes_remain_failed(self):
+        """error_class names that are NEITHER calibration nor
+        self_critique are real pipeline failures, not refusal-to-ship."""
+        eng = {}
+        tl = {
+            "confidence": 0.8,
+            "error_class": "no_fix_spec_emitted",
+        }
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+
 
 # ── CLI argparse smoke ─────────────────────────────────────────────────
 

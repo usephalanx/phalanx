@@ -310,27 +310,44 @@ def _classify_verdict(*, run_status: str, tl: dict, eng: dict) -> str:
       - SHIPPED_PROPOSED: engineer ran in shadow mode and emitted a
         verified proposed_patch.
       - SAFE_ESCALATE: TL or a validator refused to ship insufficient
-        evidence. Three sub-cases:
+        evidence. Four sub-cases:
           (a) TL emitted review_decision=\"ESCALATE\" (canonical).
           (b) TL confidence==0.0 (canonical low-confidence escalate).
           (c) v1.7.2.9 calibration validator rejected a hedged
-              confidence on a localized deterministic fix. The
-              architecture refused to act, which is the same semantic
-              property as (a) and (b): we declined to ship rather than
-              guessed. Without this branch, calibration_failed runs
-              landed as FAILED, masking the safety-property win.
+              confidence on a localized deterministic fix.
+          (d) v1.6.0 self_critique gate rejected an emit because TL
+              flagged one of its own c1-c8 checks (e.g.,
+              grounding_satisfied) as False — TL caught its own
+              evidence gap and refused to ship.
+        All four sub-cases share the same semantic property: the
+        architecture declined to ship rather than guessed.
       - FAILED: anything else (genuine pipeline failure, sandbox crash,
-        Celery hang, etc.).
+        Celery hang). Note: runtime hardening also writes
+        runs.failure_class for infra-specific reasons
+        (FAILED_INFRA_TIMEOUT / FAILED_INFRA_WORKER_HANG / etc.); the
+        runner records that on the ledger row separately so aggregate
+        metrics can split signal from infra noise.
     """
     if eng.get("shadow_mode") is True and eng.get("shadow_verdict") == "SHIPPED_PROPOSED":
         return "SHIPPED_PROPOSED"
 
     if isinstance(tl, dict):
-        # SAFE_ESCALATE (c) — calibration validator refused to ship a
-        # hedged confidence on a clear-shape fix.
         error_class = tl.get("error_class")
         validation_error = tl.get("validation_error") or ""
+        # SAFE_ESCALATE (c) — calibration validator refused to ship a
+        # hedged confidence on a clear-shape fix.
         if error_class == "plan_validation_failed" and isinstance(validation_error, str) and "confidence_calibration_failed" in validation_error:
+            return "SAFE_ESCALATE"
+        # SAFE_ESCALATE (d) — TL self-critique gate rejected its own
+        # emit. v1.6.0 self_critique_inconsistent fires when TL emits
+        # at confidence > 0.5 but flags one of the c1-c8 checks as
+        # False (e.g., grounding_satisfied=False). The architecture
+        # caught its own grounding gap and refused to ship — same
+        # semantic property as the calibration validator above.
+        # Surfaced concretely on the v1.7.3 hardening proof S4 run:
+        # TL emitted at 0.76 with grounding_satisfied=False; the gate
+        # rejected; ledger landed FAILED, masking the safety win.
+        if error_class == "self_critique_inconsistent":
             return "SAFE_ESCALATE"
 
     confidence = float(tl.get("confidence") or 0.0) if isinstance(tl, dict) else 0.0
