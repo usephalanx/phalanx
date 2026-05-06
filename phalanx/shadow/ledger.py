@@ -1,14 +1,41 @@
-"""ShadowLedger CRUD — thin async wrappers used by the runner + CLI."""
+"""ShadowLedger CRUD — thin async wrappers used by the runner + CLI.
+
+v1.7.3 append-mode — every shadow run for the same (repo,
+workflow_run_id) appends a new row with the next free
+attempt_number. Prior evidence is never overwritten.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phalanx.db.models import ShadowLedger
+
+
+async def _next_attempt_number(
+    session: AsyncSession,
+    *,
+    repo: str,
+    workflow_run_id: int,
+) -> int:
+    """SELECT MAX(attempt_number)+1 for (repo, workflow_run_id), or 1 if
+    no prior attempt exists. Race window is bounded by the unique
+    constraint — concurrent invocations serialize cleanly: one
+    succeeds, the other gets a unique-violation and would re-call this
+    helper. Callers handle the IntegrityError if needed.
+    """
+    result = await session.execute(
+        select(func.max(ShadowLedger.attempt_number)).where(
+            ShadowLedger.repo == repo,
+            ShadowLedger.workflow_run_id == workflow_run_id,
+        )
+    )
+    current_max = result.scalar_one_or_none()
+    return (current_max or 0) + 1
 
 
 async def create_pending(
@@ -20,23 +47,21 @@ async def create_pending(
     failing_commit_sha: str | None,
     phalanx_run_id: str | None = None,
 ) -> ShadowLedger:
-    """Insert a pending ledger row before the Phalanx run starts.
+    """Append a pending ledger row before the Phalanx run starts.
 
-    Idempotent on (repo, workflow_run_id) — returns the existing row if
-    we've already shadowed this workflow run.
+    v1.7.3 append-mode — always creates a new row. The attempt_number
+    is the next free integer for the (repo, workflow_run_id) pair:
+    first call → 1; every retry on the same workflow → 2, 3, …
+
+    Prior pending or completed rows are NEVER mutated.
     """
-    existing = await session.execute(
-        select(ShadowLedger).where(
-            ShadowLedger.repo == repo,
-            ShadowLedger.workflow_run_id == workflow_run_id,
-        )
+    next_attempt = await _next_attempt_number(
+        session, repo=repo, workflow_run_id=workflow_run_id,
     )
-    row = existing.scalar_one_or_none()
-    if row is not None:
-        return row
     row = ShadowLedger(
         repo=repo,
         workflow_run_id=workflow_run_id,
+        attempt_number=next_attempt,
         pr_number=pr_number,
         failing_commit_sha=failing_commit_sha,
         phalanx_run_id=phalanx_run_id,
@@ -47,6 +72,25 @@ async def create_pending(
     await session.commit()
     await session.refresh(row)
     return row
+
+
+async def list_attempts_for_workflow(
+    session: AsyncSession,
+    *,
+    repo: str,
+    workflow_run_id: int,
+) -> list[ShadowLedger]:
+    """Return every attempt against (repo, workflow_run_id), in
+    attempt-number order (oldest → newest)."""
+    result = await session.execute(
+        select(ShadowLedger)
+        .where(
+            ShadowLedger.repo == repo,
+            ShadowLedger.workflow_run_id == workflow_run_id,
+        )
+        .order_by(ShadowLedger.attempt_number.asc())
+    )
+    return list(result.scalars().all())
 
 
 async def update_with_results(
@@ -97,7 +141,48 @@ async def get(session: AsyncSession, ledger_id: str) -> ShadowLedger | None:
 async def list_all(
     session: AsyncSession, *, repo: str | None = None, limit: int = 500
 ) -> list[ShadowLedger]:
-    stmt = select(ShadowLedger).order_by(ShadowLedger.created_at.desc()).limit(limit)
+    """Return ledger rows newest-first. Includes ALL attempts (one row
+    per attempt). For per-workflow grouping see latest_per_workflow."""
+    stmt = (
+        select(ShadowLedger)
+        .order_by(
+            ShadowLedger.created_at.desc(),
+            ShadowLedger.attempt_number.desc(),
+        )
+        .limit(limit)
+    )
+    if repo:
+        stmt = stmt.where(ShadowLedger.repo == repo)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def latest_per_workflow(
+    session: AsyncSession, *, repo: str | None = None
+) -> list[ShadowLedger]:
+    """Return one row per (repo, workflow_run_id) tuple — the LATEST
+    attempt only. Used by metrics --by-workflow which dedups against
+    the unique workflow_run_id rather than counting every retry."""
+    # Subquery: max attempt_number per (repo, wfid).
+    sub = (
+        select(
+            ShadowLedger.repo.label("r"),
+            ShadowLedger.workflow_run_id.label("w"),
+            func.max(ShadowLedger.attempt_number).label("max_att"),
+        )
+        .group_by(ShadowLedger.repo, ShadowLedger.workflow_run_id)
+        .subquery()
+    )
+    stmt = (
+        select(ShadowLedger)
+        .join(
+            sub,
+            (ShadowLedger.repo == sub.c.r)
+            & (ShadowLedger.workflow_run_id == sub.c.w)
+            & (ShadowLedger.attempt_number == sub.c.max_att),
+        )
+        .order_by(ShadowLedger.created_at.desc())
+    )
     if repo:
         stmt = stmt.where(ShadowLedger.repo == repo)
     result = await session.execute(stmt)
@@ -114,6 +199,7 @@ def to_dict(row: ShadowLedger) -> dict[str, Any]:
         "id": row.id,
         "repo": row.repo,
         "workflow_run_id": row.workflow_run_id,
+        "attempt_number": row.attempt_number,
         "pr_number": row.pr_number,
         "failing_commit_sha": row.failing_commit_sha,
         "failure_class": row.failure_class,

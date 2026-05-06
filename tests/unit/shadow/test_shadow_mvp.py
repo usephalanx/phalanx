@@ -36,6 +36,7 @@ class TestLedgerToDict:
         row.id = "lid-1"
         row.repo = "encode/httpx"
         row.workflow_run_id = 12345
+        row.attempt_number = 1
         row.pr_number = 3147
         row.failing_commit_sha = "a" * 40
         row.failure_class = None

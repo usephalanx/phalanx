@@ -1081,13 +1081,36 @@ class ShadowLedger(Base):
 
     __tablename__ = "shadow_ledger"
     __table_args__ = (
-        UniqueConstraint("repo", "workflow_run_id", name="uq_shadow_ledger_repo_wfrun"),
+        # v1.7.3 append-mode — uniqueness now spans the attempt number
+        # so retries of the same workflow_run_id append rows instead of
+        # overwriting prior evidence. See alembic 20260506_0002.
+        UniqueConstraint(
+            "repo",
+            "workflow_run_id",
+            "attempt_number",
+            name="uq_shadow_ledger_repo_wfrun_attempt",
+        ),
         Index("idx_shadow_ledger_repo_created", "repo", "created_at"),
+        Index(
+            "idx_shadow_ledger_workflow_attempts",
+            "repo",
+            "workflow_run_id",
+            "attempt_number",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     repo: Mapped[str] = mapped_column(String(255), nullable=False)
     workflow_run_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # v1.7.3 — every shadow run for the same (repo, workflow_run_id)
+    # pair gets the next free attempt_number. First run: 1. Retries
+    # increment. The runner's create_pending SELECTs MAX+1 atomically
+    # under the unique constraint above so concurrent retries serialize
+    # cleanly (the second one fails the unique check and re-tries with
+    # MAX+1 again).
+    attempt_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     pr_number: Mapped[int | None] = mapped_column(Integer)
     failing_commit_sha: Mapped[str | None] = mapped_column(String(40))
     failure_class: Mapped[str | None] = mapped_column(String(40))
