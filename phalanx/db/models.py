@@ -155,7 +155,7 @@ class Run(Base):
             "'EXECUTING','VERIFYING','AWAITING_SHIP_APPROVAL',"
             "'READY_TO_MERGE','MERGED','RELEASE_PREP',"
             "'AWAITING_RELEASE_APPROVAL','SHIPPED',"
-            "'FAILED','BLOCKED','PAUSED','CANCELLED'"
+            "'FAILED','BLOCKED','PAUSED','CANCELLED','TIMED_OUT'"
             ")",
             name="ck_run_valid_status",
         ),
@@ -182,6 +182,13 @@ class Run(Base):
     # so the shadow runner can write it to ShadowLedger. Distinct from
     # ci_context.shadow_mode used by Challenger (which is per-agent).
     shadow_mode: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # v1.7.3 runtime hardening — top-level infra-vs-architecture
+    # classification. Set by commander watchdog or stuck-task detector
+    # when the run terminates abnormally. Examples:
+    #   FAILED_INFRA_TIMEOUT, FAILED_INFRA_WORKER_HANG,
+    #   FAILED_SANDBOX_SETUP, FAILED_TL, FAILED_ENGINEER.
+    # Read by the shadow runner to populate ledger.failure_class.
+    failure_class: Mapped[str | None] = mapped_column(String(40))
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
@@ -207,13 +214,18 @@ class Task(Base):
             "status IN ("
             "'PENDING','IN_PROGRESS','COMPLETED','BLOCKED',"
             "'WAITING_ON_DEP','NEEDS_CLARIFICATION',"
-            "'DEFERRED','CANCELLED','FAILED','ESCALATING'"
+            "'DEFERRED','CANCELLED','FAILED','ESCALATING','TIMED_OUT'"
             ")",
             name="ck_task_valid_status",
         ),
         CheckConstraint("sequence_num >= 0", name="ck_task_sequence"),
         CheckConstraint("failure_count >= 0", name="ck_task_failures"),
         Index("idx_tasks_run_status", "run_id", "status"),
+        Index(
+            "idx_tasks_heartbeat_inflight",
+            "last_heartbeat_at",
+            postgresql_where=Column("status").op("=")("IN_PROGRESS"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
@@ -245,6 +257,12 @@ class Task(Base):
     started_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
+    # v1.7.3 runtime hardening — heartbeat updated by long-running
+    # agents (TL per turn, Engineer per step, SRE per phase). Read by
+    # phalanx.maintenance.stuck_task_detector to flag tasks whose
+    # heartbeat is older than ttl_seconds (or per-role default).
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    ttl_seconds: Mapped[int | None] = mapped_column(Integer)
 
     # DAG / integration wiring fields
     epic_id: Mapped[str | None] = mapped_column(String(100))
