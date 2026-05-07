@@ -43,13 +43,25 @@ _settings = get_settings()
 # 600s is generous but not unbounded.
 _CMD_TIMEOUT_S = 600
 
-# Always install these regardless of what env_detector found. git is needed
-# by agents for diff / blame; ca-certificates + curl are handy bootstrap
-# utilities that many post-install scripts need.
+# Always install these regardless of what env_detector found.
+#   git              — agents need diff / blame
+#   ca-certificates  — TLS for pip / fetch from arbitrary registries
+#   curl             — handy for post-install scripts (e.g., uv installer)
+#   build-essential  — v1.7.3 post-Phase-2b NM4. python:3.12-slim has Python
+#                      headers (/usr/local/include/python3.12) but no gcc.
+#                      Repos with C extensions (aiohttp's _websocket/mask.c,
+#                      _http_parser.pyx, frozen_lists, similar) need gcc to
+#                      compile their wheels. F2 attempt #3 surfaced this:
+#                      `gcc: No such file or directory` at wheel-build time.
+#                      Bloat: ~250 MB on the image; acceptable for universal
+#                      coverage. Refinement (conditional install based on
+#                      pyproject.toml C-extension detection) is a separate
+#                      workstream.
 _BASELINE_APT_DEPS: tuple[str, ...] = (
     "git",
     "ca-certificates",
     "curl",
+    "build-essential",
 )
 
 
