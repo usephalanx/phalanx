@@ -782,6 +782,12 @@ async def _clone_workspace(
     fetching the exact sha and checking it out. GHA workflow run commits
     persist on GitHub even after their branch is removed, so this lets
     shadow mode replay historical failures.
+
+    v1.7.3 post-Phase-2b: also initialize git submodules best-effort.
+    Repos like aio-libs/aiohttp use submodules; `pip install .` fails
+    otherwise with 'Install submodules when building from git clone'.
+    Most repos don't have submodules — the call no-ops cleanly when
+    .gitmodules is absent.
     """
     if not github_token:
         raise RuntimeError("no github token available for clone")
@@ -796,6 +802,7 @@ async def _clone_workspace(
     url = f"https://x-access-token:{github_token}@github.com/{repo_full_name}.git"
     try:
         git.Repo.clone_from(url, base, branch=branch, depth=1)
+        _init_submodules_if_present(base)
         return str(base)
     except Exception as branch_exc:  # noqa: BLE001
         if not commit_sha:
@@ -816,7 +823,44 @@ async def _clone_workspace(
                 f"clone_failed_branch_and_sha: branch={branch_exc!s}; "
                 f"sha={sha_exc!s}"
             ) from sha_exc
+        _init_submodules_if_present(base)
         return str(base)
+
+
+def _init_submodules_if_present(workspace: Path) -> None:
+    """v1.7.3 post-Phase-2b — best-effort submodule init.
+
+    Surfaced by aio-libs/aiohttp F2 attempt #2: `pip install .` fails
+    on a fresh clone with 'Install submodules when building from git
+    clone'. The fix: run `git submodule update --init --recursive` on
+    the workspace post-clone.
+
+    No-op when .gitmodules is absent (most repos). Best-effort: a
+    submodule fetch failure is logged but does NOT take down the
+    clone. The downstream pip install will surface the same error if
+    submodules were truly required.
+    """
+    gitmodules = workspace / ".gitmodules"
+    if not gitmodules.exists():
+        return
+    import git  # noqa: PLC0415
+
+    try:
+        repo = git.Repo(workspace)
+        # --init: create if missing
+        # --recursive: nested submodules (rare but cheap)
+        # --depth=1: shallow fetch each submodule
+        repo.git.submodule("update", "--init", "--recursive", "--depth=1")
+        log.info(
+            "cifix_sre.setup.submodules_initialized",
+            workspace=str(workspace),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "cifix_sre.setup.submodule_init_failed",
+            workspace=str(workspace),
+            error=str(exc)[:200],
+        )
 
 
 def _resolve_github_token(integration: CIIntegration | None) -> str | None:
