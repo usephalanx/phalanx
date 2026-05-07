@@ -6,9 +6,9 @@
     "attempt_number": 1,
     "pr_number": 14423,
     "failing_commit_sha": "1953749a46b612f0c3390d282de2ba76d7e1a044",
-    "failure_class": null,
+    "failure_class": "FAILED_SANDBOX_SETUP",
     "phalanx_run_id": "10d961cd-cb2a-4af6-be89-ec9b45d69138",
-    "phalanx_verdict": "SAFE_ESCALATE",
+    "phalanx_verdict": "FAILED",
     "phalanx_confidence": null,
     "phalanx_proposed_patch": null,
     "phalanx_root_cause": null,
@@ -20,9 +20,9 @@
     "ground_truth_status": "pending",
     "maintainer_fix_commit_sha": null,
     "maintainer_actual_patch": null,
-    "notes": "run_status=FAILED; tl_review_decision=None",
+    "notes": "run_status=FAILED; tl_review_decision=None | retroactive: reclassified SAFE_ESCALATE\u2192FAILED + failure_class=FAILED_SANDBOX_SETUP per v1.7.3-classifier-v4 (SRE setup task FAILED with sandbox_provisioning_failed; TL never ran; prior classifier defaulted to SAFE_ESCALATE via confidence==0.0 fallback)",
     "created_at": "2026-05-06T22:10:18.166691+00:00",
-    "updated_at": "2026-05-06T22:11:04.062970+00:00"
+    "updated_at": "2026-05-07T02:55:05.972482+00:00"
   },
   {
     "id": "34d44e14-0cca-4de2-9138-c3d5b46c596a",
@@ -83,9 +83,9 @@
     "attempt_number": 1,
     "pr_number": 5123,
     "failing_commit_sha": "33724a24ca32ebe6778605a9be3b7f15eb1e68ce",
-    "failure_class": null,
+    "failure_class": "FAILED_SANDBOX_SETUP",
     "phalanx_run_id": "e430f884-b7e9-4b6c-a259-be89725fcc8a",
-    "phalanx_verdict": "SAFE_ESCALATE",
+    "phalanx_verdict": "FAILED",
     "phalanx_confidence": null,
     "phalanx_proposed_patch": null,
     "phalanx_root_cause": null,
@@ -97,9 +97,9 @@
     "ground_truth_status": "pending",
     "maintainer_fix_commit_sha": null,
     "maintainer_actual_patch": null,
-    "notes": "run_status=FAILED; tl_review_decision=None",
+    "notes": "run_status=FAILED; tl_review_decision=None | retroactive: reclassified SAFE_ESCALATE\u2192FAILED + failure_class=FAILED_SANDBOX_SETUP per v1.7.3-classifier-v4 (SRE setup task FAILED with sandbox_provisioning_failed; TL never ran; prior classifier defaulted to SAFE_ESCALATE via confidence==0.0 fallback)",
     "created_at": "2026-05-06T21:56:11.901795+00:00",
-    "updated_at": "2026-05-06T21:56:44.393410+00:00"
+    "updated_at": "2026-05-07T02:55:05.972482+00:00"
   },
   {
     "id": "9d7a60b2-e453-4d06-a895-2bc6563be323",
