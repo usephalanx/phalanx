@@ -87,6 +87,14 @@ class EnvSpec:
     """Human-readable observations (e.g., 'found legacy setup.py — treating
     as modern package'). Surfaced in SRE's Task.output."""
 
+    skipped_guard_commands: list[str] = field(default_factory=list)
+    """v1.7.3 post-Phase-2a — workflow `run:` steps the Tier-0 extractor
+    classified as CI-only guards (e.g., `if [ "$GITHUB_BASE_REF" != "main" ]
+    ; then exit 1; fi`) and DELIBERATELY did not include in install_commands.
+    Kept as evidence so SRE Task.output can show what was suppressed and
+    why; aggregate metrics can also detect repos with high guard-command
+    counts as a workflow-design signal."""
+
     def to_json(self) -> dict:
         """Serializable shape for storage in Task.output."""
         return {
@@ -99,6 +107,7 @@ class EnvSpec:
             "tool_versions": dict(self.tool_versions),
             "detected_from": list(self.detected_from),
             "notes": list(self.notes),
+            "skipped_guard_commands": list(self.skipped_guard_commands),
         }
 
 

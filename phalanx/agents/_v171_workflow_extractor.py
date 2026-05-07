@@ -44,6 +44,11 @@ class ExtractedRecipe:
     `commands` are executed in order in the SRE setup container.
     `unsupported_steps` lists steps we couldn't render (skipped); if
     non-empty, downstream may decide the recipe is partial.
+    `skipped_guard_commands` (v1.7.3 post-Phase-2a) lists workflow
+    `run:` steps that look like CI-only guards (PR-target checks,
+    GITHUB_BASE_REF gates, `exit 1` traps that depend on GHA env
+    variables) — these are deliberately NOT executed in the sandbox
+    and are kept here as evidence for downstream observability.
     """
 
     workflow_file: str        # repo-relative path (e.g. ".github/workflows/test.yml")
@@ -52,6 +57,7 @@ class ExtractedRecipe:
     runs_on: str              # informational
     commands: list[str] = field(default_factory=list)
     unsupported_steps: list[str] = field(default_factory=list)
+    skipped_guard_commands: list[str] = field(default_factory=list)
 
 
 # ─── Supported `uses:` action handlers ───────────────────────────────────────
@@ -257,6 +263,86 @@ def _is_test_runner_command(cmd: str) -> bool:
     return first in _TEST_RUNNER_TOKENS
 
 
+# ─── Workflow-guard detection (v1.7.3 post-Phase-2a) ────────────────────────
+#
+# Some workflow `run:` steps are CI-only guards that have no business
+# running inside our sandbox. Two real-world examples that broke Phase 2a:
+#
+#   psf/black (lint workflow):
+#       if [ "$GITHUB_BASE_REF" != "main" ]; then
+#           echo "::error::PR targeting '$GITHUB_BASE_REF', please refile..."
+#           && exit 1
+#       fi
+#
+#   sphinx-doc/sphinx + others: similar GHA-event gates that exit 1
+#
+# In a clean sandbox, $GITHUB_BASE_REF is unset, so the gate fires and
+# the SRE provisioner reports `install_command_failed`. The fix is to
+# detect these patterns at extraction time and skip them.
+#
+# Two signals:
+#   1. The command references at least one GHA-only env var
+#   2. AND the command attempts to terminate execution (exit 1 / 0)
+# Both required — neither alone is conclusive (`exit 0` at end of normal
+# install scripts; bare `$GITHUB_TOKEN` references during real installs).
+#
+# A secondary signal — `echo "::error::..."` is a GHA workflow command
+# that's only meaningful in the GHA runner. Combined with `exit`, it's
+# unambiguously a workflow-level guard.
+
+_GH_CI_ONLY_ENV_VARS: tuple[str, ...] = (
+    "GITHUB_BASE_REF",
+    "GITHUB_HEAD_REF",
+    "GITHUB_REF_NAME",
+    "GITHUB_REF_TYPE",
+    "GITHUB_EVENT_NAME",
+    "GITHUB_ACTIONS",
+    # Note: NOT including GITHUB_TOKEN, GITHUB_REF, GITHUB_REPOSITORY
+    # because real install scripts legitimately use those (e.g.,
+    # piped install scripts that fetch from a private repo using
+    # GITHUB_TOKEN).
+)
+
+_EXIT_NONZERO_RE = re.compile(r"\bexit\s+\d+\b")
+_GH_ANNOTATION_RE = re.compile(r'echo\s+"?::(error|warning|notice)::')
+
+
+def _is_workflow_guard_command(cmd: str) -> bool:
+    """True iff `cmd` is a GHA-runner-only guard. Conservative: requires
+    BOTH a GHA-only env var reference AND an explicit exit, OR a GHA
+    workflow-annotation echo combined with an exit.
+
+    Examples that match (return True):
+      - `if [ "$GITHUB_BASE_REF" != "main" ]; then exit 1; fi`
+      - `[[ "$GITHUB_HEAD_REF" =~ ^bot/.* ]] || exit 1`
+      - `echo "::error::Wrong target"; exit 1`
+
+    Examples that don't match (return False):
+      - `pip install -e .`          (no exit, no GHA var)
+      - `python -c 'import x'`      (no exit, no GHA var)
+      - `ls $GITHUB_WORKSPACE`      (GHA var but no exit; also a path
+                                     that exists in sandbox)
+      - `[[ -f /tmp/x ]] || exit 1` (exit but no GHA var)
+    """
+    if not cmd or not isinstance(cmd, str):
+        return False
+
+    has_exit = bool(_EXIT_NONZERO_RE.search(cmd))
+    if not has_exit:
+        return False
+
+    refs_ci_var = any(
+        f"${var}" in cmd or f"${{{var}}}" in cmd for var in _GH_CI_ONLY_ENV_VARS
+    )
+    if refs_ci_var:
+        return True
+
+    if _GH_ANNOTATION_RE.search(cmd):
+        return True
+
+    return False
+
+
 def _render_run_step(run_value: str | list, env: dict | None = None) -> str | None:
     """Render a `run:` step's shell. Returns None if the step contains
     unresolved template literals we can't expand (e.g., `${{ matrix.x }}`)
@@ -359,6 +445,7 @@ def extract_recipe_from_workflow(
 
     commands: list[str] = []
     unsupported: list[str] = []
+    skipped_guard_commands: list[str] = []
 
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
@@ -403,6 +490,21 @@ def extract_recipe_from_workflow(
                 # Empty rendered = test runner that we explicitly skipped
                 # (setup recipe never runs the failing test command itself).
                 continue
+            # v1.7.3 post-Phase-2a — workflow-guard detector. Some
+            # `run:` steps are CI-only gates (PR-target checks,
+            # GITHUB_BASE_REF guards, exit traps that depend on GHA
+            # env vars). Running them in our sandbox produces false
+            # install_command_failed errors. Track as evidence and
+            # skip — never weaken safety, never fake the env vars.
+            if _is_workflow_guard_command(rendered):
+                skipped_guard_commands.append(rendered)
+                log.info(
+                    "v171.workflow.guard_command_skipped",
+                    file=str(workflow_file),
+                    job_key=job_key,
+                    cmd_preview=rendered[:120],
+                )
+                continue
             commands.append(rendered)
 
     if not commands:
@@ -422,6 +524,7 @@ def extract_recipe_from_workflow(
         runs_on=runs_on,
         commands=commands,
         unsupported_steps=unsupported,
+        skipped_guard_commands=skipped_guard_commands,
     )
 
 

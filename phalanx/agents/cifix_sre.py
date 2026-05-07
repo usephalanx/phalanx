@@ -275,6 +275,7 @@ class CIFixSREAgent(BaseAgent):
                     workspace_path=workspace_path,
                     commands=tier0.commands,
                     source_label=f"workflow:{tier0.workflow_file}::{tier0.job_key}",
+                    skipped_guard_commands=list(tier0.skipped_guard_commands),
                 ),
                 {"tier": "0", "source": tier0.workflow_file},
             )
@@ -295,16 +296,36 @@ class CIFixSREAgent(BaseAgent):
         )
 
     def _env_spec_from_commands(
-        self, *, workspace_path: str, commands: list[str], source_label: str
+        self,
+        *,
+        workspace_path: str,
+        commands: list[str],
+        source_label: str,
+        skipped_guard_commands: list[str] | None = None,
     ) -> "EnvSpec":
-        """Build an EnvSpec around commands rendered from Tier 0."""
+        """Build an EnvSpec around commands rendered from Tier 0.
+
+        v1.7.3 post-Phase-2a — `skipped_guard_commands` carries any
+        workflow `run:` steps the extractor classified as CI-only
+        guards. Preserved on EnvSpec so SRE Task.output records what
+        was suppressed (visible in the ledger / logs); also surfaced
+        as a note for human review.
+        """
+        guards = skipped_guard_commands or []
+        notes = ["v1.7.1 Tier 0 (workflow YAML extraction)"]
+        if guards:
+            notes.append(
+                f"v1.7.3 — skipped {len(guards)} CI-only guard "
+                f"command(s) (GHA-runner-only gates)"
+            )
         return EnvSpec(
             stack="python",
             base_image="python:3.12-slim",
             workspace_path=str(workspace_path),
             install_commands=list(commands),
             detected_from=[source_label],
-            notes=["v1.7.1 Tier 0 (workflow YAML extraction)"],
+            notes=notes,
+            skipped_guard_commands=guards,
         )
 
     def _cache_dir_path(self) -> str:
