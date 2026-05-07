@@ -58,6 +58,12 @@ class ExtractedRecipe:
     commands: list[str] = field(default_factory=list)
     unsupported_steps: list[str] = field(default_factory=list)
     skipped_guard_commands: list[str] = field(default_factory=list)
+    skipped_ci_checks: list[str] = field(default_factory=list)
+    """v1.7.3 post-Phase-2b — `run:` steps the extractor classified as
+    state-assertion CI checks (`git diff --exit-code`, `git status
+    --porcelain` patterns) and DELIBERATELY did not include in
+    install_commands. Same evidence-preservation rationale as
+    skipped_guard_commands."""
 
 
 # ─── Supported `uses:` action handlers ───────────────────────────────────────
@@ -310,32 +316,52 @@ _GH_CI_ONLY_ENV_VARS: tuple[str, ...] = (
     # GITHUB_TOKEN).
 )
 
+# v1.7.3 post-Phase-2b — exit-equivalent matchers.
+# - `exit N` — canonical
+# - `return N` — function-scope early exit; same effect inside `if/then/fi`
+# - `false`   — shell builtin returning 1; idiomatic in pipefail blocks
+#               (urllib3 F1: `if ! check; then echo ...; false; fi`)
 _EXIT_NONZERO_RE = re.compile(r"\bexit\s+\d+\b")
+_RETURN_NONZERO_RE = re.compile(r"\breturn\s+\d+\b")
+_FALSE_BUILTIN_RE = re.compile(r"\bfalse\b")
 _GH_ANNOTATION_RE = re.compile(r'echo\s+"?::(error|warning|notice)::')
+
+
+def _has_exit_equivalent(cmd: str) -> bool:
+    """Any of `exit N`, `return N`, or bare `false` in the command body."""
+    return bool(
+        _EXIT_NONZERO_RE.search(cmd)
+        or _RETURN_NONZERO_RE.search(cmd)
+        or _FALSE_BUILTIN_RE.search(cmd)
+    )
 
 
 def _is_workflow_guard_command(cmd: str) -> bool:
     """True iff `cmd` is a GHA-runner-only guard. Conservative: requires
-    BOTH a GHA-only env var reference AND an explicit exit, OR a GHA
-    workflow-annotation echo combined with an exit.
+    BOTH a GHA-only env var reference AND an explicit exit-equivalent
+    (`exit N`, `return N`, or `false`), OR a GHA workflow-annotation
+    echo combined with an exit-equivalent.
 
     Examples that match (return True):
       - `if [ "$GITHUB_BASE_REF" != "main" ]; then exit 1; fi`
       - `[[ "$GITHUB_HEAD_REF" =~ ^bot/.* ]] || exit 1`
       - `echo "::error::Wrong target"; exit 1`
+      - `if ! check --compare-with origin/$GITHUB_BASE_REF; then false; fi`
+                                                              ^ urllib3 F1 pattern
 
     Examples that don't match (return False):
-      - `pip install -e .`          (no exit, no GHA var)
-      - `python -c 'import x'`      (no exit, no GHA var)
-      - `ls $GITHUB_WORKSPACE`      (GHA var but no exit; also a path
-                                     that exists in sandbox)
-      - `[[ -f /tmp/x ]] || exit 1` (exit but no GHA var)
+      - `pip install -e .`              (no exit, no GHA var)
+      - `python -c 'import x'`          (no exit, no GHA var)
+      - `ls $GITHUB_WORKSPACE`          (GHA var but no exit; also a
+                                         path that exists in sandbox)
+      - `[[ -f /tmp/x ]] || exit 1`     (exit but no GHA var)
+      - `cmd_a || false`                (false but no GHA var)
+      - `pip install x; pip install y`  (no exit, no GHA var)
     """
     if not cmd or not isinstance(cmd, str):
         return False
 
-    has_exit = bool(_EXIT_NONZERO_RE.search(cmd))
-    if not has_exit:
+    if not _has_exit_equivalent(cmd):
         return False
 
     refs_ci_var = any(
@@ -348,6 +374,61 @@ def _is_workflow_guard_command(cmd: str) -> bool:
         return True
 
     return False
+
+
+# v1.7.3 post-Phase-2b — CI-check (state-assertion) detection.
+# Some workflow `run:` steps are state assertions, not install steps:
+#
+#   aio-libs/aiohttp F2:
+#     set -eEuo pipefail
+#     make sync-direct-runtime-deps
+#     git diff --exit-code -- requirements/runtime-deps.in
+#
+# The intent: regenerate the deps file, then assert nothing changed.
+# If the maintainer forgot to commit the regenerated file, CI fails.
+# This is a CI verification step, not a build step. Running it during
+# our sandbox setup makes setup fail on diff = install_command_failed,
+# masking the real bug behind an infra-style failure.
+#
+# Conservative pattern matches — needs to be a clear state-assertion
+# idiom, not a casual git diff invocation. Each pattern below is keyed
+# to "this command exits non-zero on a non-empty diff/status".
+
+_GIT_STATE_ASSERT_PATTERNS: tuple[re.Pattern, ...] = (
+    # `git diff --exit-code` — fails on any difference
+    re.compile(r"\bgit\s+diff\s+(?:[\w\-./]+\s+)*?--exit-code\b"),
+    re.compile(r"\bgit\s+--no-pager\s+diff\s+(?:[\w\-./]+\s+)*?--exit-code\b"),
+    # `git status --porcelain` piped to a non-empty test — common
+    # alternative to --exit-code
+    re.compile(
+        r"\bgit\s+status\s+--porcelain\b[^\n]*\|\s*(?:wc\s+-l|grep|test)"
+    ),
+    # `[ -z "$(git status --porcelain)" ]` — bash idiom for "empty diff"
+    re.compile(
+        r"\[\s+-z\s+\"?\$\(\s*git\s+status\s+--porcelain"
+    ),
+)
+
+
+def _is_ci_check_command(cmd: str) -> bool:
+    """True iff `cmd` is a state-assertion CI check that shouldn't run
+    during sandbox setup.
+
+    Examples that match (return True):
+      - `git diff --exit-code -- requirements/runtime-deps.in`  (F2)
+      - `make foo && git diff --exit-code`
+      - `git status --porcelain | wc -l`
+      - `[ -z "$(git status --porcelain)" ]`
+
+    Examples that don't match (return False):
+      - `git diff HEAD~1`            (no --exit-code)
+      - `git diff > /tmp/diff.patch` (output, not assertion)
+      - `git status`                 (no porcelain pipe)
+      - `pip install -e .`           (not git)
+    """
+    if not cmd or not isinstance(cmd, str):
+        return False
+    return any(p.search(cmd) for p in _GIT_STATE_ASSERT_PATTERNS)
 
 
 def _render_run_step(run_value: str | list, env: dict | None = None) -> str | None:
@@ -453,6 +534,7 @@ def extract_recipe_from_workflow(
     commands: list[str] = []
     unsupported: list[str] = []
     skipped_guard_commands: list[str] = []
+    skipped_ci_checks: list[str] = []
 
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
@@ -497,6 +579,9 @@ def extract_recipe_from_workflow(
                 if _is_workflow_guard_command(cmd):
                     skipped_guard_commands.append(cmd)
                     continue
+                if _is_ci_check_command(cmd):
+                    skipped_ci_checks.append(cmd)
+                    continue
                 commands.append(cmd)
         elif "run" in step:
             rendered = _render_run_step(
@@ -528,6 +613,15 @@ def extract_recipe_from_workflow(
                     cmd_preview=rendered[:120],
                 )
                 continue
+            if _is_ci_check_command(rendered):
+                skipped_ci_checks.append(rendered)
+                log.info(
+                    "v171.workflow.ci_check_skipped",
+                    file=str(workflow_file),
+                    job_key=job_key,
+                    cmd_preview=rendered[:120],
+                )
+                continue
             commands.append(rendered)
 
     if not commands:
@@ -548,6 +642,7 @@ def extract_recipe_from_workflow(
         commands=commands,
         unsupported_steps=unsupported,
         skipped_guard_commands=skipped_guard_commands,
+        skipped_ci_checks=skipped_ci_checks,
     )
 
 

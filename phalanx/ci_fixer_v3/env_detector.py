@@ -95,6 +95,13 @@ class EnvSpec:
     why; aggregate metrics can also detect repos with high guard-command
     counts as a workflow-design signal."""
 
+    skipped_ci_checks: list[str] = field(default_factory=list)
+    """v1.7.3 post-Phase-2b — workflow `run:` steps classified as
+    state-assertion CI checks (`git diff --exit-code`,
+    `git status --porcelain` patterns) and DELIBERATELY skipped
+    during sandbox setup. Same evidence-preservation rationale as
+    skipped_guard_commands."""
+
     def to_json(self) -> dict:
         """Serializable shape for storage in Task.output."""
         return {
@@ -108,6 +115,7 @@ class EnvSpec:
             "detected_from": list(self.detected_from),
             "notes": list(self.notes),
             "skipped_guard_commands": list(self.skipped_guard_commands),
+            "skipped_ci_checks": list(self.skipped_ci_checks),
         }
 
 

@@ -276,6 +276,7 @@ class CIFixSREAgent(BaseAgent):
                     commands=tier0.commands,
                     source_label=f"workflow:{tier0.workflow_file}::{tier0.job_key}",
                     skipped_guard_commands=list(tier0.skipped_guard_commands),
+                    skipped_ci_checks=list(tier0.skipped_ci_checks),
                 ),
                 {"tier": "0", "source": tier0.workflow_file},
             )
@@ -302,6 +303,7 @@ class CIFixSREAgent(BaseAgent):
         commands: list[str],
         source_label: str,
         skipped_guard_commands: list[str] | None = None,
+        skipped_ci_checks: list[str] | None = None,
     ) -> "EnvSpec":
         """Build an EnvSpec around commands rendered from Tier 0.
 
@@ -310,13 +312,24 @@ class CIFixSREAgent(BaseAgent):
         guards. Preserved on EnvSpec so SRE Task.output records what
         was suppressed (visible in the ledger / logs); also surfaced
         as a note for human review.
+
+        v1.7.3 post-Phase-2b — `skipped_ci_checks` carries state-
+        assertion steps (`git diff --exit-code` etc.) suppressed for
+        the same reason.
         """
         guards = skipped_guard_commands or []
+        ci_checks = skipped_ci_checks or []
         notes = ["v1.7.1 Tier 0 (workflow YAML extraction)"]
         if guards:
             notes.append(
                 f"v1.7.3 — skipped {len(guards)} CI-only guard "
                 f"command(s) (GHA-runner-only gates)"
+            )
+        if ci_checks:
+            notes.append(
+                f"v1.7.3 — skipped {len(ci_checks)} CI-check "
+                f"command(s) (state assertions: git diff --exit-code, "
+                f"git status --porcelain patterns)"
             )
         return EnvSpec(
             stack="python",
@@ -326,6 +339,7 @@ class CIFixSREAgent(BaseAgent):
             detected_from=[source_label],
             notes=notes,
             skipped_guard_commands=guards,
+            skipped_ci_checks=ci_checks,
         )
 
     def _cache_dir_path(self) -> str:

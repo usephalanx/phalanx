@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 
 from phalanx.agents._v171_workflow_extractor import (
+    _has_exit_equivalent,
+    _is_ci_check_command,
     _is_workflow_guard_command,
     extract_recipe_from_workflow,
 )
@@ -261,6 +263,18 @@ class TestHandlerOutputFilter:
     verify-mode command (the pre-commit/action handler did this until
     E2 attempt #2's evidence surfaced it)."""
 
+    def test_urllib3_towncrier_guard_with_false(self, workspace):
+        """Phase 2b F1 — urllib3's towncrier guard ends in `false`,
+        not `exit 1`. Detector now recognizes false / return N as
+        exit-equivalents alongside literal `exit N`."""
+        cmd = (
+            "if ! pipx run towncrier check --compare-with origin/$GITHUB_BASE_REF; then\n"
+            '    echo "Please see https://example.com/guidance"\n'
+            "    false\n"
+            "fi"
+        )
+        assert _is_workflow_guard_command(cmd) is True
+
     def test_pre_commit_action_only_emits_install_during_setup(self, workspace):
         _write_workflow(
             workspace,
@@ -281,3 +295,162 @@ class TestHandlerOutputFilter:
         # pip install pre-commit is install; pre-commit run is verify
         assert "pip install pre-commit" in recipe.commands
         assert not any("pre-commit run" in c for c in recipe.commands)
+
+
+# ── NM1: exit-equivalent matchers (false, return N) ──────────────────
+
+
+class TestExitEquivalents:
+    """v1.7.3 post-Phase-2b — `false` and `return N` count as exits
+    inside guard contexts. Surfaced by Phase 2b F1 (urllib3): a guard
+    that ended in `false` (not `exit 1`) bypassed the detector."""
+
+    def test_has_exit_equivalent_recognizes_exit_n(self):
+        assert _has_exit_equivalent("exit 1") is True
+        assert _has_exit_equivalent("exit 0") is True
+        assert _has_exit_equivalent("exit 137") is True
+
+    def test_has_exit_equivalent_recognizes_false(self):
+        assert _has_exit_equivalent("false") is True
+        assert _has_exit_equivalent("cmd; false; fi") is True
+
+    def test_has_exit_equivalent_recognizes_return_n(self):
+        assert _has_exit_equivalent("return 1") is True
+        assert _has_exit_equivalent("return 0") is True
+
+    def test_has_exit_equivalent_word_boundary_on_false(self):
+        # `false` substring in identifier shouldn't match — e.g.,
+        # Python `False`, `false_positive`, `falsethorn` etc.
+        # We rely on \bfalse\b — uppercase F doesn't match.
+        assert _has_exit_equivalent("assertEquals(False, x)") is False
+        # Lowercase keyword as identifier inside larger word is also
+        # word-bounded out — `falsethorn` doesn't match `\bfalse\b`
+        # in the boundary sense (no boundary between `false` and `thorn`).
+        assert _has_exit_equivalent("falsethorn = 1") is False
+
+    def test_has_exit_equivalent_no_match_in_normal_install(self):
+        assert _has_exit_equivalent("pip install -e .") is False
+        assert _has_exit_equivalent("python -m pytest") is False
+
+    def test_guard_with_false_inside_gha_var_block_matches(self):
+        """The literal F1 shape from urllib3 — should now classify as guard."""
+        cmd = (
+            "if [ \"$GITHUB_BASE_REF\" != \"main\" ]; then\n"
+            "    echo 'wrong target'; false\nfi"
+        )
+        assert _is_workflow_guard_command(cmd) is True
+
+    def test_guard_with_return_inside_gha_var_block_matches(self):
+        cmd = (
+            'if [ "$GITHUB_HEAD_REF" = "wip" ]; then return 1; fi'
+        )
+        assert _is_workflow_guard_command(cmd) is True
+
+    def test_bare_false_without_gha_var_is_not_guard(self):
+        """Defensive: install scripts can use `false` legitimately
+        in conditional pipelines. Without a GHA-only env var, we
+        don't classify."""
+        assert _is_workflow_guard_command("cmd_a || false") is False
+        assert _is_workflow_guard_command("[ -f x ] && true || false") is False
+
+
+# ── NM2: ci_check (state-assertion) detector ─────────────────────────
+
+
+class TestCIChecks:
+    """v1.7.3 post-Phase-2b — `git diff --exit-code` and `git status
+    --porcelain` patterns are state assertions, not install steps.
+    Surfaced by Phase 2b F2 (aio-libs/aiohttp)."""
+
+    def test_aiohttp_git_diff_exit_code(self):
+        """Phase 2b F2 — the literal aiohttp shape."""
+        cmd = (
+            "set -eEuo pipefail\n"
+            "make sync-direct-runtime-deps\n"
+            "git diff --exit-code -- requirements/runtime-deps.in"
+        )
+        assert _is_ci_check_command(cmd) is True
+
+    def test_bare_git_diff_exit_code(self):
+        assert _is_ci_check_command("git diff --exit-code") is True
+
+    def test_git_diff_exit_code_with_paths(self):
+        assert _is_ci_check_command("git diff --exit-code -- src/") is True
+        assert _is_ci_check_command("git diff HEAD --exit-code") is True
+
+    def test_no_pager_git_diff_variant(self):
+        assert (
+            _is_ci_check_command("git --no-pager diff --exit-code")
+            is True
+        )
+
+    def test_git_status_porcelain_pipe_to_wc(self):
+        cmd = "git status --porcelain | wc -l"
+        assert _is_ci_check_command(cmd) is True
+
+    def test_git_status_porcelain_pipe_to_test(self):
+        cmd = "git status --porcelain | grep -q '^M'"
+        assert _is_ci_check_command(cmd) is True
+
+    def test_bash_empty_status_check(self):
+        """`[ -z "$(git status --porcelain)" ]` empty-diff idiom."""
+        assert (
+            _is_ci_check_command(
+                '[ -z "$(git status --porcelain)" ] || exit 1'
+            )
+            is True
+        )
+
+    def test_plain_git_diff_is_not_ci_check(self):
+        """Without --exit-code, `git diff` is just informational."""
+        assert _is_ci_check_command("git diff HEAD~1") is False
+        assert _is_ci_check_command("git diff > /tmp/diff.patch") is False
+
+    def test_plain_git_status_is_not_ci_check(self):
+        assert _is_ci_check_command("git status") is False
+
+    def test_install_command_not_ci_check(self):
+        assert _is_ci_check_command("pip install -e .") is False
+
+    def test_recipe_has_skipped_ci_checks_field(self):
+        from phalanx.agents._v171_workflow_extractor import ExtractedRecipe
+
+        recipe = ExtractedRecipe(
+            workflow_file="x", job_key="y", job_name="y", runs_on="ubuntu-latest",
+        )
+        assert recipe.skipped_ci_checks == []
+
+    def test_extract_recipe_skips_ci_check_step(self, workspace):
+        """End-to-end: workflow with a make+diff CI-check step. The
+        check is pulled out of install_commands and into
+        skipped_ci_checks. Real install commands stay."""
+        wf = _write_workflow(
+            workspace,
+            "ci.yml",
+            """\
+            name: ci
+            on: pull_request
+            jobs:
+              ci:
+                name: ci
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: actions/checkout@v4
+                  - run: pip install -e .
+                  - name: Verify deps in sync
+                    run: |
+                      set -eEuo pipefail
+                      make sync-direct-runtime-deps
+                      git diff --exit-code -- requirements/runtime-deps.in
+            """,
+        )
+        recipe = extract_recipe_from_workflow(wf, "ci")
+        assert recipe is not None
+        # Real install present
+        assert any("pip install" in c for c in recipe.commands)
+        # CI-check pulled out
+        assert not any(
+            "git diff --exit-code" in c for c in recipe.commands
+        )
+        assert len(recipe.skipped_ci_checks) == 1
+        assert "git diff --exit-code" in recipe.skipped_ci_checks[0]
