@@ -109,7 +109,13 @@ async def update_with_results(
     failure_class: str | None = None,
     notes: str | None = None,
 ) -> ShadowLedger:
-    """Update a pending row with terminal-state results."""
+    """Update a pending row with terminal-state results.
+
+    `failure_class` is written explicitly when supplied — including
+    the empty-string case if a caller wants to clear an earlier value.
+    `None` leaves the column untouched (preserves any value the
+    runtime hardening's stuck-task detector wrote upstream).
+    """
     row = await get(session, ledger_id)
     if row is None:
         raise ValueError(f"shadow_ledger row {ledger_id} not found")

@@ -301,7 +301,35 @@ async def _read_terminal_evidence(run_id: str) -> dict[str, Any]:
     }
 
 
-def _classify_verdict(*, run_status: str, tl: dict, eng: dict) -> str:
+def _detect_sre_setup_failure(tasks: list) -> bool:
+    """True iff the SRE setup task in the run FAILED with a
+    sandbox_provisioning_failed error.
+
+    Surfaced on Phase 2a: psf/black + sphinx-doc/sphinx ran a workflow
+    command that exit'd 1 in a clean sandbox (e.g., a `GITHUB_BASE_REF`
+    guard), or a uv install failed during provisioning. In both cases
+    the SRE setup task FAILED before TL even started — but the prior
+    classifier saw an empty TL output and defaulted to SAFE_ESCALATE
+    via the confidence==0.0 branch, masking real infra failures.
+    """
+    if not tasks:
+        return False
+    for t in tasks:
+        role = getattr(t, "agent_role", None)
+        if role not in {"cifix_sre_setup", "cifix_sre"}:
+            continue
+        status = getattr(t, "status", None)
+        if status != "FAILED":
+            continue
+        err = getattr(t, "error", None) or ""
+        if isinstance(err, str) and "sandbox_provisioning_failed" in err:
+            return True
+    return False
+
+
+def _classify_verdict(
+    *, run_status: str, tl: dict, eng: dict, tasks: list | None = None,
+) -> str:
     """SHIPPED_PROPOSED / SAFE_ESCALATE / FAILED.
 
     The classifier maps each terminal run state to one of three outcomes
@@ -321,15 +349,28 @@ def _classify_verdict(*, run_status: str, tl: dict, eng: dict) -> str:
               evidence gap and refused to ship.
         All four sub-cases share the same semantic property: the
         architecture declined to ship rather than guessed.
-      - FAILED: anything else (genuine pipeline failure, sandbox crash,
-        Celery hang). Note: runtime hardening also writes
-        runs.failure_class for infra-specific reasons
-        (FAILED_INFRA_TIMEOUT / FAILED_INFRA_WORKER_HANG / etc.); the
-        runner records that on the ledger row separately so aggregate
-        metrics can split signal from infra noise.
+      - FAILED: anything else. Subdivided by `failure_class` on the
+        ledger row (separately resolved by _resolve_failure_class):
+          - FAILED_SANDBOX_SETUP: SRE setup couldn't provision the
+            container (added v1.7.3 post-Phase-2a — surfaced E2 + E5)
+          - FAILED_INFRA_TIMEOUT / FAILED_INFRA_WORKER_HANG: written
+            by the v1.7.3 commander watchdog + stuck-task detector
+          - NULL: genuine architecture/code failure beyond infra
+
+    v1.7.3 post-Phase-2a addition: when `tasks` is supplied AND the
+    SRE setup task FAILED with sandbox_provisioning_failed, classify as
+    FAILED. Without this branch, sandbox-setup failures with no TL
+    output were mis-classified as SAFE_ESCALATE via the
+    confidence==0.0 fallback below.
     """
     if eng.get("shadow_mode") is True and eng.get("shadow_verdict") == "SHIPPED_PROPOSED":
         return "SHIPPED_PROPOSED"
+
+    # NEW v1.7.3 — infra failure detected from task evidence.
+    # SRE-setup failure means TL never ran, so the empty-TL check
+    # below would otherwise default to SAFE_ESCALATE.
+    if _detect_sre_setup_failure(tasks or []):
+        return "FAILED"
 
     if isinstance(tl, dict):
         error_class = tl.get("error_class")
@@ -355,6 +396,28 @@ def _classify_verdict(*, run_status: str, tl: dict, eng: dict) -> str:
     if review_decision == "ESCALATE" or confidence == 0.0:
         return "SAFE_ESCALATE"
     return "FAILED"
+
+
+async def _resolve_failure_class(run_id: str, tasks: list) -> str | None:
+    """Resolve the ledger row's failure_class. Read order:
+      1. runs.failure_class (set by v1.7.3 hardening commander/detector
+         for FAILED_INFRA_TIMEOUT / FAILED_INFRA_WORKER_HANG).
+      2. SRE setup task evidence → FAILED_SANDBOX_SETUP.
+      3. None (architecture failure or healthy run).
+    """
+    async with get_db() as session:
+        result = await session.execute(
+            select(Run.failure_class).where(Run.id == run_id)
+        )
+        row = result.one_or_none()
+    fc_from_run = row[0] if row else None
+    if fc_from_run:
+        return fc_from_run
+    if _detect_sre_setup_failure(tasks):
+        from phalanx.runtime.infra_verdicts import FAILED_SANDBOX_SETUP  # noqa: PLC0415
+
+        return FAILED_SANDBOX_SETUP
+    return None
 
 
 def _approx_cost_usd(total_tokens: int) -> float:
@@ -452,7 +515,11 @@ async def run_shadow_for_workflow(
     evidence = await _read_terminal_evidence(run_id)
     tl = evidence["tl_output"]
     eng = evidence["engineer_output"]
-    verdict = _classify_verdict(run_status=final_status, tl=tl, eng=eng)
+    tasks = evidence["tasks"]
+    verdict = _classify_verdict(
+        run_status=final_status, tl=tl, eng=eng, tasks=tasks,
+    )
+    failure_class = await _resolve_failure_class(run_id, tasks)
 
     proposed_patch = eng.get("diff") if isinstance(eng, dict) else None
     confidence = (
@@ -476,6 +543,7 @@ async def run_shadow_for_workflow(
             tool_calls=tool_calls,
             cost_usd=_approx_cost_usd(evidence["total_tokens"]),
             run_seconds=elapsed_s,
+            failure_class=failure_class,
             notes=(
                 f"run_status={final_status}; "
                 f"tl_review_decision={tl.get('review_decision') if isinstance(tl, dict) else None}"

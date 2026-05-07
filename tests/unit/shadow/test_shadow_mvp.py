@@ -180,6 +180,100 @@ class TestClassifyVerdict:
         }
         assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
 
+    def test_sandbox_setup_failed_classifies_as_failed_not_safe_escalate(self):
+        """v1.7.3 post-Phase-2a — when SRE setup FAILED with
+        sandbox_provisioning_failed AND TL never ran (empty tl_output),
+        the prior classifier defaulted to SAFE_ESCALATE via the
+        confidence==0.0 fallback. With the tasks-aware branch, this is
+        correctly classified as FAILED (and the runner sets
+        failure_class=FAILED_SANDBOX_SETUP separately).
+
+        Surfaced concretely on Phase 2a entries E2 (psf/black) + E5
+        (sphinx-doc/sphinx)."""
+        from unittest.mock import MagicMock
+
+        sre_task = MagicMock()
+        sre_task.agent_role = "cifix_sre_setup"
+        sre_task.status = "FAILED"
+        sre_task.error = (
+            "sandbox_provisioning_failed: install_command_failed: "
+            "uv pip install -r pyproject.toml ..."
+        )
+
+        eng = {}
+        tl = {}  # TL never ran
+        assert (
+            _classify_verdict(
+                run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
+            )
+            == "FAILED"
+        )
+
+    def test_sandbox_setup_completed_does_not_force_failed(self):
+        """If SRE setup COMPLETED cleanly, the new branch must NOT
+        fire — fall through to existing TL/engineer-driven verdict."""
+        from unittest.mock import MagicMock
+
+        sre_task = MagicMock()
+        sre_task.agent_role = "cifix_sre_setup"
+        sre_task.status = "COMPLETED"
+        sre_task.error = None
+
+        eng = {}
+        tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
+        # Should still be SAFE_ESCALATE (TL escalated cleanly), not FAILED
+        assert (
+            _classify_verdict(
+                run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
+            )
+            == "SAFE_ESCALATE"
+        )
+
+    def test_sandbox_setup_failed_without_provisioning_marker_falls_through(self):
+        """SRE setup can FAIL for many reasons. Only
+        sandbox_provisioning_failed counts as FAILED_SANDBOX_SETUP —
+        other SRE failures fall through to the existing branches.
+        Defensive against false-positive infra classification."""
+        from unittest.mock import MagicMock
+
+        sre_task = MagicMock()
+        sre_task.agent_role = "cifix_sre_setup"
+        sre_task.status = "FAILED"
+        sre_task.error = "some_other_failure: tier1_no_match"
+
+        eng = {}
+        tl = {}  # empty TL → would normally hit confidence==0.0 → SAFE_ESCALATE
+        # Without the sandbox_provisioning_failed marker, we DON'T
+        # override — the empty-TL branch still produces SAFE_ESCALATE
+        # for now. (If we want to reclassify all SRE-fail-and-empty-TL
+        # as FAILED we'd loosen the marker check; deliberately tight.)
+        assert (
+            _classify_verdict(
+                run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
+            )
+            == "SAFE_ESCALATE"
+        )
+
+    def test_tasks_none_preserves_backward_compat(self):
+        """Existing callers passing tasks=None (or omitting it) get
+        the unchanged classifier behavior."""
+        eng = {}
+        tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
+        # Both should produce SAFE_ESCALATE identically
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert (
+            _classify_verdict(
+                run_status="FAILED", tl=tl, eng=eng, tasks=None
+            )
+            == "SAFE_ESCALATE"
+        )
+        assert (
+            _classify_verdict(
+                run_status="FAILED", tl=tl, eng=eng, tasks=[]
+            )
+            == "SAFE_ESCALATE"
+        )
+
 
 # ── CLI argparse smoke ─────────────────────────────────────────────────
 
