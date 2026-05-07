@@ -126,12 +126,19 @@ def _handle_download_artifact(action_with: dict) -> list[str]:
 
 
 def _handle_pre_commit(action_with: dict) -> list[str]:
-    """pre-commit/action — render an equivalent install + run."""
-    extra_args = action_with.get("extra_args") or ""
-    cmd = "pre-commit run --all-files"
-    if extra_args:
-        cmd += f" {extra_args}"
-    return ["pip install pre-commit", cmd]
+    """pre-commit/action — install pre-commit only.
+
+    v1.7.3 post-Phase-2a — previously also emitted `pre-commit run
+    --all-files` as a setup command. That's a test/lint runner, not
+    a setup step: SRE verify runs the failing_command (which IS the
+    pre-commit invocation if that's what CI was doing). Including the
+    run during setup made setup fail on real lint violations under
+    install_command_failed (Phase 2a E2 attempt #2 surfaced this).
+
+    Setup now installs pre-commit so verify has it on PATH; the
+    actual hook execution is verify-mode's job.
+    """
+    return ["pip install pre-commit"]
 
 
 # Map of `uses:` prefix → handler. Values are also valid as None to
@@ -474,7 +481,23 @@ def extract_recipe_from_workflow(
                     f"step[{i}]: uses={uses_ref!r} (handler rejected)"
                 )
                 return None
-            commands.extend(handler_cmds)
+            # v1.7.3 post-Phase-2a — defense-in-depth. Filter handler
+            # outputs through the same test-runner / guard checks we
+            # apply to raw `run:` steps. Catches any future handler
+            # that accidentally returns a verify-mode command (the
+            # pre-commit/action handler historically did until E2's
+            # second-attempt evidence surfaced it).
+            for cmd in handler_cmds:
+                if not isinstance(cmd, str) or not cmd.strip():
+                    continue
+                if _is_test_runner_command(cmd):
+                    # Same rationale as raw run-step skip: verify
+                    # runs the failing_command separately.
+                    continue
+                if _is_workflow_guard_command(cmd):
+                    skipped_guard_commands.append(cmd)
+                    continue
+                commands.append(cmd)
         elif "run" in step:
             rendered = _render_run_step(
                 step["run"], env=step.get("env"),

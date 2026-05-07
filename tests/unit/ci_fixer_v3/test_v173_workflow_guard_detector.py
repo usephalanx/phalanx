@@ -249,3 +249,35 @@ class TestRecipeShape:
             runs_on="ubuntu-latest",
         )
         assert recipe.skipped_guard_commands == []
+
+
+# ── Defense-in-depth: handler outputs filtered too ────────────────────
+
+
+class TestHandlerOutputFilter:
+    """v1.7.3 post-Phase-2a — every command from a `uses:` handler
+    goes through the same test-runner / guard checks as raw run-step
+    commands. Catches future handlers that accidentally emit a
+    verify-mode command (the pre-commit/action handler did this until
+    E2 attempt #2's evidence surfaced it)."""
+
+    def test_pre_commit_action_only_emits_install_during_setup(self, workspace):
+        _write_workflow(
+            workspace,
+            "lint.yml",
+            """\
+            on: pull_request
+            jobs:
+              lint:
+                name: lint
+                runs-on: ubuntu-latest
+                steps:
+                  - uses: actions/checkout@v4
+                  - uses: pre-commit/action@v3
+            """,
+        )
+        recipe = extract_recipe_from_workflow(workspace / ".github/workflows/lint.yml", "lint")
+        assert recipe is not None
+        # pip install pre-commit is install; pre-commit run is verify
+        assert "pip install pre-commit" in recipe.commands
+        assert not any("pre-commit run" in c for c in recipe.commands)

@@ -156,9 +156,16 @@ class TestPytestWithPip:
 
 
 class TestPreCommitOnly:
-    """Lint workflow: just pre-commit/action."""
+    """Lint workflow: just pre-commit/action.
 
-    def test_renders_pre_commit_install_and_run(self, workspace):
+    v1.7.3 post-Phase-2a — `pre-commit run --all-files` is NO LONGER
+    emitted as a setup command. It's a test/lint runner; verify-mode
+    runs the actual failing_command separately. Setup only installs
+    pre-commit so verify has it on PATH. Surfaced by E2 attempt #2:
+    setup was running pre-commit and failing on real lint violations.
+    """
+
+    def test_renders_pre_commit_install_only_during_setup(self, workspace):
         _write_workflow(workspace, "lint.yml", """\
             on: push
             jobs:
@@ -175,10 +182,16 @@ class TestPreCommitOnly:
             workspace_path=workspace, failing_job_name="lint"
         )
         assert recipe is not None
+        # Install command is present (verify needs pre-commit on PATH)
         assert "pip install pre-commit" in recipe.commands
-        assert "pre-commit run --all-files" in recipe.commands
+        # Run command is NOT in setup — verify runs the failing command
+        assert not any(
+            "pre-commit run" in c for c in recipe.commands
+        ), recipe.commands
 
-    def test_pre_commit_extra_args(self, workspace):
+    def test_pre_commit_extra_args_no_longer_emitted_during_setup(self, workspace):
+        """Even with extra_args, the run command stays out of setup —
+        verify-mode will pick up the actual failing_command."""
         _write_workflow(workspace, "lint.yml", """\
             on: push
             jobs:
@@ -193,7 +206,10 @@ class TestPreCommitOnly:
             workspace_path=workspace, failing_job_name="lint"
         )
         assert recipe is not None
-        assert any("--show-diff-on-failure" in c for c in recipe.commands)
+        # Setup has the install
+        assert "pip install pre-commit" in recipe.commands
+        # No pre-commit run in setup — extra_args go nowhere now
+        assert not any("--show-diff-on-failure" in c for c in recipe.commands)
 
 
 # ─── Bail-out cases — should return None ─────────────────────────────────────
