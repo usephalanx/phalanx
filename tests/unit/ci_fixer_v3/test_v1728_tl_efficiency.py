@@ -274,11 +274,18 @@ class _FakeLLM:
 
 
 class _LoopCtx:
-    """Loop-level fake AgentContext (only .messages + .repo_workspace_path used)."""
+    """Loop-level fake AgentContext.
+
+    v1.7.3 post-Phase-2a — also carries a real CostRecord so the
+    investigation loop's per-turn token accumulator works. Without
+    this, the loop AttributeError's on ctx.cost.gpt_reasoning_*."""
 
     def __init__(self, workspace: str) -> None:
+        from phalanx.ci_fixer_v2.context import CostRecord  # noqa: PLC0415
+
         self.repo_workspace_path = workspace
         self.messages: list[dict] = []
+        self.cost = CostRecord()
 
 
 class TestBudgetFooter:

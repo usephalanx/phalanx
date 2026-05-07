@@ -37,8 +37,13 @@ from phalanx.ci_fixer_v2.agent import LLMResponse, LLMToolUse
 
 class _LoopCtx:
     def __init__(self, workspace: str) -> None:
+        from phalanx.ci_fixer_v2.context import CostRecord  # noqa: PLC0415
+
         self.repo_workspace_path = workspace
         self.messages: list[dict] = []
+        # v1.7.3 post-Phase-2a — TL loop accumulates response tokens
+        # into ctx.cost.gpt_reasoning_* on every turn.
+        self.cost = CostRecord()
 
 
 def _resp_tool_use(name: str, tool_input: dict, *, use_id: str = "tu1") -> LLMResponse:

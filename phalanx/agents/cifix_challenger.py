@@ -497,6 +497,13 @@ async def _run_review_loop(
             pass
 
         response = await llm_call(ctx.messages)
+        # v1.7.3 post-Phase-2a — accumulate Sonnet tokens into ctx.cost
+        # (mirrors v2's coder_subagent.py:316-320 + ci_fixer_v2/agent.py:118-120).
+        # Without this, _tokens_used_from_ctx returns 0 and challenger
+        # cost contributions don't reach the shadow ledger.
+        ctx.cost.sonnet_coder_input_tokens += response.input_tokens
+        ctx.cost.sonnet_coder_output_tokens += response.output_tokens
+        ctx.cost.sonnet_coder_thinking_tokens += response.thinking_tokens
         log.info(
             "v3.challenger.turn_response",
             turn=turn,
@@ -697,15 +704,23 @@ def _build_challenger_llm(tool_names: tuple[str, ...]):
     )
 
 
-def _tokens_used_from_ctx(ctx) -> int:
+def _tokens_used_from_ctx(ctx) -> int:  # noqa: ARG001 — see body
+    """Sum every token bucket on ctx.cost.
+
+    v1.7.3 post-Phase-2a — corrected to read real CostRecord fields
+    (see cifix_techlead._tokens_used_from_ctx for the same fix).
+    """
     cost = getattr(ctx, "cost", None)
     if cost is None:
         return 0
-    for attr in ("total_tokens", "input_tokens"):
-        val = getattr(cost, attr, None)
-        if isinstance(val, int):
-            return val
-    return 0
+    return (
+        getattr(cost, "gpt_reasoning_input_tokens", 0)
+        + getattr(cost, "gpt_reasoning_output_tokens", 0)
+        + getattr(cost, "gpt_reasoning_thinking_tokens", 0)
+        + getattr(cost, "sonnet_coder_input_tokens", 0)
+        + getattr(cost, "sonnet_coder_output_tokens", 0)
+        + getattr(cost, "sonnet_coder_thinking_tokens", 0)
+    )
 
 
 __all__ = [

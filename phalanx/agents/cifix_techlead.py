@@ -1111,6 +1111,14 @@ async def _run_investigation_loop(
             pass
 
         response = await llm_call(ctx.messages)
+        # v1.7.3 post-Phase-2a — token accounting (mirrors the v2 main
+        # loop pattern at ci_fixer_v2/agent.py:118-120). Without this,
+        # _tokens_used_from_ctx returns 0 and the shadow ledger reports
+        # cost_usd=$0 even on real LLM-driven runs (E1 + E3 surfaced
+        # this in Phase 2a).
+        ctx.cost.gpt_reasoning_input_tokens += response.input_tokens
+        ctx.cost.gpt_reasoning_output_tokens += response.output_tokens
+        ctx.cost.gpt_reasoning_thinking_tokens += response.thinking_tokens
         logger.info(
             "cifix_techlead.turn_response",
             turn=turn,
@@ -1687,12 +1695,25 @@ def _build_initial_message(ci_context: dict) -> str:
 
 
 def _tokens_used_from_ctx(ctx) -> int:
-    """Best-effort token accounting so the framework's telemetry has a number."""
+    """Sum every token bucket on ctx.cost.
+
+    v1.7.3 post-Phase-2a — previously read non-existent fields
+    ('total_tokens', 'input_tokens', 'output_tokens') and always
+    returned 0, even on runs that made real LLM calls. The runner's
+    cost approximator therefore reported $0 even when TL/Challenger
+    consumed thousands of tokens (E1 pylint + E3 poetry surfaced this).
+    Now reads the actual CostRecord fields populated by the v2 main
+    loop pattern (see ci_fixer_v2/agent.py:118-120 for the accumulator
+    site).
+    """
     cost = getattr(ctx, "cost", None)
     if cost is None:
         return 0
-    for attr in ("total_tokens", "input_tokens", "output_tokens"):
-        val = getattr(cost, attr, None)
-        if isinstance(val, int):
-            return val
-    return 0
+    return (
+        getattr(cost, "gpt_reasoning_input_tokens", 0)
+        + getattr(cost, "gpt_reasoning_output_tokens", 0)
+        + getattr(cost, "gpt_reasoning_thinking_tokens", 0)
+        + getattr(cost, "sonnet_coder_input_tokens", 0)
+        + getattr(cost, "sonnet_coder_output_tokens", 0)
+        + getattr(cost, "sonnet_coder_thinking_tokens", 0)
+    )
