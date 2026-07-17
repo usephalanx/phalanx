@@ -15,6 +15,7 @@ from phalanx.api.routes.ci_integrations import router as ci_integrations_router
 from phalanx.api.routes.ci_webhooks import router as ci_webhooks_router
 from phalanx.api.routes.demos import router as demos_router
 from phalanx.api.routes.health import router as health_router
+from phalanx.api.routes.run_probe import router as run_probe_router
 from phalanx.api.routes.runs import router as runs_router
 from phalanx.api.routes.traces import portal_router as traces_portal_router
 from phalanx.api.routes.traces import router as traces_router
@@ -91,6 +92,7 @@ app.include_router(ci_webhooks_router, prefix="/webhook")
 app.include_router(demos_router, prefix="/v1")
 app.include_router(ci_integrations_router, prefix="/v1")
 app.include_router(ci_fix_runs_router, prefix="/v1")
+app.include_router(run_probe_router, prefix="/v1")
 app.include_router(health_router)
 
 
