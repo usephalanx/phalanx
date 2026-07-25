@@ -440,7 +440,13 @@ def _run_in_sandbox(
         if (le.file, le.line) in original_locations:
             regressions.append(le)
 
-    passed = len(regressions) == 0
+    # Honor the exit code. Location-diffing alone let a fix that introduced a
+    # BRAND-NEW error (e.g. an IndentationError from a botched rewrite, at a line
+    # that wasn't in the original failure) pass as green — the command exited
+    # non-zero but no *original* location regressed. For a CI-fixer the invariant
+    # is simple and honest: the validate command that was failing must now exit
+    # cleanly. A non-zero exit means the fix is not green, full stop.
+    passed = code == 0 and len(regressions) == 0
 
     log.info(
         "ci_validator.sandbox_result",
@@ -450,6 +456,14 @@ def _run_in_sandbox(
         regressions=len(regressions),
         output_tail=output[-300:] if output else "",
     )
+
+    if code != 0 and not regressions:
+        return ValidationResult(
+            passed=False,
+            tool=tool,
+            output=f"Validate command exited {code} (fix did not make it green):\n\n{output}",
+            tool_version=tool_version,
+        )
 
     if regressions:
         reg_summary = "; ".join(

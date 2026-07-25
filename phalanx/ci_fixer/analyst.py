@@ -53,6 +53,8 @@ class FileWindow:
     start_line: int  # 1-indexed, inclusive
     end_line: int  # 1-indexed, inclusive
     original_lines: list[str]
+    full_file: bool = False  # whole-file window (source-under-test) — allows a
+    # full rewrite, since a behavioral bug has no source line to patch narrowly
 
 
 @dataclass
@@ -328,6 +330,46 @@ class RootCauseAnalyst:
                 )
             )
 
+        # A behavioral test failure (assertion mismatch) surfaces in the TEST
+        # file — the traceback carries no source line, so the loop above windows
+        # only the test file, which we refuse to patch. The analyst can then
+        # diagnose the bug but has nowhere to apply the fix. Bridge that: map
+        # each failing test (test_<name>.py) to its source counterpart
+        # (<name>.py, excluding tests) and add a WHOLE-FILE window so the fix has
+        # a target. This is exactly the wrong-state-no-exception bug class.
+        if parsed_log.test_failures:
+            already = {w.path for w in windows}
+            for tf in parsed_log.test_failures:
+                stem = Path(tf.file).stem  # e.g. test_webhook_seats
+                base = stem[len("test_") :] if stem.startswith("test_") else stem
+                if not base:
+                    continue
+                for cand in sorted(workspace.rglob(f"{base}.py")):
+                    if len(windows) >= _MAX_FILES:
+                        break
+                    try:
+                        rel = str(cand.relative_to(workspace))
+                    except ValueError:
+                        continue
+                    if _is_test_file(rel) or rel in already:
+                        continue
+                    try:
+                        src_lines = cand.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).splitlines(keepends=True)
+                    except Exception:
+                        continue
+                    windows.append(
+                        FileWindow(
+                            path=rel,
+                            start_line=1,
+                            end_line=len(src_lines),
+                            original_lines=src_lines,
+                            full_file=True,
+                        )
+                    )
+                    already.add(rel)
+
         return windows
 
     # ── Patch validation ───────────────────────────────────────────────────────
@@ -353,10 +395,27 @@ class RootCauseAnalyst:
             end = p.get("end_line")
             corrected = p.get("corrected_lines", [])
 
-            # Guard: only touch files we sent
+            # Guard: only touch files we sent. Tolerate the LLM naming a file by
+            # its module/import path ("calc/foo.py") when the repo uses a src
+            # layout ("src/calc/foo.py") — resolve to a UNIQUE window whose path
+            # ends with the given path. This never invents a file: resolution is
+            # still restricted to the windows we sent, and an ambiguous match is
+            # rejected. Fixes correct patches being dropped over a src/ prefix.
             if path not in window_by_path:
-                log.warning("ci_analyst.patch_unknown_file", path=path)
-                continue
+                suffix_matches = [
+                    w for w in windows if w.path.endswith("/" + path)
+                ]
+                if len(suffix_matches) == 1:
+                    resolved = suffix_matches[0].path
+                    log.info(
+                        "ci_analyst.patch_path_resolved",
+                        given=path,
+                        resolved=resolved,
+                    )
+                    path = resolved
+                else:
+                    log.warning("ci_analyst.patch_unknown_file", path=path)
+                    continue
 
             # Guard: never touch test files
             if _is_test_file(path):
@@ -379,33 +438,53 @@ class RootCauseAnalyst:
                 log.warning("ci_analyst.patch_missing_line_range", path=path)
                 continue
 
-            if abs(start - window.start_line) > 2 or abs(end - window.end_line) > 2:
-                log.warning(
-                    "ci_analyst.patch_line_range_mismatch",
-                    path=path,
-                    expected_start=window.start_line,
-                    expected_end=window.end_line,
-                    got_start=start,
-                    got_end=end,
-                )
-                # Clamp to the window we actually sent — safer than rejecting
-                start = window.start_line
-                end = window.end_line
+            if window.full_file:
+                # Whole file shown WITH REAL line numbers. Trust the LLM's range
+                # and splice narrowly — do NOT clamp to file bounds (that would
+                # overwrite the entire file with a small fragment, the classic
+                # IndentationError). Only sanity-bound to the file, and allow a
+                # larger edit since a from-scratch fix adds lines. The honest
+                # validator (must exit 0) is the real safety net downstream.
+                n = len(window.original_lines)
+                start = max(1, min(start, n))
+                end = max(start, min(end, n))
+                delta = len(corrected) - (end - start + 1)
+                if abs(delta) > 60:
+                    log.warning(
+                        "ci_analyst.patch_delta_too_large",
+                        path=path,
+                        delta=delta,
+                        max_allowed=60,
+                    )
+                    continue
+            else:
+                if abs(start - window.start_line) > 2 or abs(end - window.end_line) > 2:
+                    log.warning(
+                        "ci_analyst.patch_line_range_mismatch",
+                        path=path,
+                        expected_start=window.start_line,
+                        expected_end=window.end_line,
+                        got_start=start,
+                        got_end=end,
+                    )
+                    # Clamp to the window we actually sent — safer than rejecting
+                    start = window.start_line
+                    end = window.end_line
 
-            original_size = end - start + 1
-            delta = len(corrected) - original_size
+                original_size = end - start + 1
+                delta = len(corrected) - original_size
 
-            # Guard: line-count delta
-            if abs(delta) > _MAX_LINE_DELTA:
-                log.warning(
-                    "ci_analyst.patch_delta_too_large",
-                    path=path,
-                    original_size=original_size,
-                    corrected_size=len(corrected),
-                    delta=delta,
-                    max_allowed=_MAX_LINE_DELTA,
-                )
-                continue
+                # Guard: line-count delta
+                if abs(delta) > _MAX_LINE_DELTA:
+                    log.warning(
+                        "ci_analyst.patch_delta_too_large",
+                        path=path,
+                        original_size=original_size,
+                        corrected_size=len(corrected),
+                        delta=delta,
+                        max_allowed=_MAX_LINE_DELTA,
+                    )
+                    continue
 
             safe.append(
                 FilePatch(
@@ -468,9 +547,19 @@ def _format_windows(windows: list[FileWindow]) -> str:
         numbered = "".join(
             f"{w.start_line + i:5d}: {line}" for i, line in enumerate(w.original_lines)
         )
-        sections.append(
-            f"### {w.path} (lines {w.start_line}–{w.end_line} of file)\n```\n{numbered}```"
-        )
+        if w.full_file:
+            header = (
+                f"### {w.path} (COMPLETE FILE, {len(w.original_lines)} lines shown "
+                f"with line numbers)\n"
+                f"This is the whole source file. Return a MINIMAL patch: set "
+                f"start_line and end_line to the EXACT line numbers shown that you "
+                f"are replacing, and corrected_lines to their replacement "
+                f"(matching the surrounding indentation). Change only the lines "
+                f"you need — do not restate the whole file."
+            )
+        else:
+            header = f"### {w.path} (lines {w.start_line}–{w.end_line} of file)"
+        sections.append(f"{header}\n```\n{numbered}```")
     return "\n\n".join(sections)
 
 
