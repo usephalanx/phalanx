@@ -333,42 +333,70 @@ class RootCauseAnalyst:
         # A behavioral test failure (assertion mismatch) surfaces in the TEST
         # file — the traceback carries no source line, so the loop above windows
         # only the test file, which we refuse to patch. The analyst can then
-        # diagnose the bug but has nowhere to apply the fix. Bridge that: map
-        # each failing test (test_<name>.py) to its source counterpart
-        # (<name>.py, excluding tests) and add a WHOLE-FILE window so the fix has
-        # a target. This is exactly the wrong-state-no-exception bug class.
+        # diagnose the bug but has nowhere to apply the fix. Bridge that by
+        # WALKING THE IMPORT GRAPH from each failing test: window every source
+        # module the test transitively exercises (test -> module-under-test ->
+        # its helpers), so a cross-module bug (the buggy line lives in a helper
+        # the test never names) still has a patch target. Whole-file windows,
+        # since a behavioral bug has no narrow line to key on.
         if parsed_log.test_failures:
             already = {w.path for w in windows}
+            seen_modules: set[str] = set()
+            frontier: list[Path] = []
             for tf in parsed_log.test_failures:
-                stem = Path(tf.file).stem  # e.g. test_webhook_seats
-                base = stem[len("test_") :] if stem.startswith("test_") else stem
-                if not base:
+                for cand in workspace.rglob(Path(tf.file).name):
+                    frontier.append(cand)
+                    break
+            collected: list[Path] = []
+            depth = 0
+            while frontier and depth < 3 and (len(windows) + len(collected)) < _MAX_FILES:
+                nxt: list[Path] = []
+                for f in frontier:
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    for m in re.finditer(
+                        r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))",
+                        text,
+                        re.MULTILINE,
+                    ):
+                        mod = m.group(1) or m.group(2)
+                        if not mod or mod in seen_modules:
+                            continue
+                        seen_modules.add(mod)
+                        src = _resolve_module_to_file(workspace, mod)
+                        if src is None:
+                            continue
+                        try:
+                            rel = str(src.relative_to(workspace))
+                        except ValueError:
+                            continue
+                        if _is_test_file(rel) or rel in already:
+                            continue
+                        already.add(rel)
+                        collected.append(src)
+                        nxt.append(src)
+                frontier = nxt
+                depth += 1
+            for src in collected:
+                if len(windows) >= _MAX_FILES:
+                    break
+                try:
+                    src_lines = src.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines(keepends=True)
+                except OSError:
                     continue
-                for cand in sorted(workspace.rglob(f"{base}.py")):
-                    if len(windows) >= _MAX_FILES:
-                        break
-                    try:
-                        rel = str(cand.relative_to(workspace))
-                    except ValueError:
-                        continue
-                    if _is_test_file(rel) or rel in already:
-                        continue
-                    try:
-                        src_lines = cand.read_text(
-                            encoding="utf-8", errors="replace"
-                        ).splitlines(keepends=True)
-                    except Exception:
-                        continue
-                    windows.append(
-                        FileWindow(
-                            path=rel,
-                            start_line=1,
-                            end_line=len(src_lines),
-                            original_lines=src_lines,
-                            full_file=True,
-                        )
+                windows.append(
+                    FileWindow(
+                        path=str(src.relative_to(workspace)),
+                        start_line=1,
+                        end_line=len(src_lines),
+                        original_lines=src_lines,
+                        full_file=True,
                     )
-                    already.add(rel)
+                )
 
         return windows
 
@@ -569,3 +597,23 @@ _TEST_FILE_RE = re.compile(r"(^|/)tests?[_/]|test_[^/]+\.py$", re.IGNORECASE)
 def _is_test_file(path: str) -> bool:
     """Return True if the path looks like a test file."""
     return bool(_TEST_FILE_RE.search(path))
+
+
+def _resolve_module_to_file(workspace: Path, module: str) -> Path | None:
+    """Resolve a dotted import (e.g. 'calc.orders') to a source file in the
+    workspace, tolerating src/ layouts. Tries the full dotted path first, then
+    progressively drops leading packages, then falls back to the final module
+    name. Skips test files. Returns the first non-test match or None."""
+    parts = [p for p in module.split(".") if p]
+    if not parts:
+        return None
+    for depth in range(len(parts)):
+        rel = "/".join(parts[depth:]) + ".py"
+        for cand in sorted(workspace.rglob(rel)):
+            r = str(cand)
+            if not _is_test_file(r):
+                return cand
+    for cand in sorted(workspace.rglob(parts[-1] + ".py")):
+        if not _is_test_file(str(cand)):
+            return cand
+    return None
