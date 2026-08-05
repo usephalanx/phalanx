@@ -91,6 +91,21 @@ def _synth_prompt(bug: str, env: dict) -> str:
         "rejected, or produces no record counts as HELD (0), not a harness error. Read the "
         "recorder defensively (missing/empty = the bad thing did NOT happen = HELD).\n"
         "- Dependencies are already installed.\n"
+        "- PROOF EVIDENCE (required): the receipt shows engineers the exact traffic. For "
+        "EVERY request you fire at the real handler, record the real request you sent and "
+        "the real response you got back. Do NOT summarize or invent — capture the actual "
+        "bytes. Accumulate a list of entries, each:\n"
+        '    {\"label\": \"<short human label, e.g. \'retry #2\'>\", \"request\": '
+        '{\"method\": \"POST\", \"path\": \"/webhook\", \"headers\": {..the headers you sent, '
+        "including any signature..}, \"body\": <the request body you sent, parsed JSON or a "
+        'string>}, \"response\": {\"status\": <int http status>, \"body\": <the response body '
+        "you received, parsed JSON or a string>}}\n"
+        "  At the very end, print this list as ONE final line, exactly:\n"
+        "    FS_PROOF_JSON=<compact-single-line-json-array>\n"
+        "  (use json.dumps(list, separators=(',',':')) — no newlines inside it). Keep bodies "
+        "real but trim giant blobs to the fields that matter to the bug. This line is parsed "
+        "by the pipeline; the exit code is still the verdict.\n"
+        "- Dependencies are already installed.\n"
         f"- CRITICAL: run `{pc}` yourself. On THIS code (which HAS the bug) it MUST exit 1. "
         "Iterate until it does. NEVER ship a probe that exits 0 here — a probe that doesn't "
         "catch the bug is worthless. If you truly cannot reproduce it, say so explicitly.\n"

@@ -117,7 +117,7 @@ async def provision_on_the_fly(
         as_root=True,
     )
     setup_log.append(
-        {"step": "mkdir_workspace", "ok": r.ok, "exit_code": r.exit_code, "error": r.stderr_tail}
+        {"step": "mkdir_workspace", "cmd": "mkdir -p /workspace", "ok": r.ok, "exit_code": r.exit_code, "error": r.stderr_tail, "stdout_tail": getattr(r, "stdout_tail", None)}
     )
     if not r.ok:
         await stop_sandbox(container_id)
@@ -129,7 +129,7 @@ async def provision_on_the_fly(
         )
 
     ok_cp, err_cp = await _docker_cp_workspace(workspace_path, container_id)
-    setup_log.append({"step": "docker_cp_workspace", "ok": ok_cp, "error": err_cp})
+    setup_log.append({"step": "docker_cp_workspace", "cmd": "docker cp", "ok": ok_cp, "exit_code": (0 if ok_cp else 1), "error": err_cp, "stdout_tail": None})
     if not ok_cp:
         await stop_sandbox(container_id)
         return ProvisionedSandbox(
@@ -169,10 +169,12 @@ async def provision_on_the_fly(
     setup_log.append(
         {
             "step": "apt_install_baseline",
+            "cmd": baseline_apt_cmd,
             "packages": list(_BASELINE_APT_DEPS),
             "ok": r.ok,
             "exit_code": r.exit_code,
             "error": r.stderr_tail,
+            "stdout_tail": getattr(r, "stdout_tail", None),
         }
     )
     if not r.ok:
@@ -206,10 +208,12 @@ async def provision_on_the_fly(
         setup_log.append(
             {
                 "step": "apt_install_repo",
+                "cmd": repo_apt_cmd,
                 "packages": repo_apt_deps,
                 "ok": r.ok,
                 "exit_code": r.exit_code,
                 "error": r.stderr_tail,
+                "stdout_tail": getattr(r, "stdout_tail", None),
             }
         )
         if not r.ok:
@@ -234,6 +238,7 @@ async def provision_on_the_fly(
                 "ok": r.ok,
                 "exit_code": r.exit_code,
                 "error": r.stderr_tail,
+                "stdout_tail": getattr(r, "stdout_tail", None),
             }
         )
         if not r.ok:
@@ -400,6 +405,7 @@ async def _exec_in_container(
     as_root: bool = False,
     workdir: str | None = None,
     timeout_s: int = _CMD_TIMEOUT_S,
+    stdout_cap: int = 2000,
 ) -> ExecResult:
     """Run `sh -c cmd` inside an existing container.
 
@@ -434,7 +440,7 @@ async def _exec_in_container(
         # Capture both streams. 2KB tail is enough for ruff/pytest violation
         # output; bigger logs (full pytest -v) shouldn't bloat task.output rows.
         stdout_tail = (
-            stdout.decode(errors="replace").strip()[-2000:] if stdout else None
+            stdout.decode(errors="replace").strip()[-stdout_cap:] if stdout else None
         )
         stderr_tail = (
             stderr.decode(errors="replace").strip()[-2000:] if stderr else None
