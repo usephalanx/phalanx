@@ -9,6 +9,7 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
+from sqlalchemy.dialects.postgresql import UUID
 
 revision = "20260321_0001"
 down_revision = "0001"
@@ -39,9 +40,9 @@ def upgrade() -> None:
     if not _table_exists("task_dependencies"):
         op.create_table(
             "task_dependencies",
-            sa.Column("id", sa.String(), primary_key=True),
-            sa.Column("task_id", sa.String(), sa.ForeignKey("tasks.id"), nullable=False),
-            sa.Column("depends_on_id", sa.String(), sa.ForeignKey("tasks.id"), nullable=False),
+            sa.Column("id", UUID(as_uuid=False), primary_key=True),
+            sa.Column("task_id", UUID(as_uuid=False), sa.ForeignKey("tasks.id"), nullable=False),
+            sa.Column("depends_on_id", UUID(as_uuid=False), sa.ForeignKey("tasks.id"), nullable=False),
             sa.Column("dependency_type", sa.String(50), nullable=False, server_default="full"),
             sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.func.now()),
         )

@@ -1,0 +1,156 @@
+name: Migration bootstrap (P0-4)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prove `alembic upgrade head` works from a completely fresh postgres on
+# every PR that touches migrations or db models.
+#
+# Catches latent bugs of the 2026-03-21 shape, where a migration "worked"
+# in production only because the table being modified pre-existed from
+# earlier dev sessions. A genuinely empty DB hits the failure path.
+#
+# Three migration steps run in sequence; any failure fails the job:
+#   1. upgrade head   — proves the fresh-from-zero path works
+#   2. downgrade base — proves every migration has a working downgrade
+#   3. upgrade head   — proves the round-trip is idempotent
+#
+# A schema fingerprint is captured after step 1 and step 3 and compared,
+# so type/constraint drift between fresh-install and round-trip surfaces
+# as a diff in the job log.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    paths:
+      - "alembic/**"
+      - "phalanx/db/**"
+      - ".github/workflows/migration-bootstrap.yml"
+      - "scripts/migration_bootstrap_check.sh"
+  workflow_dispatch:
+
+concurrency:
+  group: migration-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-db-migrations:
+    name: Fresh-DB migration round-trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge_dev_password
+          POSTGRES_DB: forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forge -d forge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://forge:forge_dev_password@localhost:5432/forge
+      PGHOST: localhost
+      PGUSER: forge
+      PGPASSWORD: forge_dev_password
+      PGDATABASE: forge
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install runtime dependencies
+        # env.py imports phalanx.db.models, which transitively pulls in
+        # SQLAlchemy + pgvector + the rest of the package. Install editable
+        # so the import path matches what alembic sees in production.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Wait for postgres to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U forge -d forge; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "postgres never became ready"
+          exit 1
+
+      - name: "Step 1 — alembic upgrade head (fresh DB)"
+        run: |
+          set -euo pipefail
+          alembic -c alembic/alembic.ini upgrade head
+          echo "::notice::upgrade head from empty DB succeeded"
+
+      - name: Capture fresh-install schema fingerprint
+        run: |
+          set -euo pipefail
+          ./scripts/migration_schema_fingerprint.sh > /tmp/fingerprint-fresh.txt
+          echo "::group::Fresh-install fingerprint"
+          cat /tmp/fingerprint-fresh.txt
+          echo "::endgroup::"
+
+      - name: "Step 2 — alembic downgrade base"
+        run: |
+          set -euo pipefail
+          alembic -c alembic/alembic.ini downgrade base
+          echo "::notice::downgrade to base succeeded — every migration has a working downgrade"
+
+      - name: Assert downgrade leaves no application tables
+        run: |
+          set -euo pipefail
+          REMAINING=$(psql -A -t -c "
+            SELECT count(*) FROM pg_tables
+             WHERE schemaname = 'public'
+               AND tablename != 'alembic_version';
+          ")
+          if [ "${REMAINING}" -ne 0 ]; then
+            echo "::error::downgrade base left ${REMAINING} application tables behind"
+            psql -c "\dt"
+            exit 1
+          fi
+
+      - name: "Step 3 — alembic upgrade head (round-trip)"
+        run: |
+          set -euo pipefail
+          alembic -c alembic/alembic.ini upgrade head
+          echo "::notice::round-trip upgrade succeeded"
+
+      - name: Capture round-trip schema fingerprint
+        run: |
+          set -euo pipefail
+          ./scripts/migration_schema_fingerprint.sh > /tmp/fingerprint-roundtrip.txt
+          echo "::group::Round-trip fingerprint"
+          cat /tmp/fingerprint-roundtrip.txt
+          echo "::endgroup::"
+
+      - name: Diff fresh-install vs round-trip fingerprints
+        run: |
+          set -euo pipefail
+          if ! diff -u /tmp/fingerprint-fresh.txt /tmp/fingerprint-roundtrip.txt; then
+            echo "::error::schema fingerprint changed between fresh-install and round-trip"
+            echo "::error::A migration's upgrade and downgrade are not symmetric."
+            exit 1
+          fi
+          echo "::notice::schema fingerprints match — upgrade and downgrade are symmetric"
+
+      - name: Upload fingerprints as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-fingerprints
+          path: |
+            /tmp/fingerprint-fresh.txt
+            /tmp/fingerprint-roundtrip.txt
+          retention-days: 7

@@ -118,9 +118,13 @@ services:
   forge-beat:
     <<: *forge-common
     container_name: forge-beat
+    # NOTE: do NOT pass --scheduler here. celery_app.py:103 already sets
+    # beat_scheduler=redbeat.RedBeatScheduler (redis-backed). Adding a flag
+    # here will silently override the in-code config — that was a pre-2026-05-20
+    # crash-loop where --scheduler=django_celery_beat... pointed at an
+    # uninstalled Django package and beat never started.
     command: celery -A phalanx.queue.celery_app beat
       --loglevel=info
-      --scheduler=django_celery_beat.schedulers:DatabaseScheduler
     environment:
       SERVICE_NAME: forge-beat
 
@@ -156,7 +160,7 @@ services:
       - "5555:5555"
     depends_on:
       - redis
-      - forge-worker
+      - phalanx-worker
     environment:
       SERVICE_NAME: forge-flower
 

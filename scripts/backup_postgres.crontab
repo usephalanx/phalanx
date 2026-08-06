@@ -1,0 +1,6 @@
+# Phalanx postgres backup — non-Mac fallback. Copy to your user crontab:
+#   crontab -e
+# and append. Replace PHALANX_REPO_ROOT with the absolute path to your forge checkout.
+#
+# Schedule: every 6 hours, on the hour.
+0 */6 * * * cd PHALANX_REPO_ROOT && ./scripts/backup_postgres.sh && (./scripts/backup_postgres_offhost.sh || true) >> backups/postgres/cron.log 2>&1

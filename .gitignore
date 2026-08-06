@@ -7,6 +7,15 @@
 *.key
 secrets/
 
+# ── Backups (P0-1) — local pg dumps, never committed ──────────────────────────
+backups/
+
+# ── Shadow ledger JSONL stream (P0-2) — append-only evidence, local-only ─────
+ledger.jsonl
+
+# ── Runtime pidfiles ─────────────────────────────────────────────────────────
+*.pid
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

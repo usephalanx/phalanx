@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Phalanx postgres backup — runs every 6 hours.
+  Installs to: ~/Library/LaunchAgents/com.phalanx.backup.plist
+  Then: launchctl load ~/Library/LaunchAgents/com.phalanx.backup.plist
+  Use `make backup-install` to deploy this file with placeholders expanded.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.phalanx.backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>cd PHALANX_REPO_ROOT &amp;&amp; ./scripts/backup_postgres.sh &amp;&amp; (./scripts/backup_postgres_offhost.sh || echo "offhost upload skipped/failed (non-fatal)")</string>
+  </array>
+
+  <!-- Every 6 hours: 00:00, 06:00, 12:00, 18:00 (local time) -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>0</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+
+  <!-- Don't run at load — first run waits for the next 6h slot. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>PHALANX_REPO_ROOT/backups/postgres/launchagent.log</string>
+  <key>StandardErrorPath</key>
+  <string>PHALANX_REPO_ROOT/backups/postgres/launchagent.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Inherits PHALANX_BACKUP_REMOTE from the user's shell env at load time.
+         If unset, the off-host step exits 1 and the wrapper continues. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

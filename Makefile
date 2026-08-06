@@ -6,7 +6,10 @@
 .PHONY: help up down restart logs shell migrate migrate-new test lint format \
         validate-config validate-skills seed onboard status worker-logs \
         flower clean reset deploy deploy-migrate ssh-server logs-server status-server \
-        sim-trigger sim-trigger-fetch sim-trigger-dry
+        sim-trigger sim-trigger-fetch sim-trigger-dry \
+        backup backup-list backup-verify backup-restore backup-offhost backup-install backup-uninstall \
+        ledger-tail ledger-verify ledger-stats ledger-replay \
+        preflight migration-check beat-health
 
 COMPOSE = docker compose
 PHALANX_API = $(COMPOSE) exec phalanx-api
@@ -18,7 +21,13 @@ help:
 	@echo ""
 	@echo "  SETUP"
 	@echo "  make setup          Copy .env.example → .env, pull images, build"
-	@echo "  make up             Start all services"
+	@echo "  make preflight      Run safety checks without starting anything"
+	@echo "  make up             Run preflight, start all services, verify beat-alive"
+	@echo "                       PHALANX_ALLOW_FRESH_BOOT=1  allow a clean first boot"
+	@echo "                       PHALANX_ALLOW_EXTERNAL_DB=1 allow non-compose DATABASE_URL"
+	@echo "                       PHALANX_SKIP_PREFLIGHT=1     emergency bypass (pre-up)"
+	@echo "                       PHALANX_SKIP_BEAT_HEALTH=1   emergency bypass (post-up)"
+	@echo "  make beat-health    Standalone: verify celery-beat is dispatching scheduled tasks"
 	@echo "  make down           Stop all services"
 	@echo "  make restart        Restart all services"
 	@echo "  make reset          Full reset: down, delete volumes, up + migrate"
@@ -26,6 +35,7 @@ help:
 	@echo "  DATABASE"
 	@echo "  make migrate        Run pending Alembic migrations"
 	@echo "  make migrate-new m=name  Create new migration"
+	@echo "  make migration-check    Bootstrap a fresh DB + round-trip migrations (P0-4)"
 	@echo "  make seed           Seed with test team + project config"
 	@echo ""
 	@echo "  DEVELOPMENT"
@@ -65,6 +75,22 @@ help:
 	@echo "  make ssh-server         SSH into the LightSail box"
 	@echo "  make logs-server        Tail logs on server"
 	@echo "  make status-server      Show container status on server"
+	@echo ""
+	@echo "  BACKUPS (P0-1)"
+	@echo "  make backup             Take a pg_dump now (with self-check + retention)"
+	@echo "  make backup-list        List local dump files"
+	@echo "  make backup-verify      Restore latest dump to a throwaway container, check row counts"
+	@echo "  make backup-restore dump=... PHALANX_PG_TARGET=<container>"
+	@echo "                          Restore <dump> into <container> (refuses forge-postgres without PHALANX_RESTORE_ALLOW_PROD=1)"
+	@echo "  make backup-offhost     Sync dumps to PHALANX_BACKUP_REMOTE via rclone"
+	@echo "  make backup-install     Install macOS LaunchAgent (runs every 6h)"
+	@echo "  make backup-uninstall   Remove the LaunchAgent"
+	@echo ""
+	@echo "  LEDGER JSONL (P0-2)"
+	@echo "  make ledger-tail        Pretty-print last 20 ledger.jsonl entries"
+	@echo "  make ledger-stats       Summary stats (counts, verdicts, schema versions)"
+	@echo "  make ledger-verify      Strict integrity check (exit 1 if corrupt lines)"
+	@echo "  make ledger-replay      LEDGER_REPLAY_CONFIRM=1 [LEDGER_REPLAY_LIMIT=N] — backfill from DB"
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 setup:
@@ -74,9 +100,16 @@ setup:
 	$(COMPOSE) build
 
 # ── Services ──────────────────────────────────────────────────────────────────
-up:
+preflight:
+	@./scripts/preflight_check.sh
+
+up: preflight
 	$(COMPOSE) up -d
+	@./scripts/beat_health.sh
 	@echo "✅ PHALANX running. API: http://localhost:8000 | Flower: http://localhost:5555"
+
+beat-health:
+	@./scripts/beat_health.sh
 
 down:
 	$(COMPOSE) down
@@ -90,10 +123,10 @@ clean:
 
 reset:
 	$(COMPOSE) down -v --remove-orphans
-	$(COMPOSE) up -d postgres redis
+	@PHALANX_ALLOW_FRESH_BOOT=1 $(COMPOSE) up -d postgres redis
 	sleep 5
 	$(MAKE) migrate
-	$(COMPOSE) up -d
+	@PHALANX_ALLOW_FRESH_BOOT=1 $(COMPOSE) up -d
 	@echo "✅ Full reset complete."
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -206,3 +239,65 @@ logs-server:
 
 status-server:
 	$(SSH_CMD) 'cd /home/ubuntu/phalanx && docker compose ps && echo "" && docker stats --no-stream'
+
+# ── Backups (P0-1) ────────────────────────────────────────────────────────────
+backup:
+	@./scripts/backup_postgres.sh
+
+backup-list:
+	@ls -lh backups/postgres/ 2>/dev/null || echo "no backups yet — run 'make backup'"
+
+backup-verify:
+	@./scripts/backup_postgres_verify.sh
+
+backup-restore:
+	@if [ -z "$(dump)" ]; then \
+	  echo "Usage: make backup-restore dump=backups/postgres/forge-YYYYMMDDTHHMMSSZ.dump"; \
+	  echo "  Override target with: PHALANX_PG_TARGET=<container> make backup-restore dump=..."; \
+	  exit 1; \
+	fi
+	@./scripts/backup_postgres_restore.sh "$(dump)"
+
+backup-offhost:
+	@./scripts/backup_postgres_offhost.sh
+
+backup-install:
+	@mkdir -p backups/postgres ~/Library/LaunchAgents
+	@sed "s|PHALANX_REPO_ROOT|$(CURDIR)|g" scripts/com.phalanx.backup.plist \
+	  > ~/Library/LaunchAgents/com.phalanx.backup.plist
+	@launchctl unload ~/Library/LaunchAgents/com.phalanx.backup.plist 2>/dev/null || true
+	@launchctl load ~/Library/LaunchAgents/com.phalanx.backup.plist
+	@echo "✅ LaunchAgent installed. Schedule: 00:00, 06:00, 12:00, 18:00 local time."
+	@echo "   Verify with: launchctl list | grep com.phalanx.backup"
+	@echo "   Logs:        tail -f backups/postgres/launchagent.log"
+
+backup-uninstall:
+	@launchctl unload ~/Library/LaunchAgents/com.phalanx.backup.plist 2>/dev/null || true
+	@rm -f ~/Library/LaunchAgents/com.phalanx.backup.plist
+	@echo "✅ LaunchAgent uninstalled."
+
+# ── Migrations bootstrap (P0-4) ───────────────────────────────────────────────
+migration-check:
+	@./scripts/migration_bootstrap_check.sh
+
+# ── Ledger JSONL (P0-2) ───────────────────────────────────────────────────────
+ledger-tail:
+	@if [ ! -f ledger.jsonl ]; then echo "no ledger.jsonl yet"; exit 0; fi
+	@tail -n 20 ledger.jsonl | python3 -c 'import json,sys;\
+[print(json.dumps(json.loads(l), indent=2)) for l in sys.stdin if l.strip()]'
+
+ledger-stats:
+	@./scripts/ledger_jsonl_verify.py ledger.jsonl || true
+
+ledger-verify:
+	@./scripts/ledger_jsonl_verify.py ledger.jsonl
+
+ledger-replay:
+	@if [ -z "$(LEDGER_REPLAY_CONFIRM)" ]; then \
+	  echo "Replay APPENDS to ledger.jsonl from the live DB. To run:"; \
+	  echo "  LEDGER_REPLAY_CONFIRM=1 make ledger-replay"; \
+	  echo "  (optionally LEDGER_REPLAY_LIMIT=10 to cap)"; \
+	  exit 1; \
+	fi
+	@.venv/bin/python scripts/ledger_jsonl_replay.py \
+	  $(if $(LEDGER_REPLAY_LIMIT),--limit $(LEDGER_REPLAY_LIMIT))
