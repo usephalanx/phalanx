@@ -25,6 +25,7 @@ from pathlib import Path
 import structlog
 
 from phalanx.ci_fixer_v3.find_bugs_task import _EXHAUSTION, _accounts, _claude_bin
+from phalanx.ci_fixer_v3.grounding import describe as describe_grounding
 from phalanx.ci_fixer_v3.run_probe_task import _materialize
 from phalanx.queue.celery_app import celery_app
 
@@ -152,14 +153,26 @@ def fix_bug_task(
     fix_pattern: str | None = None,
     prompt: str | None = None,
     timeout_s: int = 300,
+    spec: str | None = None,
 ) -> dict:  # pragma: no cover — exercised on the worker
     """Materialize a repo and run the grounded Max subprocess to AUTHOR a fix for
-    `bug`. Returns {available, diff, summary, account, error}. Never raises. The
-    diff is a proposal — the gate certifies it, not this task."""
+    `bug`. Returns {available, diff, summary, account, error, grounding}. Never
+    raises. The diff is a proposal — the gate certifies it, not this task.
+
+    `spec` is an opaque label (FetchSandbox's brain id), echoed for attribution
+    and never interpreted. `grounding` reports whether the brain's `fix_pattern`
+    (or a full prompt override) actually reached the subprocess, which is what
+    makes a grounded-vs-ungrounded comparison measurable.
+    """
+    prompt_used = prompt or _fix_prompt(bug, fix_pattern)
+    meta = describe_grounding(
+        prompt_used, spec=spec, fields={"fix_pattern": fix_pattern, "prompt": prompt},
+    )
     try:
         if not bug.strip() and not prompt:
             return {"available": False, "diff": None, "summary": None,
-                    "account": None, "error": "no bug or prompt provided"}
+                    "account": None, "error": "no bug or prompt provided",
+                    "grounding": meta}
         with tempfile.TemporaryDirectory(prefix="fs_fix_") as tmp:
             ws = Path(tmp)
             _materialize(
@@ -168,8 +181,8 @@ def fix_bug_task(
                 git_url=git_url,
                 git_ref=git_ref,
             )
-            return _run_fix(ws, prompt or _fix_prompt(bug, fix_pattern), timeout_s)
+            return {**_run_fix(ws, prompt_used, timeout_s), "grounding": meta}
     except Exception as exc:  # noqa: BLE001 — never let the task raise
         log.exception("fix_bug_task.failed", error=str(exc))
         return {"available": False, "diff": None, "summary": None,
-                "account": None, "error": str(exc)}
+                "account": None, "error": str(exc), "grounding": meta}

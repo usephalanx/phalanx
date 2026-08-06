@@ -50,6 +50,11 @@ class FindBugsRequest(BaseModel):
         "default production-bug audit prompt is used."
     )
     timeout_s: int = Field(300, ge=30, le=600)
+    spec: str | None = Field(
+        None, description="Opaque FetchSandbox brain/spec id (e.g. 'paddle'). "
+        "Echoed back for attribution and NEVER interpreted by Phalanx — the "
+        "brain stays on the FetchSandbox side.",
+    )
 
 
 class FindBugsResponse(BaseModel):
@@ -57,6 +62,12 @@ class FindBugsResponse(BaseModel):
     bugs: str | None = None
     account: str | None = None  # which Max account served it (max1/max2)
     error: str | None = None
+    grounding: dict | None = Field(
+        None,
+        description="Runtime-observed attribution: which grounding actually "
+        "reached the analysis subprocess (spec, grounded, grounding_fields, "
+        "prompt_sha256, prompt_chars). Metadata only — never the prompt text.",
+    )
 
 
 @router.post("/find_bugs", response_model=FindBugsResponse)
@@ -80,6 +91,7 @@ async def find_bugs(
             "git_ref": req.git_ref,
             "prompt": req.prompt,
             "timeout_s": req.timeout_s,
+            "spec": req.spec,
         },
         queue="cifix_sre",
     )
@@ -102,4 +114,5 @@ async def find_bugs(
         bugs=result.get("bugs"),
         account=result.get("account"),
         error=result.get("error"),
+        grounding=result.get("grounding"),
     )

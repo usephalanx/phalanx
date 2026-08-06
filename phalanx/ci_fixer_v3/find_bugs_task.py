@@ -25,6 +25,7 @@ from pathlib import Path
 
 import structlog
 
+from phalanx.ci_fixer_v3.grounding import describe as describe_grounding
 from phalanx.ci_fixer_v3.run_probe_task import _materialize
 from phalanx.queue.celery_app import celery_app
 
@@ -112,9 +113,17 @@ def find_bugs_task(
     git_ref: str | None = None,
     prompt: str | None = None,
     timeout_s: int = 300,
+    spec: str | None = None,
 ) -> dict:  # pragma: no cover — exercised on the worker
     """Materialize a repo and run the Max subprocess to discover bugs.
-    Returns {available, bugs, account, error}. Never raises."""
+    Returns {available, bugs, account, error, grounding}. Never raises.
+
+    `spec` is an opaque label (FetchSandbox's brain id). Phalanx echoes it for
+    attribution and never interprets it. `grounding` reports which grounding
+    actually reached the subprocess — see phalanx.ci_fixer_v3.grounding.
+    """
+    prompt_used = prompt or _DEFAULT_PROMPT
+    meta = describe_grounding(prompt_used, spec=spec, fields={"prompt": prompt})
     try:
         with tempfile.TemporaryDirectory(prefix="fs_find_") as tmp:
             ws = Path(tmp)
@@ -124,7 +133,10 @@ def find_bugs_task(
                 git_url=git_url,
                 git_ref=git_ref,
             )
-            return _run_claude(ws, prompt or _DEFAULT_PROMPT, timeout_s)
+            return {**_run_claude(ws, prompt_used, timeout_s), "grounding": meta}
     except Exception as exc:  # noqa: BLE001 — never let the task raise
         log.exception("find_bugs_task.failed", error=str(exc))
-        return {"available": False, "bugs": None, "account": None, "error": str(exc)}
+        # Attribution rides the failure path too: an ungrounded run that errors
+        # and a grounded run that errors are different data points.
+        return {"available": False, "bugs": None, "account": None,
+                "error": str(exc), "grounding": meta}

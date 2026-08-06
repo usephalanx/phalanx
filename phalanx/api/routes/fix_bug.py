@@ -55,6 +55,11 @@ class FixBugRequest(BaseModel):
         "from bug + fix_pattern."
     )
     timeout_s: int = Field(300, ge=30, le=600)
+    spec: str | None = Field(
+        None, description="Opaque FetchSandbox brain/spec id (e.g. 'paddle'). "
+        "Echoed back for attribution and NEVER interpreted by Phalanx — the "
+        "brain stays on the FetchSandbox side.",
+    )
 
 
 class FixBugResponse(BaseModel):
@@ -63,6 +68,12 @@ class FixBugResponse(BaseModel):
     summary: str | None = None    # subprocess's own note on what it changed
     account: str | None = None    # which Max account served it (max1/max2)
     error: str | None = None
+    grounding: dict | None = Field(
+        None,
+        description="Runtime-observed attribution: whether the brain's "
+        "fix_pattern (or a prompt override) actually reached the subprocess. "
+        "Metadata only — never the prompt text.",
+    )
 
 
 @router.post("/fix_bug", response_model=FixBugResponse)
@@ -89,6 +100,7 @@ async def fix_bug(
             "fix_pattern": req.fix_pattern,
             "prompt": req.prompt,
             "timeout_s": req.timeout_s,
+            "spec": req.spec,
         },
         queue="cifix_sre",
     )
@@ -112,4 +124,5 @@ async def fix_bug(
         summary=result.get("summary"),
         account=result.get("account"),
         error=result.get("error"),
+        grounding=result.get("grounding"),
     )
