@@ -146,6 +146,11 @@ services:
   phalanx-ci-fixer-worker:
     image: phalanx-worker:latest
     <<: *forge-base
+    # Max tokens for the find_bugs task, scoped to THIS worker only (not the API
+    # or other services). /etc/claude.env is host-managed, mode 600.
+    env_file:
+      - .env
+      - /etc/claude.env
     command: >
       celery -A phalanx.queue.celery_app worker
       --loglevel=warning

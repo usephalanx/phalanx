@@ -75,6 +75,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
+# Claude Code CLI (native install, no node) for the find_bugs task on the
+# ci-fixer-worker, which runs as root -> installs to /root/.local/bin/claude.
+# The API container shares this image but never invokes claude.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}"
+
 RUN groupadd --gid 1001 forge && \
     useradd --uid 1001 --gid forge --shell /bin/bash --create-home forge
 
