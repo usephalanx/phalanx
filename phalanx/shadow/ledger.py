@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from phalanx.db.models import ShadowLedger
+from phalanx.shadow.ledger_export import append_ledger_row_async
 
 
 async def _next_attempt_number(
@@ -71,6 +72,8 @@ async def create_pending(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    # P0-2 — JSONL export AFTER commit. Failure is logged, never raised.
+    await append_ledger_row_async(to_dict(row), exported_by="create_pending")
     return row
 
 
@@ -108,6 +111,7 @@ async def update_with_results(
     run_seconds: int | None,
     failure_class: str | None = None,
     notes: str | None = None,
+    provenance: dict | None = None,
 ) -> ShadowLedger:
     """Update a pending row with terminal-state results.
 
@@ -115,6 +119,9 @@ async def update_with_results(
     the empty-string case if a caller wants to clear an earlier value.
     `None` leaves the column untouched (preserves any value the
     runtime hardening's stuck-task detector wrote upstream).
+
+    `provenance` — P0-5 — records which task row each field was derived
+    from. See phalanx.shadow.provenance for the schema.
     """
     row = await get(session, ledger_id)
     if row is None:
@@ -132,9 +139,45 @@ async def update_with_results(
         row.failure_class = failure_class
     if notes is not None:
         row.notes = notes
+    if provenance is not None:
+        row.phalanx_provenance = provenance
     await session.commit()
     await session.refresh(row)
+    # P0-2 — JSONL export AFTER commit. Failure is logged, never raised.
+    await append_ledger_row_async(to_dict(row), exported_by="update_with_results")
+    # Path B (2026-05-20) — opt-in maintainer-facing PR comment.
+    # Suppress + idempotency + opt-in checks all live inside the poster;
+    # this call site only needs to fetch the integration and pass through.
+    await _maybe_post_maintainer_comment(session, row)
     return row
+
+
+async def _maybe_post_maintainer_comment(
+    session: AsyncSession, row: ShadowLedger
+) -> None:
+    """Best-effort maintainer-comment delivery. Never raises."""
+    try:
+        # Local imports keep the ledger module's import surface narrow.
+        from phalanx.db.models import CIIntegration  # noqa: PLC0415
+        from phalanx.shadow.maintainer_comments import (  # noqa: PLC0415
+            post_maintainer_comment_async,
+        )
+        result = await session.execute(
+            select(CIIntegration).where(CIIntegration.repo_full_name == row.repo)
+        )
+        integration = result.scalar_one_or_none()
+        if integration is None:
+            return
+        await post_maintainer_comment_async(
+            row_dict=to_dict(row),
+            integration_enabled=bool(getattr(
+                integration, "maintainer_comments_enabled", False,
+            )),
+            integration_token=integration.github_token,
+        )
+    except Exception:  # noqa: BLE001
+        # Never let comment-delivery break the ledger write.
+        return
 
 
 async def get(session: AsyncSession, ledger_id: str) -> ShadowLedger | None:
@@ -219,6 +262,11 @@ def to_dict(row: ShadowLedger) -> dict[str, Any]:
         "phalanx_tool_calls": row.phalanx_tool_calls,
         "phalanx_cost_usd": row.phalanx_cost_usd,
         "phalanx_run_seconds": row.phalanx_run_seconds,
+        "phalanx_provenance": row.phalanx_provenance,
+        "reconciled_at": _iso(row.reconciled_at),
+        "reconciled_reason": row.reconciled_reason,
+        "previous_verdict": row.previous_verdict,
+        "previous_failure_class": row.previous_failure_class,
         "ground_truth_status": row.ground_truth_status,
         "maintainer_fix_commit_sha": row.maintainer_fix_commit_sha,
         "maintainer_actual_patch": row.maintainer_actual_patch,

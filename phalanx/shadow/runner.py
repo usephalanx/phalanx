@@ -301,19 +301,76 @@ async def _read_terminal_evidence(run_id: str) -> dict[str, Any]:
     }
 
 
-def _detect_sre_setup_failure(tasks: list) -> bool:
-    """True iff the SRE setup task in the run FAILED with a
-    sandbox_provisioning_failed error.
+def _classify_phase_from_command(cmd: str | None) -> str:
+    """P1-6 v2 — derive phase from the failing command. Order matters:
+    `uv pip install` must classify as 'uv' BEFORE 'pip' because the
+    substring 'pip install' also matches uv-driven installs."""
+    if not isinstance(cmd, str):
+        return "unknown"
+    c = cmd.lower().strip()
+    # uv ahead of pip — uv pip install, uv sync, uv run, uv add, uv venv
+    if "uv pip" in c or c.startswith("uv ") or " uv " in c or "uv sync" in c or "uv run" in c or "uv venv" in c or "uv add" in c:
+        return "uv"
+    if "apt-get" in c or c.startswith("apt ") or "apt install" in c:
+        return "apt"
+    if "pip install" in c or c.startswith("pip ") or "pip3 install" in c:
+        return "pip"
+    if "git clone" in c or "git submodule" in c or c.startswith("git "):
+        return "git"
+    # Pre-install infra steps: docker run, mkdir, chown, docker cp, etc.
+    if "docker run" in c or "docker cp" in c or c.startswith("mkdir") or c.startswith("chown"):
+        return "infra"
+    return "unknown"
 
-    Surfaced on Phase 2a: psf/black + sphinx-doc/sphinx ran a workflow
-    command that exit'd 1 in a clean sandbox (e.g., a `GITHUB_BASE_REF`
-    guard), or a uv install failed during provisioning. In both cases
-    the SRE setup task FAILED before TL even started — but the prior
-    classifier saw an empty TL output and defaulted to SAFE_ESCALATE
-    via the confidence==0.0 branch, masking real infra failures.
+
+def _classify_phase_from_error(error: str | None) -> str:
+    """When no failed command is available (e.g. docker_run_failed
+    happens before any command runs), the error string's prefix names
+    the implicit step."""
+    if not isinstance(error, str):
+        return "unknown"
+    head = error.lower()
+    if head.startswith("docker_run_failed") or head.startswith("docker_cp") or head.startswith("mkdir_workspace"):
+        return "infra"
+    if head.startswith("baseline_apt_install") or "apt-get" in head:
+        return "apt"
+    if "pip install" in head:
+        return "pip"
+    if head.startswith("install_command_failed"):
+        # Parse the command after the prefix and reclassify.
+        return _classify_phase_from_command(error.split(":", 1)[-1].strip())
+    return "unknown"
+
+
+def _detect_sre_setup_failure(tasks: list) -> dict | None:
+    """If the SRE setup task FAILED with sandbox_provisioning_failed,
+    return a structured diagnostic dict; otherwise None.
+
+    P1-6: previously returned bool. P1-6 v2 enriches the dict with
+    per-command exit_code + stderr_tail + stdout_tail + phase + subclass,
+    so the ledger row alone tells the operator exactly which command
+    failed, with what exit code, and which install phase (apt/pip/uv/git/
+    infra).
+
+    Returned dict shape:
+      {
+        "failed_step":      pipeline step name (e.g. "docker_run", "apt_install_baseline", "install_command")
+        "failed_command":   the exact command that failed (or implied step name)
+        "exit_code":        int or None
+        "error_message":    short stripped error string (max 500 chars)
+        "stderr_tail":      last 500 chars of stderr from the failing step
+        "stdout_tail":      last 500 chars of stdout from the failing step (or None)
+        "phase":            one of: "apt", "pip", "uv", "git", "infra", "unknown"
+        "failure_subclass": one of FAILED_SANDBOX_SETUP_{APT,PIP,UV,GIT,UNKNOWN}
+        "base_image":       env_spec.base_image
+        "stack":             env_spec.stack
+        "install_commands": first 3 install_commands from env_spec (planned)
+        "setup_log_tail":   last 3 entries from setup_log (full per-step records)
+        "sre_task_id":      the source task's id (cross-reference)
+      }
     """
     if not tasks:
-        return False
+        return None
     for t in tasks:
         role = getattr(t, "agent_role", None)
         if role not in {"cifix_sre_setup", "cifix_sre"}:
@@ -322,14 +379,76 @@ def _detect_sre_setup_failure(tasks: list) -> bool:
         if status != "FAILED":
             continue
         err = getattr(t, "error", None) or ""
-        if isinstance(err, str) and "sandbox_provisioning_failed" in err:
-            return True
-    return False
+        if not (isinstance(err, str) and "sandbox_provisioning_failed" in err):
+            continue
+
+        # Strip the "sandbox_provisioning_failed: " prefix.
+        error_message = err.split("sandbox_provisioning_failed:", 1)[-1].strip()
+
+        # Pull structured fields out of task.output.
+        out = getattr(t, "output", None) or {}
+        out = out if isinstance(out, dict) else {}
+        env_spec = out.get("env_spec") if isinstance(out.get("env_spec"), dict) else {}
+        setup_log = out.get("setup_log") if isinstance(out.get("setup_log"), list) else []
+        install_cmds = env_spec.get("install_commands") or []
+
+        # The LAST entry in setup_log is the one that failed (provisioner
+        # appends-then-fails). If setup_log is empty, the failure happened
+        # before any step ran (typically docker_run_failed).
+        last_step: dict = setup_log[-1] if setup_log else {}
+        if not isinstance(last_step, dict):
+            last_step = {}
+
+        # Failure happens BEFORE any step is logged → derive everything
+        # from the error prefix.
+        if not setup_log:
+            # error_message looks like "docker_run_failed: <reason>"
+            prefix = error_message.split(":", 1)[0] if ":" in error_message else ""
+            failed_step = prefix or "unknown"
+            failed_command = {
+                "docker_run_failed": "docker run",
+            }.get(prefix, prefix or "unknown")
+            exit_code = None
+            stderr_tail = error_message.split(":", 1)[-1].strip() if ":" in error_message else error_message
+            stdout_tail = None
+            phase = _classify_phase_from_error(error_message)
+        else:
+            failed_step = last_step.get("step") or "unknown"
+            failed_command = last_step.get("cmd") or failed_step
+            exit_code = last_step.get("exit_code")
+            stderr_tail = last_step.get("error") or error_message
+            stdout_tail = last_step.get("stdout_tail")
+            phase = _classify_phase_from_command(failed_command)
+            if phase == "unknown":
+                # Fall back to error-string classification (covers docker_cp etc.)
+                phase = _classify_phase_from_error(error_message)
+
+        from phalanx.runtime.infra_verdicts import SANDBOX_PHASE_TO_FAILURE_CLASS  # noqa: PLC0415
+        failure_subclass = SANDBOX_PHASE_TO_FAILURE_CLASS.get(
+            phase, SANDBOX_PHASE_TO_FAILURE_CLASS["unknown"]
+        )
+
+        return {
+            "failed_step": failed_step,
+            "failed_command": failed_command,
+            "exit_code": exit_code,
+            "error_message": (error_message or "")[:500],
+            "stderr_tail": (stderr_tail or "")[-500:] if stderr_tail else None,
+            "stdout_tail": (stdout_tail or "")[-500:] if stdout_tail else None,
+            "phase": phase,
+            "failure_subclass": failure_subclass,
+            "base_image": env_spec.get("base_image"),
+            "stack": env_spec.get("stack"),
+            "install_commands": install_cmds[:3] if isinstance(install_cmds, list) else [],
+            "setup_log_tail": setup_log[-3:],
+            "sre_task_id": getattr(t, "id", None),
+        }
+    return None
 
 
 def _classify_verdict(
     *, run_status: str, tl: dict, eng: dict, tasks: list | None = None,
-) -> str:
+) -> tuple[str, str | None]:
     """SHIPPED_PROPOSED / SAFE_ESCALATE / FAILED.
 
     The classifier maps each terminal run state to one of three outcomes
@@ -364,13 +483,13 @@ def _classify_verdict(
     confidence==0.0 fallback below.
     """
     if eng.get("shadow_mode") is True and eng.get("shadow_verdict") == "SHIPPED_PROPOSED":
-        return "SHIPPED_PROPOSED"
+        return "SHIPPED_PROPOSED", "engineer_shipped_proposed"
 
     # NEW v1.7.3 — infra failure detected from task evidence.
     # SRE-setup failure means TL never ran, so the empty-TL check
     # below would otherwise default to SAFE_ESCALATE.
     if _detect_sre_setup_failure(tasks or []):
-        return "FAILED"
+        return "FAILED", "sandbox_setup_failed"
 
     if isinstance(tl, dict):
         error_class = tl.get("error_class")
@@ -378,32 +497,35 @@ def _classify_verdict(
         # SAFE_ESCALATE (c) — calibration validator refused to ship a
         # hedged confidence on a clear-shape fix.
         if error_class == "plan_validation_failed" and isinstance(validation_error, str) and "confidence_calibration_failed" in validation_error:
-            return "SAFE_ESCALATE"
+            return "SAFE_ESCALATE", "calibration_failed"
         # SAFE_ESCALATE (d) — TL self-critique gate rejected its own
         # emit. v1.6.0 self_critique_inconsistent fires when TL emits
         # at confidence > 0.5 but flags one of the c1-c8 checks as
-        # False (e.g., grounding_satisfied=False). The architecture
-        # caught its own grounding gap and refused to ship — same
-        # semantic property as the calibration validator above.
-        # Surfaced concretely on the v1.7.3 hardening proof S4 run:
-        # TL emitted at 0.76 with grounding_satisfied=False; the gate
-        # rejected; ledger landed FAILED, masking the safety win.
+        # False (e.g., grounding_satisfied=False).
         if error_class == "self_critique_inconsistent":
-            return "SAFE_ESCALATE"
+            return "SAFE_ESCALATE", "self_critique_inconsistent"
 
     confidence = float(tl.get("confidence") or 0.0) if isinstance(tl, dict) else 0.0
     review_decision = tl.get("review_decision") if isinstance(tl, dict) else None
-    if review_decision == "ESCALATE" or confidence == 0.0:
-        return "SAFE_ESCALATE"
-    return "FAILED"
+    if review_decision == "ESCALATE":
+        return "SAFE_ESCALATE", "tl_escalated"
+    if confidence == 0.0:
+        return "SAFE_ESCALATE", "tl_zero_confidence"
+    return "FAILED", "tl_emitted_but_engineer_did_not_ship"
 
 
-async def _resolve_failure_class(run_id: str, tasks: list) -> str | None:
-    """Resolve the ledger row's failure_class. Read order:
+async def _resolve_failure_class(
+    run_id: str, tasks: list,
+) -> tuple[str | None, dict | None]:
+    """Resolve the ledger row's failure_class + diagnostic. Read order:
       1. runs.failure_class (set by v1.7.3 hardening commander/detector
          for FAILED_INFRA_TIMEOUT / FAILED_INFRA_WORKER_HANG).
-      2. SRE setup task evidence → FAILED_SANDBOX_SETUP.
+      2. SRE setup task evidence → FAILED_SANDBOX_SETUP (with diagnostic).
       3. None (architecture failure or healthy run).
+
+    Returns (failure_class, sre_setup_diagnostic).  The diagnostic is
+    None unless failure_class == FAILED_SANDBOX_SETUP and the SRE setup
+    task left a structured failure payload (P1-6).
     """
     async with get_db() as session:
         result = await session.execute(
@@ -411,13 +533,33 @@ async def _resolve_failure_class(run_id: str, tasks: list) -> str | None:
         )
         row = result.one_or_none()
     fc_from_run = row[0] if row else None
-    if fc_from_run:
-        return fc_from_run
-    if _detect_sre_setup_failure(tasks):
-        from phalanx.runtime.infra_verdicts import FAILED_SANDBOX_SETUP  # noqa: PLC0415
 
-        return FAILED_SANDBOX_SETUP
-    return None
+    # Always probe the SRE diagnostic — it's useful even when the Run row
+    # already carries FAILED_SANDBOX_SETUP from a prior reconciliation.
+    sre_diag = _detect_sre_setup_failure(tasks)
+
+    if fc_from_run:
+        # If Run.failure_class is already FAILED_SANDBOX_SETUP-shaped and
+        # we have a fresh diagnostic, prefer the diagnostic's specific
+        # subclass over the generic class. Otherwise pass through.
+        from phalanx.runtime.infra_verdicts import (  # noqa: PLC0415
+            FAILED_SANDBOX_SETUP,
+            INFRA_FAILURE_CLASSES,
+        )
+        is_sandbox_class = (
+            fc_from_run == FAILED_SANDBOX_SETUP
+            or fc_from_run.startswith("FAILED_SANDBOX_SETUP_")
+        )
+        if is_sandbox_class and sre_diag is not None:
+            # Promote to the specific subclass from the diagnostic.
+            return sre_diag["failure_subclass"], sre_diag
+        return fc_from_run, (sre_diag if is_sandbox_class else None)
+
+    if sre_diag is not None:
+        # New-row write path: subclass from diagnostic.
+        return sre_diag["failure_subclass"], sre_diag
+
+    return None, None
 
 
 def _approx_cost_usd(total_tokens: int) -> float:
@@ -489,6 +631,12 @@ async def run_shadow_for_workflow(
         row = await ledger_crud.get(session, ledger_id)
         row.phalanx_run_id = run_id
         await session.commit()
+        await session.refresh(row)
+        # P0-2 — JSONL export AFTER commit. Failure logged, never raised.
+        from phalanx.shadow.ledger_export import append_ledger_row_async
+        await append_ledger_row_async(
+            ledger_crud.to_dict(row), exported_by="link_run_id"
+        )
 
     log.info(
         "shadow.dispatch",
@@ -512,14 +660,42 @@ async def run_shadow_for_workflow(
     elapsed_s = int(time.time() - started_at)
     log.info("shadow.terminal", run_id=run_id, status=final_status, elapsed_s=elapsed_s)
 
+    # P0-6 — if the run is still non-terminal at CLI poll timeout, do NOT
+    # write a terminal verdict. Leave the row PENDING so the reconciler
+    # can finalize it from the run's actual terminal state when it lands.
+    # This closes the 2026-05-12 W2 Batch 1 evidence-corruption hole.
+    _NON_TERMINAL_RUN_STATUSES = {"INTAKE", "EXECUTING", "PENDING", "PLANNING"}
+    if final_status in _NON_TERMINAL_RUN_STATUSES or final_status == "TIMEOUT":
+        log.info(
+            "shadow.cli_pending_exit",
+            run_id=run_id,
+            ledger_id=ledger_id,
+            run_status=final_status,
+            elapsed_s=elapsed_s,
+            reason="run did not reach terminal state within CLI poll budget; "
+                   "reconciler will finalize",
+        )
+        async with get_db() as session:
+            row = await ledger_crud.get(session, ledger_id)
+        return {
+            **ledger_crud.to_dict(row),
+            "_cli_status": "RUN_STILL_ACTIVE",
+            "_cli_message": (
+                f"Run did not terminate within {poll_timeout_s}s. "
+                f"Ledger row left PENDING; reconciler will finalize within "
+                f"~2 minutes of run completion. "
+                f"Track with: phalanx shadow show {ledger_id}"
+            ),
+        }
+
     evidence = await _read_terminal_evidence(run_id)
     tl = evidence["tl_output"]
     eng = evidence["engineer_output"]
     tasks = evidence["tasks"]
-    verdict = _classify_verdict(
+    verdict, classification_reason = _classify_verdict(
         run_status=final_status, tl=tl, eng=eng, tasks=tasks,
     )
-    failure_class = await _resolve_failure_class(run_id, tasks)
+    failure_class, sre_setup_diagnostic = await _resolve_failure_class(run_id, tasks)
 
     proposed_patch = eng.get("diff") if isinstance(eng, dict) else None
     confidence = (
@@ -529,6 +705,87 @@ async def run_shadow_for_workflow(
     affected_files = tl.get("affected_files") if isinstance(tl, dict) else None
     tool_calls = tl.get("tool_calls_used") if isinstance(tl, dict) else None
     iterations = 1  # MVP — multi-iter is a separate workstream
+
+    # P0-5 — synthesize root_cause if SAFE_ESCALATE landed with no diagnosis.
+    # Operationally a SAFE_ESCALATE row with NULL root_cause is
+    # indistinguishable from a silent failure — closes W1.10 blind spot.
+    # P1-6 — also synthesize root_cause for FAILED + FAILED_SANDBOX_SETUP
+    # from the structured SRE diagnostic so the ledger row alone tells
+    # the operator which step failed and why.
+    root_cause_synthesized = False
+    root_cause_synthesis_reason: str | None = None
+    if verdict == "SAFE_ESCALATE" and not (root_cause or "").strip():
+        from phalanx.shadow.provenance import synthesize_root_cause_for_safe_escalate  # noqa: PLC0415
+        root_cause = synthesize_root_cause_for_safe_escalate(
+            classification_reason, tl if isinstance(tl, dict) else {}
+        )
+        root_cause_synthesized = True
+        root_cause_synthesis_reason = classification_reason or "unspecified"
+    elif (
+        verdict == "FAILED"
+        and not (root_cause or "").strip()
+        and sre_setup_diagnostic is not None
+    ):
+        from phalanx.shadow.provenance import synthesize_root_cause_for_sandbox_setup  # noqa: PLC0415
+        root_cause = synthesize_root_cause_for_sandbox_setup(sre_setup_diagnostic)
+        root_cause_synthesized = True
+        root_cause_synthesis_reason = "sandbox_setup_failed"
+
+    # P0-5 — build provenance + run consistency check before writing.
+    from phalanx.shadow.provenance import (  # noqa: PLC0415
+        build_provenance,
+        check_consistency,
+    )
+    provenance = build_provenance(
+        tasks,
+        root_cause_synthesized=root_cause_synthesized,
+        root_cause_synthesis_reason=root_cause_synthesis_reason,
+        sre_setup_diagnostic=sre_setup_diagnostic,
+    )
+    tl_root_cause_full = tl.get("root_cause") if isinstance(tl, dict) else None
+    divergence_detected, divergence_reasons = check_consistency(
+        ledger_confidence=confidence,
+        ledger_root_cause=root_cause,
+        provenance=provenance,
+        tl_task_root_cause_full=tl_root_cause_full,
+    )
+    if divergence_detected:
+        provenance["divergence_detected"] = True
+        provenance["divergence_details"] = divergence_reasons
+        log.error(
+            "ledger.divergence",
+            run_id=run_id,
+            ledger_id=ledger_id,
+            reasons=divergence_reasons,
+            provenance=provenance,
+        )
+
+    # P0-6 — terminal-state validator. Refuse to write an ill-formed
+    # snapshot (e.g. SAFE_ESCALATE with TL task still PENDING). The
+    # reconciler will finalize the row when the run actually terminates.
+    from phalanx.shadow.provenance import is_well_formed_terminal_state  # noqa: PLC0415
+    ok, refusal_reason = is_well_formed_terminal_state(
+        verdict=verdict, provenance=provenance,
+    )
+    if not ok:
+        log.warning(
+            "shadow.cli.refusing_ill_formed_terminal",
+            run_id=run_id,
+            ledger_id=ledger_id,
+            verdict=verdict,
+            reason=refusal_reason,
+        )
+        async with get_db() as session:
+            row = await ledger_crud.get(session, ledger_id)
+        return {
+            **ledger_crud.to_dict(row),
+            "_cli_status": "ILL_FORMED_SNAPSHOT_REFUSED",
+            "_cli_message": (
+                f"Refused to write ill-formed terminal snapshot: {refusal_reason}. "
+                f"Ledger row left PENDING; reconciler will finalize. "
+                f"Track with: phalanx shadow show {ledger_id}"
+            ),
+        }
 
     async with get_db() as session:
         updated = await ledger_crud.update_with_results(
@@ -548,5 +805,6 @@ async def run_shadow_for_workflow(
                 f"run_status={final_status}; "
                 f"tl_review_decision={tl.get('review_decision') if isinstance(tl, dict) else None}"
             ),
+            provenance=provenance,
         )
         return ledger_crud.to_dict(updated)

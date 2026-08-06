@@ -51,6 +51,44 @@ def _print_banner(result: dict) -> None:
         print(f"  run_secs  : {result.get('phalanx_run_seconds')}")
     if result.get("phalanx_cost_usd") is not None:
         print(f"  cost_usd  : ${result.get('phalanx_cost_usd')}")
+    prov = result.get("phalanx_provenance")
+    if isinstance(prov, dict):
+        print("  provenance:")
+        print(f"    source       : {prov.get('chosen_source_role')}")
+        print(f"    tl_task_id   : {prov.get('tl_task_id')}")
+        print(f"    tl_seq#      : {prov.get('tl_task_sequence_num')}")
+        print(f"    tl_count     : {prov.get('tl_task_count')}")
+        print(f"    tl_confidence: {prov.get('tl_task_confidence')}")
+        print(f"    review       : {prov.get('tl_task_review_decision')}")
+        if prov.get("root_cause_synthesized"):
+            print(f"    synthesized  : YES ({prov.get('root_cause_synthesis_reason')})")
+        if prov.get("divergence_detected"):
+            print("    DIVERGENCE   : ⚠️  ledger fields do not match source task")
+            for r in prov.get("divergence_details") or []:
+                print(f"      - {r}")
+        sre_diag = prov.get("sre_setup_diagnostic")
+        if isinstance(sre_diag, dict):
+            print("  sre_setup_diagnostic:")
+            print(f"    phase         : {sre_diag.get('phase')}")
+            print(f"    subclass      : {sre_diag.get('failure_subclass')}")
+            print(f"    failed_step   : {sre_diag.get('failed_step')}")
+            cmd = sre_diag.get('failed_command') or ''
+            cmd_disp = cmd if len(cmd) <= 100 else cmd[:97] + '...'
+            print(f"    failed_command: {cmd_disp}")
+            print(f"    exit_code     : {sre_diag.get('exit_code')}")
+            err = sre_diag.get('stderr_tail') or sre_diag.get('error_message') or ''
+            err_disp = err if len(err) <= 200 else err[:197] + '...'
+            print(f"    stderr_tail   : {err_disp}")
+            stdout = sre_diag.get('stdout_tail') or ''
+            if stdout:
+                stdout_disp = stdout if len(stdout) <= 120 else stdout[:117] + '...'
+                print(f"    stdout_tail   : {stdout_disp}")
+            print(f"    base_image    : {sre_diag.get('base_image')}")
+            print(f"    stack         : {sre_diag.get('stack')}")
+    if result.get("reconciled_at"):
+        print(f"  reconciled_at      : {result.get('reconciled_at')}")
+        print(f"  reconciled_reason  : {result.get('reconciled_reason')}")
+        print(f"  previous_verdict   : {result.get('previous_verdict')}")
     print("=" * 60)
 
 

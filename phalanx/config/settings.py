@@ -31,6 +31,30 @@ class Settings(BaseSettings):
     postgres_password: str = "forge_dev_password"
     postgres_db: str = "forge"
 
+    # ── Shadow ledger durability (P0-2) ───────────────────────────────────────
+    # Append-only JSONL stream of every shadow_ledger row state change.
+    # Relative paths resolve to the repo root, so the same value works inside
+    # the worker container (mounted at /app) and from the host CLI.
+    ledger_jsonl_path: str = "ledger.jsonl"
+
+    # ── Maintainer-facing PR comments (Path B polish pass) ───────────────────
+    # The GitHub handle the maintainer can @-mention to disable Phalanx on
+    # their repo. Rendered in every posted comment's footer. Pilot default
+    # is "rnagulapalle"; override via PHALANX_OPERATOR_HANDLE for other ops.
+    phalanx_operator_handle: str = "rnagulapalle"
+
+    # Optional "Learn more about Phalanx →" link. If empty, the line is
+    # omitted entirely — never render a broken link to a maintainer.
+    phalanx_about_url: str = ""
+
+    # ── Sandbox base-image override (Option β, 2026-05-20) ───────────────────
+    # When non-empty, overrides env_detector.detect_env's choice of base_image
+    # for Python-stack EnvSpecs. Used to swap python:3.12-slim → a locally-built
+    # image with apt deps pre-installed, eliminating apt-mirror flakiness as
+    # a sandbox-bootstrap blocker. Empty = original behavior (per-repo image
+    # from requires-python). Set via env PHALANX_SANDBOX_PYTHON_BASE_IMAGE_OVERRIDE.
+    phalanx_sandbox_python_base_image_override: str = ""
+
     # ── Redis ─────────────────────────────────────────────────────────────────
     redis_url: str = "redis://redis:6379/0"
     celery_broker_url: str = "redis://redis:6379/0"

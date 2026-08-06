@@ -832,6 +832,14 @@ class CIIntegration(Base):
     cifixer_version: Mapped[str] = mapped_column(String(8), nullable=False, server_default="v2")
     """CI Fixer pipeline selector: 'v2' (single-agent loop) or 'v3' (multi-agent DAG).
     Webhook ingest reads this to decide which dispatcher to call."""
+    maintainer_comments_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    """Path B (2026-05-20): per-repo opt-in for shadow-mode PR-comment delivery.
+    Default false. When true, Phalanx posts a single PR comment per terminal
+    shadow-mode verdict (SHIPPED_PROPOSED, real-TL SAFE_ESCALATE, or real-TL
+    FAILED). Infra-class failures (sandbox setup, infra timeout) and synthesized
+    SAFE_ESCALATE outputs are always suppressed."""
     created_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMPTZ, server_default=func.now())
 
@@ -1128,6 +1136,17 @@ class ShadowLedger(Base):
     phalanx_tool_calls: Mapped[int | None] = mapped_column(Integer)
     phalanx_cost_usd: Mapped[float | None] = mapped_column(Float)
     phalanx_run_seconds: Mapped[int | None] = mapped_column(Integer)
+
+    # P0-5 — audit-trail: which task row each ledger field was derived from.
+    # See phalanx/shadow/provenance.py for the schema.
+    phalanx_provenance: Mapped[dict | None] = mapped_column(JSONB)
+
+    # P0-6 — eventual-consistency: populated when the reconciler heals a
+    # row whose CLI-snapshot verdict disagreed with the final run state.
+    reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMPTZ)
+    reconciled_reason: Mapped[str | None] = mapped_column(String(80))
+    previous_verdict: Mapped[str | None] = mapped_column(String(40))
+    previous_failure_class: Mapped[str | None] = mapped_column(String(40))
 
     ground_truth_status: Mapped[str] = mapped_column(
         String(20), default="pending", nullable=False

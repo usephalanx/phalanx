@@ -33,9 +33,19 @@ celery_app = Celery(
         "phalanx.agents.cifix_challenger",  # v1.7 reviewer (shadow mode initially)
         "phalanx.agents.cifix_engineer",
         "phalanx.agents.cifix_sre",
+        # run-probe task — provisions on the socket-having worker on behalf of
+        # the (socket-less) API. Routed to the cifix_sre queue via the
+        # queue= on its @celery_app.task decorator.
+        "phalanx.ci_fixer_v3.run_probe_task",
+        # FetchSandbox discovery + grounded remediation — same socket-less-API →
+        # cifix_sre-worker pattern as run_probe; routed via queue= on the task.
+        "phalanx.ci_fixer_v3.find_bugs_task",
+        "phalanx.ci_fixer_v3.fix_bug_task",
+        "phalanx.ci_fixer_v3.synthesize_probe_task",
         "phalanx.workflow.advance_run",
         "phalanx.maintenance.tasks",
         "phalanx.maintenance.stuck_task_detector",
+        "phalanx.maintenance.ledger_reconciler",
         "phalanx.memory.tasks",
         "phalanx.skills.ingestion.tasks",
         "phalanx.skills.tasks",
@@ -95,6 +105,12 @@ celery_app.config_from_object(
             "phalanx.agents.cifix_challenger.*": {"queue": "cifix_challenger"},
             "phalanx.agents.cifix_engineer.*": {"queue": "cifix_engineer"},
             "phalanx.agents.cifix_sre.*": {"queue": "cifix_sre"},
+            # run-probe task rides the cifix_sre queue → phalanx-ci-fixer-worker
+            # (the socket-having worker), so the socket-less API never needs it.
+            "phalanx.ci_fixer_v3.run_probe_task.*": {"queue": "cifix_sre"},
+            "phalanx.ci_fixer_v3.find_bugs_task.*": {"queue": "cifix_sre"},
+            "phalanx.ci_fixer_v3.fix_bug_task.*": {"queue": "cifix_sre"},
+            "phalanx.ci_fixer_v3.synthesize_probe_task.*": {"queue": "cifix_sre"},
             "phalanx.skills.ingestion.*": {"queue": "ingestion"},
             "phalanx.skills.drills.*": {"queue": "skill_drills"},
         },
@@ -110,6 +126,10 @@ celery_app.config_from_object(
             "detect-stuck-tasks": {
                 "task": "phalanx.maintenance.stuck_task_detector.detect_stuck_tasks",
                 "schedule": 120,  # v1.7.3 — heartbeat-aware stuck-task sweep
+            },
+            "reconcile-shadow-ledger": {
+                "task": "phalanx.maintenance.ledger_reconciler.reconcile_shadow_ledger",
+                "schedule": 120,  # P0-6 — eventual consistency for ledger
             },
             "decay-memory-relevance": {
                 "task": "phalanx.memory.tasks.decay_relevance",

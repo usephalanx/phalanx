@@ -26,7 +26,28 @@ to FAILED_INFRA_WORKER_HANG."""
 FAILED_SANDBOX_SETUP = "FAILED_SANDBOX_SETUP"
 """SRE setup couldn't provision a sandbox (Docker pull failure, image
 build crash, exec timeout). Distinct from `FAILED_TL` — the LLM agents
-never got a chance to run."""
+never got a chance to run.
+
+P1-6: subclassed when the failing step's phase can be identified.
+The bare class is retained only for pre-P1-6 ledger rows; new rows
+emit one of the FAILED_SANDBOX_SETUP_* subclasses below."""
+
+# ── P1-6 sub-classes by failing-phase ──
+FAILED_SANDBOX_SETUP_APT = "FAILED_SANDBOX_SETUP_APT"
+"""apt-get install failed during sandbox provisioning."""
+
+FAILED_SANDBOX_SETUP_PIP = "FAILED_SANDBOX_SETUP_PIP"
+"""pip install failed during sandbox provisioning."""
+
+FAILED_SANDBOX_SETUP_UV = "FAILED_SANDBOX_SETUP_UV"
+"""uv sync / uv pip install failed during sandbox provisioning."""
+
+FAILED_SANDBOX_SETUP_GIT = "FAILED_SANDBOX_SETUP_GIT"
+"""git clone / git submodule failed during sandbox provisioning."""
+
+FAILED_SANDBOX_SETUP_UNKNOWN = "FAILED_SANDBOX_SETUP_UNKNOWN"
+"""Sandbox setup failed but the phase couldn't be identified (e.g.
+docker_run_failed, mkdir_workspace, or any other pre-install step)."""
 
 FAILED_SANDBOX_CLEANUP = "FAILED_SANDBOX_CLEANUP"
 """Cleanup itself failed (rare — Docker daemon dead). Logged but does
@@ -55,9 +76,24 @@ INFRA_FAILURE_CLASSES = frozenset(
         FAILED_INFRA_TIMEOUT,
         FAILED_INFRA_WORKER_HANG,
         FAILED_SANDBOX_SETUP,
+        FAILED_SANDBOX_SETUP_APT,
+        FAILED_SANDBOX_SETUP_PIP,
+        FAILED_SANDBOX_SETUP_UV,
+        FAILED_SANDBOX_SETUP_GIT,
+        FAILED_SANDBOX_SETUP_UNKNOWN,
         FAILED_SANDBOX_CLEANUP,
     }
 )
+
+# Map phase string → subclass constant. Used by runner._resolve_failure_class.
+SANDBOX_PHASE_TO_FAILURE_CLASS: dict[str, str] = {
+    "apt": FAILED_SANDBOX_SETUP_APT,
+    "pip": FAILED_SANDBOX_SETUP_PIP,
+    "uv": FAILED_SANDBOX_SETUP_UV,
+    "git": FAILED_SANDBOX_SETUP_GIT,
+    "infra": FAILED_SANDBOX_SETUP_UNKNOWN,
+    "unknown": FAILED_SANDBOX_SETUP_UNKNOWN,
+}
 
 ARCHITECTURE_FAILURE_CLASSES = frozenset(
     {

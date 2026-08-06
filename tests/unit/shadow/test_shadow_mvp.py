@@ -50,6 +50,11 @@ class TestLedgerToDict:
         row.phalanx_tool_calls = 7
         row.phalanx_cost_usd = 2.10
         row.phalanx_run_seconds = 612
+        row.phalanx_provenance = None
+        row.reconciled_at = None
+        row.reconciled_reason = None
+        row.previous_verdict = None
+        row.previous_failure_class = None
         row.ground_truth_status = "pending"
         row.maintainer_fix_commit_sha = None
         row.maintainer_actual_patch = None
@@ -75,22 +80,22 @@ class TestClassifyVerdict:
     def test_shipped_proposed_when_engineer_returned_shadow_verdict(self):
         eng = {"shadow_mode": True, "shadow_verdict": "SHIPPED_PROPOSED"}
         tl = {"confidence": 0.85}
-        assert _classify_verdict(run_status="SHIPPED", tl=tl, eng=eng) == "SHIPPED_PROPOSED"
+        assert _classify_verdict(run_status="SHIPPED", tl=tl, eng=eng)[0] == "SHIPPED_PROPOSED"
 
     def test_safe_escalate_when_review_decision_is_escalate(self):
         eng = {}
         tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_safe_escalate_when_confidence_zero(self):
         eng = {}
         tl = {"confidence": 0.0}
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_failed_when_no_shadow_verdict_and_nonzero_confidence(self):
         eng = {}
         tl = {"confidence": 0.45}  # hedged middle, no escalate signal
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "FAILED"
 
     def test_safe_escalate_takes_precedence_over_failed(self):
         # TL emitted ESCALATE but the run still landed FAILED — verdict
@@ -98,7 +103,7 @@ class TestClassifyVerdict:
         # was the right one.
         eng = {}
         tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_calibration_failed_classifies_as_safe_escalate(self):
         """v1.7.2.9 calibration validator rejecting a hedged confidence
@@ -114,7 +119,7 @@ class TestClassifyVerdict:
                 "flake keywords in root_cause). Re-emit with confidence ≥ 0.7"
             ),
         }
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_other_plan_validation_failures_are_still_failed(self):
         """Non-calibration plan_validation_failed (e.g., empty plan,
@@ -126,7 +131,7 @@ class TestClassifyVerdict:
             "error_class": "plan_validation_failed",
             "validation_error": "plan must be a non-empty list",
         }
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "FAILED"
 
     def test_calibration_match_requires_correct_error_class(self):
         """validation_error mentioning calibration without the
@@ -139,7 +144,7 @@ class TestClassifyVerdict:
         }
         # No error_class field → no SAFE_ESCALATE override on this rule.
         # Confidence 0.4 isn't 0.0, no review_decision=ESCALATE → FAILED.
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "FAILED"
 
     def test_self_critique_inconsistent_classifies_as_safe_escalate(self):
         """v1.6.0 self_critique gate rejecting an emit (e.g., TL flagged
@@ -156,7 +161,7 @@ class TestClassifyVerdict:
             "error_class": "self_critique_inconsistent",
             "failing_checks": ["grounding_satisfied"],
         }
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_self_critique_inconsistent_takes_precedence_over_high_confidence(self):
         """Even at 0.95 confidence, a self_critique_inconsistent emit
@@ -168,7 +173,7 @@ class TestClassifyVerdict:
             "error_class": "self_critique_inconsistent",
             "failing_checks": ["affected_files_exist_in_repo"],
         }
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
 
     def test_other_tl_error_classes_remain_failed(self):
         """error_class names that are NEITHER calibration nor
@@ -178,7 +183,7 @@ class TestClassifyVerdict:
             "confidence": 0.8,
             "error_class": "no_fix_spec_emitted",
         }
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "FAILED"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "FAILED"
 
     def test_sandbox_setup_failed_classifies_as_failed_not_safe_escalate(self):
         """v1.7.3 post-Phase-2a — when SRE setup FAILED with
@@ -205,8 +210,7 @@ class TestClassifyVerdict:
         assert (
             _classify_verdict(
                 run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
-            )
-            == "FAILED"
+            )[0] == "FAILED"
         )
 
     def test_sandbox_setup_completed_does_not_force_failed(self):
@@ -225,8 +229,7 @@ class TestClassifyVerdict:
         assert (
             _classify_verdict(
                 run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
-            )
-            == "SAFE_ESCALATE"
+            )[0] == "SAFE_ESCALATE"
         )
 
     def test_sandbox_setup_failed_without_provisioning_marker_falls_through(self):
@@ -250,8 +253,7 @@ class TestClassifyVerdict:
         assert (
             _classify_verdict(
                 run_status="FAILED", tl=tl, eng=eng, tasks=[sre_task]
-            )
-            == "SAFE_ESCALATE"
+            )[0] == "SAFE_ESCALATE"
         )
 
     def test_tasks_none_preserves_backward_compat(self):
@@ -260,18 +262,16 @@ class TestClassifyVerdict:
         eng = {}
         tl = {"confidence": 0.0, "review_decision": "ESCALATE"}
         # Both should produce SAFE_ESCALATE identically
-        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng) == "SAFE_ESCALATE"
+        assert _classify_verdict(run_status="FAILED", tl=tl, eng=eng)[0] == "SAFE_ESCALATE"
         assert (
             _classify_verdict(
                 run_status="FAILED", tl=tl, eng=eng, tasks=None
-            )
-            == "SAFE_ESCALATE"
+            )[0] == "SAFE_ESCALATE"
         )
         assert (
             _classify_verdict(
                 run_status="FAILED", tl=tl, eng=eng, tasks=[]
-            )
-            == "SAFE_ESCALATE"
+            )[0] == "SAFE_ESCALATE"
         )
 
 
