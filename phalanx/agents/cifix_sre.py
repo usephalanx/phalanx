@@ -237,6 +237,27 @@ class CIFixSREAgent(BaseAgent):
         from phalanx.agents._v171_workflow_extractor import extract_recipe
         from phalanx.config.settings import get_settings
 
+        def _apply_python_base_override(spec: "EnvSpec") -> "EnvSpec":
+            # Option β (2026-05-20): swap the Python base image to a pre-baked
+            # variant when settings.phalanx_sandbox_python_base_image_override
+            # is set. Covers all three tiers (cache, Tier 0, Tier 1) so the
+            # apt-mirror flake never fires regardless of which tier wins.
+            if spec.stack != "python":
+                return spec
+            try:
+                override = (
+                    get_settings().phalanx_sandbox_python_base_image_override or ""
+                ).strip()
+            except Exception:
+                return spec
+            if override and override != spec.base_image:
+                original = spec.base_image
+                spec.base_image = override
+                spec.notes.append(
+                    f"base_image overridden by settings: {original!r} → {override!r}"
+                )
+            return spec
+
         cache_dir = self._cache_dir_path()
         repo = ci_context.get("repo") or ""
         failing_job_name = ci_context.get("failing_job_name") or ""
@@ -264,26 +285,30 @@ class CIFixSREAgent(BaseAgent):
         )
         if cached is not None:
             return (
-                self._env_spec_from_cached(workspace_path, cached),
+                _apply_python_base_override(
+                    self._env_spec_from_cached(workspace_path, cached)
+                ),
                 {"tier": "cache", "source": cached.source},
             )
 
         # 3. Use Tier 0 commands if we got them
         if tier0 is not None and tier0.commands:
             return (
-                self._env_spec_from_commands(
-                    workspace_path=workspace_path,
-                    commands=tier0.commands,
-                    source_label=f"workflow:{tier0.workflow_file}::{tier0.job_key}",
-                    skipped_guard_commands=list(tier0.skipped_guard_commands),
-                    skipped_ci_checks=list(tier0.skipped_ci_checks),
+                _apply_python_base_override(
+                    self._env_spec_from_commands(
+                        workspace_path=workspace_path,
+                        commands=tier0.commands,
+                        source_label=f"workflow:{tier0.workflow_file}::{tier0.job_key}",
+                        skipped_guard_commands=list(tier0.skipped_guard_commands),
+                        skipped_ci_checks=list(tier0.skipped_ci_checks),
+                    )
                 ),
                 {"tier": "0", "source": tier0.workflow_file},
             )
 
         # 4. Tier 1 — existing v1.4.0 detect_env path
         env_spec = detect_env(workspace_path)
-        return (env_spec, {"tier": "1", "source": "detect_env"})
+        return (_apply_python_base_override(env_spec), {"tier": "1", "source": "detect_env"})
 
     def _env_spec_from_cached(self, workspace_path: str, cached) -> "EnvSpec":
         """Build an EnvSpec around cached install_commands."""

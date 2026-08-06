@@ -158,6 +158,24 @@ def detect_env(workspace_path: str | Path) -> EnvSpec:
     # Workflow YAML pass runs for every stack — apt deps + test commands are
     # cross-language signals.
     _augment_from_workflows(root, spec)
+
+    # Option β (2026-05-20): config-driven base-image override for the
+    # Python stack. When set, swaps spec.base_image to a pre-baked image
+    # so the provisioner's baseline_apt_install completes deterministically
+    # instead of hitting apt-mirror flakiness. Empty override = no change.
+    if spec.stack == "python":
+        try:
+            from phalanx.config.settings import get_settings  # noqa: PLC0415
+            override = (get_settings().phalanx_sandbox_python_base_image_override or "").strip()
+            if override:
+                original = spec.base_image
+                spec.base_image = override
+                spec.notes.append(
+                    f"base_image overridden by settings: {original!r} → {override!r}"
+                )
+        except Exception:  # noqa: BLE001 — never fail detection on settings issues
+            pass
+
     return spec
 
 
