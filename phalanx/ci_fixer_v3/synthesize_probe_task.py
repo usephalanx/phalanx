@@ -67,12 +67,22 @@ def _detect_lang(ws: Path) -> dict:
             "setup_cmds": ["npm install --no-audit --no-fund --loglevel=error"]}
 
 
-def _synth_prompt(bug: str, env: dict) -> str:
+def _synth_prompt(bug: str, env: dict, grounding: str = "") -> str:
     pf, pc, lang = env["probe_file"], env["probe_cmd"], env["lang"]
+    # When the bug matches a curated FetchSandbox failure class, we hand the probe
+    # author the KNOWN reproduction recipe. Reproducing a known class is a recipe,
+    # not an open-ended search, so this hint makes the probe more reliable (fewer
+    # harness/exit-2 flakes) — the opposite of grounding the bug-FINDER, which
+    # tunnel-visions. It never changes the verdict; the gate still judges the flip.
+    ground = (
+        "\nKNOWN REPRODUCTION for this failure class (follow this recipe to author a "
+        "reliable probe — it is how this class is reproduced in practice):\n"
+        + grounding.strip() + "\n"
+    ) if grounding.strip() else ""
     return (
         "You are FetchSandbox's probe-synthesis engine. Write a SELF-CONTAINED "
         f"behavioral probe IN {lang} that PROVES the bug below on THIS repo's REAL code.\n\n"
-        "BUG:\n" + bug.strip() + "\n\n"
+        "BUG:\n" + bug.strip() + "\n" + ground + "\n"
         "Requirements:\n"
         f"- Write the probe to `{pf}` at the repo root; it runs as `{pc}`.\n"
         f"- It MUST exercise the repo's REAL code (import/require the actual handlers/"
@@ -176,6 +186,7 @@ def synthesize_probe_task(
     git_url: str | None = None,
     git_ref: str | None = None,
     bug: str = "",
+    grounding: str = "",
     timeout_s: int = 600,
 ) -> dict:  # pragma: no cover — exercised on the worker
     """Author + self-validate a probe for `bug` on the (buggy) repo, in the repo's
@@ -194,7 +205,7 @@ def synthesize_probe_task(
                 return {"available": False, "lang": env["lang"],
                         "error": "dependency install failed on worker"}
 
-            account, summary = _run_claude(ws, _synth_prompt(bug, env), timeout_s)
+            account, summary = _run_claude(ws, _synth_prompt(bug, env, grounding), timeout_s)
             probe_path = ws / env["probe_file"]
             if not probe_path.exists():
                 return {"available": False, "account": account, "lang": env["lang"],

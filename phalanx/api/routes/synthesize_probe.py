@@ -36,6 +36,8 @@ class SynthesizeProbeRequest(BaseModel):
     git_url: str | None = Field(None, description="Public git URL to clone instead.")
     git_ref: str | None = Field(None, description="Optional ref/branch for git_url.")
     bug: str = Field("", description="The bug to author a probe for (file:line + description).")
+    grounding: str = Field("", description="Optional KNOWN reproduction recipe for this bug's "
+                           "failure class (from the FS brain), to make the probe more reliable.")
     timeout_s: int = Field(600, ge=60, le=900)
 
 
@@ -70,6 +72,7 @@ async def synthesize_probe(
             "git_url": req.git_url,
             "git_ref": req.git_ref,
             "bug": req.bug,
+            "grounding": req.grounding,
             "timeout_s": req.timeout_s,
         },
         queue="cifix_sre",
