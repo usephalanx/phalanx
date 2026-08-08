@@ -37,12 +37,54 @@ log = structlog.get_logger(__name__)
 _TOOLS = "Read,Grep,Glob,Write,Edit,Bash"
 
 
+# DB / infra dependencies that mean the app is a SERVICE (needs a running DB or
+# broker to boot) — the clean sandbox has none, so the probe must STUB them.
+_DB_DEPS = (
+    "pg", "pg-promise", "mysql", "mysql2", "mongoose", "mongodb", "prisma",
+    "@prisma/client", "sequelize", "typeorm", "knex", "redis", "ioredis",
+    "psycopg", "psycopg2", "psycopg2-binary", "asyncpg", "sqlalchemy",
+    "databases", "django", "aiomysql", "pymongo", "motor", "redis-py",
+)
+
+
+def _service_signals(ws: Path) -> tuple[bool, str]:
+    """Does this app need external infra (DB/broker) to boot? Returns (service,
+    db_hint). Read from manifests + a light content scan — a service app cannot
+    run in the clean sandbox unless the probe stubs that infra."""
+    blob = ""
+    for mf in ("package.json", "requirements.txt", "pyproject.toml", "setup.py"):
+        p = ws / mf
+        if p.exists():
+            try:
+                blob += p.read_text().lower() + "\n"
+            except Exception:  # noqa: BLE001
+                pass
+    hits = sorted({d for d in _DB_DEPS if d in blob})
+    if hits:
+        return True, ", ".join(hits[:4])
+    # content fallback: a db.query / new Pool / create_engine reachable from a route
+    try:
+        for f in list(ws.glob("**/*.js"))[:40] + list(ws.glob("**/*.py"))[:40]:
+            t = f.read_text(errors="ignore").lower()
+            if "new pool(" in t or "createpool" in t or "create_engine" in t or "psycopg" in t:
+                return True, "database"
+    except Exception:  # noqa: BLE001
+        pass
+    return False, ""
+
+
 def _detect_lang(ws: Path) -> dict:
-    """(lang, probe_file, probe_cmd, setup_cmds) from the repo's manifests."""
+    """(lang, probe_file, probe_cmd, setup_cmds, service, db_hint) from manifests."""
+    service, db_hint = _service_signals(ws)
     if (ws / "package.json").exists():
+        node_setup = ["npm install --no-audit --no-fund --loglevel=error"]
+        if service:
+            # supertest drives the in-process Express app; not an app dep, so the
+            # clean container lacks it (same gap httpx filled for Python).
+            node_setup.append("npm install --no-audit --no-fund --loglevel=error supertest")
         return {"lang": "JavaScript/Node", "probe_file": "_fs_probe.js",
-                "probe_cmd": "node _fs_probe.js",
-                "setup_cmds": ["npm install --no-audit --no-fund --loglevel=error"]}
+                "probe_cmd": "node _fs_probe.js", "setup_cmds": node_setup,
+                "service": service, "db_hint": db_hint}
     is_py = (ws / "requirements.txt").exists() or (ws / "pyproject.toml").exists() \
         or (ws / "setup.py").exists() or any(ws.glob("*.py")) or any(ws.glob("**/*.py"))
     if is_py:
@@ -60,11 +102,13 @@ def _detect_lang(ws: Path) -> dict:
         # (self-validation and prove must run the SAME install set).
         setup.append("pip install --quiet --disable-pip-version-check httpx requests")
         return {"lang": "Python", "probe_file": "_fs_probe.py",
-                "probe_cmd": "python3 _fs_probe.py", "setup_cmds": setup}
+                "probe_cmd": "python3 _fs_probe.py", "setup_cmds": setup,
+                "service": service, "db_hint": db_hint}
     # default: Node
     return {"lang": "JavaScript/Node", "probe_file": "_fs_probe.js",
             "probe_cmd": "node _fs_probe.js",
-            "setup_cmds": ["npm install --no-audit --no-fund --loglevel=error"]}
+            "setup_cmds": ["npm install --no-audit --no-fund --loglevel=error"],
+            "service": service, "db_hint": db_hint}
 
 
 def _synth_prompt(bug: str, env: dict, grounding: str = "") -> str:
@@ -79,10 +123,48 @@ def _synth_prompt(bug: str, env: dict, grounding: str = "") -> str:
         "reliable probe — it is how this class is reproduced in practice):\n"
         + grounding.strip() + "\n"
     ) if grounding.strip() else ""
+    # Service apps (Express+pg, FastAPI+psycopg/sqlalchemy, …) need a running DB
+    # to boot — the clean sandbox has none. The recipe: STUB the infra the bug
+    # does not depend on, KEEP the real deciding I/O, drive the app in-process.
+    svc = ""
+    if env.get("service"):
+        db = env.get("db_hint") or "a database"
+        if "Node" in lang:
+            svc = (
+                f"\nSERVICE APP ({db}) — CRITICAL: this app needs infra to boot and the sandbox has "
+                "NONE, so you MUST stub it or the probe will exit 2 (couldn't run the service):\n"
+                "  * BEFORE requiring the app, replace the DB client with an in-memory fake that "
+                "RECORDS queries and returns canned rows — e.g. monkeypatch `require('pg').Pool` "
+                "(and .connect/.query), or override the app's own db module via require cache. The "
+                "recorder RECORDS side effects; it never decides the verdict.\n"
+                "  * Set EVERY env var the app reads at import (DATABASE_URL, API keys, secrets, "
+                "*_PRICE_ID, APP_URL) to dummy values so it boots without throwing.\n"
+                "  * Import the real Express `app` in-process and fire requests with `supertest` "
+                "(or node's http against `app.listen(0)`). Do NOT spawn a separate server/process "
+                "and do NOT expect a real DB/network.\n"
+                "  * KEEP the real deciding I/O: if the bug depends on Stripe/Paddle/Svix signature "
+                "verification, compute a VALID signature against the app's own secret.\n"
+                "  * Judge the invariant from the RECORDER (how many times the side effect ran / "
+                "with what args), not from the stub's return values.\n"
+            )
+        else:
+            svc = (
+                f"\nSERVICE APP ({db}) — CRITICAL: this app needs infra to boot and the sandbox has "
+                "NONE, so you MUST stub it or the probe will exit 2:\n"
+                "  * BEFORE importing the app, replace the DB layer with an in-memory recorder — "
+                "monkeypatch the db module / psycopg connect / sqlalchemy engine (via sys.modules or "
+                "unittest.mock) so queries are recorded and canned rows returned. It records, never "
+                "decides.\n"
+                "  * Set every env var the app reads at import to dummy values so it boots.\n"
+                "  * Drive the real app in-process via `fastapi.testclient.TestClient` (or the app's "
+                "framework equivalent). Do NOT expect a real DB/network.\n"
+                "  * KEEP the real deciding I/O (signature/token verification — compute a valid one).\n"
+                "  * Judge the invariant from the RECORDER, not the stub.\n"
+            )
     return (
         "You are FetchSandbox's probe-synthesis engine. Write a SELF-CONTAINED "
         f"behavioral probe IN {lang} that PROVES the bug below on THIS repo's REAL code.\n\n"
-        "BUG:\n" + bug.strip() + "\n" + ground + "\n"
+        "BUG:\n" + bug.strip() + "\n" + ground + svc + "\n"
         "Requirements:\n"
         f"- Write the probe to `{pf}` at the repo root; it runs as `{pc}`.\n"
         f"- It MUST exercise the repo's REAL code (import/require the actual handlers/"
