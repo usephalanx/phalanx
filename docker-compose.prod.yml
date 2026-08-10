@@ -257,13 +257,20 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # No healthcheck: beat is not a worker, so `celery inspect ping` does not
-    # apply to it, and a process check needs pgrep/ps which this slim image is
-    # not guaranteed to carry. A healthcheck that cannot be verified is worse
-    # than none — the ci-fixer-worker already spent weeks reporting "unhealthy"
-    # while working fine. Liveness is asserted instead by `make beat-health`
-    # (scripts/beat_health.sh), which reads the redbeat keys beat writes to
-    # redis on every tick — the real signal.
+    # Explicitly DISABLED, not merely omitted. The Dockerfile sets an image-level
+    # HEALTHCHECK (`curl -f http://localhost:8000/health`) for the API; every
+    # container from this image inherits it, and beat serves no HTTP, so it
+    # reported "unhealthy" forever on first deploy. Omitting the key inherits the
+    # image default — only `disable: true` clears it.
+    #
+    # Nothing worker-shaped fits either: `celery inspect ping` does not apply to
+    # beat (it is not a worker), and a process check needs pgrep/ps which this
+    # slim image is not guaranteed to carry. Liveness comes from `make
+    # beat-health` (scripts/beat_health.sh), which reads the redbeat keys beat
+    # refreshes in redis every tick — the only signal that actually proves it is
+    # scheduling.
+    healthcheck:
+      disable: true
     deploy:
       resources:
         limits:
