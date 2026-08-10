@@ -192,6 +192,18 @@ def _synth_prompt(bug: str, env: dict, grounding: str = "") -> str:
         "including any signature..}, \"body\": <the request body you sent, parsed JSON or a "
         'string>}, \"response\": {\"status\": <int http status>, \"body\": <the response body '
         "you received, parsed JSON or a string>}}\n"
+        "- SIDE-EFFECT EVIDENCE (CRITICAL for side-effect bugs): many bugs (double-charge, "
+        "double-provision, duplicate send) leave the HTTP response IDENTICAL before and "
+        "after the fix — the response is always 200 {\"received\":true}. The proof lives in "
+        "the SIDE EFFECT you already read from the recorder to decide the verdict. So on "
+        "EACH entry, ALSO record what the recorder observed AFTER that request, as:\n"
+        '    \"side_effect\": {\"label\": \"<what you measured, e.g. \'seats granted '
+        "(cumulative)' or 'charge count'>\", \"value\": <the number the invariant checks — "
+        "e.g. total seats granted so far, or how many times the side effect ran>}\n"
+        "  Use the SAME measurement that drives your exit code, so the receipt shows the "
+        "real before/after (e.g. seats 5 then 10 on the buggy retry; 5 then 5 when fixed). "
+        "The `value` MUST be a plain number. If the bug genuinely has no numeric side "
+        "effect, omit the field. NEVER fabricate it — read it from the recorder.\n"
         "  At the very end, print this list as ONE final line, exactly:\n"
         "    FS_PROOF_JSON=<compact-single-line-json-array>\n"
         "  (use json.dumps(list, separators=(',',':')) — no newlines inside it). Keep bodies "
