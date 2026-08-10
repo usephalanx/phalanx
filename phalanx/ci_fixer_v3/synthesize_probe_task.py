@@ -20,7 +20,11 @@ Exit convention (matches proof_gate): 0=HELD(bug absent), 1=VIOLATED(reproduced)
 """
 from __future__ import annotations
 
+import contextlib
+import itertools
+import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -47,24 +51,96 @@ _DB_DEPS = (
 )
 
 
+# Strips a PEP 508 requirement down to its bare name: version specifiers,
+# extras, environment markers and trailing whitespace all go.
+_PY_REQ_SPLIT = re.compile(r"[<>=!~\[;\s]")
+
+# Quoted tokens in setup.py — the only way to read deps out of executable config
+# without running it.
+_QUOTED = re.compile(r"['\"]([A-Za-z0-9_.\-\[\]@/]+)['\"]")
+
+
+def _norm_py_req(entry: str) -> str:
+    return _PY_REQ_SPLIT.split(entry.strip(), 1)[0].strip().lower()
+
+
+def _declared_deps(ws: Path) -> set[str]:
+    """Dependency NAMES declared by the repo's manifests, lowercased.
+
+    Names, not raw text. Scanning the whole manifest for substrings meant any
+    package.json whose description mentioned "jpg" declared itself a Postgres
+    app ("pg" is a substring of "jpg"), which handed the probe author a CRITICAL
+    instruction to stub a database that does not exist.
+    """
+    names: set[str] = set()
+
+    pj = ws / "package.json"
+    if pj.exists():
+        try:
+            data = json.loads(pj.read_text())
+            for key in ("dependencies", "devDependencies",
+                        "peerDependencies", "optionalDependencies"):
+                block = data.get(key)
+                if isinstance(block, dict):
+                    names.update(str(k).strip().lower() for k in block)
+        except Exception:  # noqa: BLE001 — a broken manifest is not a service signal
+            pass
+
+    rq = ws / "requirements.txt"
+    if rq.exists():
+        try:
+            for raw in rq.read_text().splitlines():
+                line = raw.split("#", 1)[0].strip()
+                if line and not line.startswith("-"):
+                    names.add(_norm_py_req(line))
+        except Exception:  # noqa: BLE001
+            pass
+
+    pp = ws / "pyproject.toml"
+    if pp.exists():
+        try:
+            import tomllib  # noqa: PLC0415 — stdlib, only needed on this path
+
+            data = tomllib.loads(pp.read_text())
+            project = data.get("project") or {}
+            for entry in project.get("dependencies") or []:
+                names.add(_norm_py_req(str(entry)))
+            for group in (project.get("optional-dependencies") or {}).values():
+                for entry in group or []:
+                    names.add(_norm_py_req(str(entry)))
+            poetry = (data.get("tool") or {}).get("poetry") or {}
+            for key in ("dependencies", "dev-dependencies"):
+                block = poetry.get(key)
+                if isinstance(block, dict):
+                    names.update(str(k).strip().lower() for k in block)
+        except Exception:  # noqa: BLE001
+            pass
+
+    sp = ws / "setup.py"
+    if sp.exists():
+        with contextlib.suppress(Exception):
+            # setup.py is code; quoted tokens are the best available proxy.
+            names.update(_norm_py_req(m) for m in _QUOTED.findall(sp.read_text()))
+
+    return {n for n in names if n}
+
+
 def _service_signals(ws: Path) -> tuple[bool, str]:
     """Does this app need external infra (DB/broker) to boot? Returns (service,
-    db_hint). Read from manifests + a light content scan — a service app cannot
-    run in the clean sandbox unless the probe stubs that infra."""
-    blob = ""
-    for mf in ("package.json", "requirements.txt", "pyproject.toml", "setup.py"):
-        p = ws / mf
-        if p.exists():
-            try:
-                blob += p.read_text().lower() + "\n"
-            except Exception:  # noqa: BLE001
-                pass
-    hits = sorted({d for d in _DB_DEPS if d in blob})
+    db_hint). Read from declared dependencies + a light content scan — a service
+    app cannot run in the clean sandbox unless the probe stubs that infra."""
+    hits = sorted(_declared_deps(ws) & set(_DB_DEPS))
     if hits:
         return True, ", ".join(hits[:4])
     # content fallback: a db.query / new Pool / create_engine reachable from a route
     try:
-        for f in list(ws.glob("**/*.js"))[:40] + list(ws.glob("**/*.py"))[:40]:
+        # islice over the generators — `list(glob(...))[:40]` walked the entire
+        # tree before slicing.
+        sources = itertools.chain(
+            itertools.islice(ws.glob("**/*.js"), 40),
+            itertools.islice(ws.glob("**/*.py"), 40),
+        )
+        for f in sources:
             t = f.read_text(errors="ignore").lower()
             if "new pool(" in t or "createpool" in t or "create_engine" in t or "psycopg" in t:
                 return True, "database"
