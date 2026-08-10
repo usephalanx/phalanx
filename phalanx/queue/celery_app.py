@@ -46,6 +46,9 @@ celery_app = Celery(
         "phalanx.maintenance.tasks",
         "phalanx.maintenance.stuck_task_detector",
         "phalanx.maintenance.ledger_reconciler",
+        # age-based orphan sweep — needs the Docker socket, so it rides the
+        # cifix_sre queue like the other provisioner-touching tasks.
+        "phalanx.runtime.sandbox_reaper",
         "phalanx.memory.tasks",
         "phalanx.skills.ingestion.tasks",
         "phalanx.skills.tasks",
@@ -111,6 +114,7 @@ celery_app.config_from_object(
             "phalanx.ci_fixer_v3.find_bugs_task.*": {"queue": "cifix_sre"},
             "phalanx.ci_fixer_v3.fix_bug_task.*": {"queue": "cifix_sre"},
             "phalanx.ci_fixer_v3.synthesize_probe_task.*": {"queue": "cifix_sre"},
+            "phalanx.runtime.sandbox_reaper.*": {"queue": "cifix_sre"},
             "phalanx.skills.ingestion.*": {"queue": "ingestion"},
             "phalanx.skills.drills.*": {"queue": "skill_drills"},
         },
@@ -130,6 +134,12 @@ celery_app.config_from_object(
             "reconcile-shadow-ledger": {
                 "task": "phalanx.maintenance.ledger_reconciler.reconcile_shadow_ledger",
                 "schedule": 120,  # P0-6 — eventual consistency for ledger
+            },
+            "reap-orphaned-sandboxes": {
+                "task": "phalanx.runtime.sandbox_reaper.reap_sandboxes",
+                "schedule": 1800,  # v1.7.15 — age-based backstop for the container
+                                   # leak sandbox_cleanup structurally cannot catch
+                                   # (no task row => no container_id => never reaped)
             },
             "decay-memory-relevance": {
                 "task": "phalanx.memory.tasks.decay_relevance",
