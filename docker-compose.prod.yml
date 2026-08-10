@@ -225,6 +225,51 @@ services:
           cpus: "1.0"
           memory: 1G   # image builds need more headroom than regular agents
 
+  # ── Celery Beat — the scheduler (v1.7.16) ────────────────────────────────
+  # Prod has never had a beat process. Verified 2026-08-10: no beat service, no
+  # `-B` on any worker, and ZERO `redbeat*` keys in redis — redbeat writes its
+  # schedule there on the first tick, so zero keys proves it never ticked.
+  #
+  # Consequence: every beat_schedule entry in celery_app.py has been dead in
+  # production — detect-stuck-tasks (which CALLS sandbox cleanup, and whose
+  # absence is why hung runs never cleaned up), reconcile-shadow-ledger (all of
+  # P0-6), check-blocked-runs, and reap-orphaned-sandboxes.
+  #
+  # Do NOT add --scheduler here. celery_app.py already sets
+  # beat_scheduler=redbeat.RedBeatScheduler; passing the flag silently overrides
+  # it, which is the crash-loop that took beat out in the first place
+  # (--scheduler=django_celery_beat pointed at an uninstalled package).
+  #
+  # Single replica by design: two beats would double-fire every schedule.
+  phalanx-beat:
+    image: phalanx-worker:latest
+    <<: *forge-base
+    command: >
+      celery -A phalanx.queue.celery_app beat
+      --loglevel=info
+    environment:
+      SERVICE_NAME: phalanx-beat
+      PHALANX_WORKER: "1"   # forces NullPool — same reason as every celery process
+    volumes:
+      - ./configs:/app/configs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No healthcheck: beat is not a worker, so `celery inspect ping` does not
+    # apply to it, and a process check needs pgrep/ps which this slim image is
+    # not guaranteed to carry. A healthcheck that cannot be verified is worse
+    # than none — the ci-fixer-worker already spent weeks reporting "unhealthy"
+    # while working fine. Liveness is asserted instead by `make beat-health`
+    # (scripts/beat_health.sh), which reads the redbeat keys beat writes to
+    # redis on every tick — the real signal.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M   # beat only enqueues; the workers do the work
+
   # ── Nginx — Landing page + reverse proxy + demo subdomain ────────────────
   nginx:
     image: nginx:alpine
