@@ -185,14 +185,28 @@ REMOTE
 echo ""
 echo "▶ [5/6] Verifying deployment..."
 sleep 5
-API_HOST=$(echo "$SERVER" | cut -d@ -f2)
-HTTP_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" \
-  "http://$API_HOST:8000/health" --max-time 10 || echo "000")
+# Verify through the PUBLIC edge, the way a user reaches it. The previous check
+# curled http://<public-ip>:8000/health, but Lightsail only exposes 80/443 — so
+# it could never pass, printed a scary line on every SUCCESSFUL deploy, and
+# (worse) did not gate: the script exited 0 regardless, meaning a genuinely
+# broken deploy reported "Deploy complete" identically. Same false-green class
+# this codebase spends its life eliminating in the product.
+HEALTH_URL="${DEPLOY_HEALTH_URL:-https://usephalanx.com/health}"
+HTTP_HEALTH="000"
+for attempt in 1 2 3 4 5 6; do
+  HTTP_HEALTH=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" --max-time 10 || echo "000")
+  [ "$HTTP_HEALTH" = "200" ] && break
+  echo "  … health $HTTP_HEALTH (attempt $attempt/6), retrying in 10s"
+  sleep 10
+done
 
 if [ "$HTTP_HEALTH" = "200" ]; then
-  echo "  ✓ API health: $HTTP_HEALTH"
+  echo "  ✓ API health: $HTTP_HEALTH ($HEALTH_URL)"
 else
-  echo "  ✗ API health: $HTTP_HEALTH — deployment may need investigation"
+  echo "  ✗ API health: $HTTP_HEALTH at $HEALTH_URL — DEPLOY FAILED"
+  echo "    Containers are up but the edge is not serving. Investigate before"
+  echo "    assuming this release is live; roll back if needed."
+  exit 1
 fi
 
 # ── Step 5b: Regenerate sitemap with today's date ────────────────────────────
